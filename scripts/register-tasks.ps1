@@ -46,7 +46,12 @@
 
 .PARAMETER LegacyScriptsToArchive
     Paths to legacy scripts that should be renamed out of the way because this module
-    supersedes them.
+    supersedes them. Workaround included for invocation via `pwsh -File ... -LegacyScriptsToArchive
+    "C:\a.ps1","C:\b.ps1"` from another shell (notably Windows PowerShell 5.1): -File mode
+    never re-parses commas, so the two paths can arrive flattened into one literal string
+    "C:\a.ps1,C:\b.ps1". Any element that is a comma-joined list of rooted Windows paths (each
+    looking like `C:\...` or `\\server\share\...`) is automatically expanded back into separate
+    paths before archiving.
 
 .EXAMPLE
     ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL'

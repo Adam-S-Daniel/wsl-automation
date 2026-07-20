@@ -57,7 +57,12 @@ function Set-WslAutomationScheduledTasks {
 
     .PARAMETER LegacyScriptsToArchive
         Paths to legacy scripts that should be renamed out of the way because this module
-        supersedes them.
+        supersedes them. Workaround included for invocation via `pwsh -File ... -LegacyScriptsToArchive
+        "C:\a.ps1","C:\b.ps1"` from another shell (notably Windows PowerShell 5.1): -File mode
+        never re-parses commas, so the two paths can arrive flattened into one literal string
+        "C:\a.ps1,C:\b.ps1". Any element that is a comma-joined list of rooted Windows paths
+        (each looking like `C:\...` or `\\server\share\...`) is automatically expanded back into
+        separate paths before archiving.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
@@ -177,8 +182,53 @@ function Set-WslAutomationScheduledTasks {
 
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
-    foreach ($legacyPath in $LegacyScriptsToArchive) {
+
+    # When register-tasks.ps1 is invoked as `pwsh -File ... -LegacyScriptsToArchive
+    # "C:\a.ps1","C:\b.ps1"` from another shell (notably Windows PowerShell 5.1), native-command
+    # argument handling flattens the two array elements into ONE literal string
+    # "C:\a.ps1,C:\b.ps1" before pwsh's -File mode ever sees it - -File never re-parses commas
+    # into an array the way a real PowerShell-to-PowerShell call would. Test-Path then fails on
+    # the joined string and archiving silently does nothing. Work around it by expanding any
+    # element that is a comma-joined list of rooted Windows paths back into its parts; an element
+    # without a comma, or whose comma-split fragments don't all look like rooted paths, is left
+    # alone (a legitimate single path may itself contain a comma).
+    $expandedLegacyScriptsToArchive = foreach ($rawLegacyPath in $LegacyScriptsToArchive) {
+        if ($rawLegacyPath -notlike '*,*') {
+            $rawLegacyPath
+            continue
+        }
+
+        $legacyPathFragments = $rawLegacyPath -split ','
+        $anyFragmentNotRooted = $legacyPathFragments | Where-Object {
+            $_ -notmatch '^[A-Za-z]:[\\/]' -and $_ -notmatch '^\\\\'
+        }
+
+        if ($anyFragmentNotRooted) {
+            $rawLegacyPath
+        }
+        else {
+            $legacyPathFragments
+        }
+    }
+
+    foreach ($legacyPath in $expandedLegacyScriptsToArchive) {
         if (-not (Test-Path -LiteralPath $legacyPath)) {
+            $legacyLeafForMissingCheck = Split-Path -Path $legacyPath -Leaf
+            $legacyParentForMissingCheck = Split-Path -Path $legacyPath -Parent
+            $supersededSiblingPattern = "$legacyLeafForMissingCheck.superseded-*"
+            $supersededSiblingPath = if ($legacyParentForMissingCheck) {
+                Join-Path $legacyParentForMissingCheck $supersededSiblingPattern
+            }
+            else {
+                $supersededSiblingPattern
+            }
+
+            # An idempotent re-run naturally hits this: a previous run already renamed the
+            # legacy script out of the way, so it no longer exists at its original path. Only
+            # warn when there's no evidence that already happened.
+            if (-not (Test-Path -Path $supersededSiblingPath)) {
+                Write-Warning "Legacy script not found, nothing archived: $legacyPath"
+            }
             continue
         }
 

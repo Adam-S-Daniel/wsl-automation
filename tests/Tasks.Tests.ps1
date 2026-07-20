@@ -265,5 +265,55 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
             $warnings | Should -Not -BeNullOrEmpty
         }
+
+        It 'expands a single comma-joined element of two rooted paths and renames both (pwsh -File comma-flattening workaround)' {
+            # Simulates the proven -File argument-binding footgun: two array elements arriving
+            # from another shell (e.g. Windows PowerShell 5.1 calling `pwsh -File ...`) flattened
+            # into one literal comma-joined string, rather than -LegacyScriptsToArchive actually
+            # receiving a two-element array.
+            $legacyPathOne = Join-Path $TestDrive 'legacy-one.ps1'
+            $legacyPathTwo = Join-Path $TestDrive 'legacy-two.ps1'
+            Set-Content -Path $legacyPathOne -Value '# legacy script one' -Encoding utf8
+            Set-Content -Path $legacyPathTwo -Value '# legacy script two' -Encoding utf8
+            $todaySuffix = (Get-Date).ToString('yyyyMMdd')
+            $flattenedElement = "$legacyPathOne,$legacyPathTwo"
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($flattenedElement)
+
+            Should -Invoke -ModuleName WslAutomation Rename-Item -Times 1 -Exactly -ParameterFilter {
+                ($Path -eq $legacyPathOne -or $LiteralPath -eq $legacyPathOne) -and
+                ($NewName -match [regex]::Escape("superseded-$todaySuffix"))
+            }
+            Should -Invoke -ModuleName WslAutomation Rename-Item -Times 1 -Exactly -ParameterFilter {
+                ($Path -eq $legacyPathTwo -or $LiteralPath -eq $legacyPathTwo) -and
+                ($NewName -match [regex]::Escape("superseded-$todaySuffix"))
+            }
+        }
+
+        It 'warns when a legacy path does not exist and no .superseded-* sibling is present' {
+            $missingPath = Join-Path $TestDrive 'no-sibling-yet.ps1'
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($missingPath) -WarningVariable warnings
+
+            Should -Invoke -ModuleName WslAutomation Rename-Item -Times 0 -Exactly
+            $warnings | Where-Object { $_ -match 'Legacy script not found' } | Should -Not -BeNullOrEmpty
+        }
+
+        It 'stays silent when a legacy path does not exist but a .superseded-* sibling from a previous run is present' {
+            # An idempotent re-run: a prior invocation already renamed this legacy script out of
+            # the way, so it no longer exists at its original path. That's expected, not an error.
+            $missingPath = Join-Path $TestDrive 'archived-on-prior-run.ps1'
+            $todaySuffix = (Get-Date).ToString('yyyyMMdd')
+            $priorSupersededPath = "$missingPath.superseded-$todaySuffix"
+            Set-Content -Path $priorSupersededPath -Value '# archived on a prior run' -Encoding utf8
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($missingPath) -WarningVariable warnings
+
+            Should -Invoke -ModuleName WslAutomation Rename-Item -Times 0 -Exactly
+            $warnings | Where-Object { $_ -match 'Legacy script not found' } | Should -BeNullOrEmpty
+        }
     }
 }
