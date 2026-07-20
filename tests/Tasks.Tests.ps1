@@ -156,6 +156,26 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $keeperTrigger.Repetition.Interval | Should -Be 'PT5M'
         }
 
+        It 'registers the backup task without -WakeToRun by default (no scheduled wake on Modern Standby)' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            # New-ScheduledTaskSettingsSet is called for both tasks; neither may request WakeToRun
+            # by default. -WakeToRun is a switch, so it binds as $true only when actually passed.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 0 -Exactly -ParameterFilter {
+                $WakeToRun -eq $true
+            }
+        }
+
+        It 'registers the backup task with -WakeToRun when -WakeBackupToRun is set' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -WakeBackupToRun
+
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
+                $WakeToRun -eq $true
+            }
+        }
+
         It 'sanitizes a trailing backslash in BackupDir so the composed action arguments stay well-formed' {
             $backupDirWithTrailingSlash = $script:backupDir + '\'
 

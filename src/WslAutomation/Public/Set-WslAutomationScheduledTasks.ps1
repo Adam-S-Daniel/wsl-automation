@@ -37,6 +37,17 @@ function Set-WslAutomationScheduledTasks {
         Backup format passed through to wsl-ubuntu-backup.ps1: 'tar' or 'vhdx'. Defaults to
         'tar'.
 
+    .PARAMETER WakeBackupToRun
+        When set, the backup task is registered with -WakeToRun so Windows wakes the machine
+        from sleep to run the backup. Off by default: on Modern Standby (S0 low-power idle)
+        laptops - which never truly sleep and instead sit in connected standby - a scheduled
+        wake pulls the SoC back out of its low-power phase and has been observed to hang the
+        machine in a half-woken state that only a hard power-off recovers. With this off the
+        backup instead relies on -StartWhenAvailable, running at the next opportunity the
+        machine is already awake if its scheduled time was missed. Only enable this on hardware
+        where scheduled wake is reliable (for example an S3-capable desktop). This only affects
+        a freshly registered backup task; an existing task's Settings are preserved as-is.
+
     .PARAMETER BackupTaskName
         Name of the scheduled task that runs the backup. Defaults to 'WSL Ubuntu Daily Backup'.
 
@@ -92,6 +103,8 @@ function Set-WslAutomationScheduledTasks {
         [ValidateSet('tar', 'vhdx')]
         [string]$Format = 'tar',
 
+        [switch]$WakeBackupToRun,
+
         [string]$BackupTaskName = 'WSL Ubuntu Daily Backup',
 
         [string]$KeeperTaskName = 'Claude Code Session Keeper',
@@ -135,8 +148,18 @@ function Set-WslAutomationScheduledTasks {
         }
     }
     else {
-        $backupSettings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable `
-            -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstances IgnoreNew
+        # -WakeToRun is opt-in (see -WakeBackupToRun): waking a Modern Standby laptop for the
+        # backup can hang it in a half-woken state. -StartWhenAvailable still catches up a missed
+        # run the next time the machine is awake, which is the intended behavior when not waking.
+        $backupSettingsParams = @{
+            StartWhenAvailable = $true
+            ExecutionTimeLimit = New-TimeSpan -Hours 4
+            MultipleInstances  = 'IgnoreNew'
+        }
+        if ($WakeBackupToRun) {
+            $backupSettingsParams['WakeToRun'] = $true
+        }
+        $backupSettings = New-ScheduledTaskSettingsSet @backupSettingsParams
         $backupPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
 
         if ($PSCmdlet.ShouldProcess($BackupTaskName, 'Register scheduled task')) {

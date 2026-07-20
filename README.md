@@ -103,10 +103,15 @@ vice versa, if you choose to gate the backup on session activity too).
 - Runs `scripts\wsl-ubuntu-backup.ps1` once a day at a fixed time (default
   02:00), via a single daily trigger (any pre-existing logon or other
   triggers on the task are replaced with just this one).
-- Settings: wakes the machine to run (`-WakeToRun`), starts as soon as
-  possible if the scheduled time was missed (`-StartWhenAvailable`), has a
-  4 hour execution time limit, and will not start a second instance while
-  one is already running (`-MultipleInstances IgnoreNew`).
+- Settings: does **not** wake the machine to run by default - it starts as
+  soon as possible once the machine is next awake if the scheduled time was
+  missed (`-StartWhenAvailable`), has a 4 hour execution time limit, and
+  will not start a second instance while one is already running
+  (`-MultipleInstances IgnoreNew`). Pass `-WakeBackupToRun` to register it
+  with `-WakeToRun` instead. Waking is off by default because on Modern
+  Standby (S0 low-power idle) laptops a scheduled wake can hang the machine
+  in a half-woken state; enable it only on hardware where scheduled wake is
+  reliable, such as an S3-capable desktop.
 - Runs the backup interactively as the current user (needed for `wsl.exe`
   to reach the right WSL session).
 
