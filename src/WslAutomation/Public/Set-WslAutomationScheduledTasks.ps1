@@ -170,7 +170,12 @@ function Set-WslAutomationScheduledTasks {
 
     # --- Keeper task: action + indefinitely-repeating trigger --------------
     $keeperScriptPath = Join-Path $ScriptsDir 'ensure-claude-session.ps1'
-    $keeperArguments = "-NoProfile -File `"$keeperScriptPath`" -DistroName $DistroName"
+    # -WindowStyle Hidden keeps the routine every-few-minutes "is a session already
+    # running?" check from flashing a pwsh console window on the desktop. It only hides
+    # pwsh's own window (and any wsl.exe it runs shares that hidden console); when the
+    # keeper does need to start a session it launches wt.exe, a separate GUI process that
+    # still opens its window normally.
+    $keeperArguments = "-NoProfile -WindowStyle Hidden -File `"$keeperScriptPath`" -DistroName $DistroName"
     $keeperAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $keeperArguments
 
     # -RepetitionInterval at creation time is the construction pwsh 7.6's ScheduledTasks module
