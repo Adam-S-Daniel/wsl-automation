@@ -26,8 +26,13 @@ function Start-ClaudeSession {
 
         [string]$Executable = 'wt.exe',
 
+        # NOTE: Start-Process joins -ArgumentList with spaces WITHOUT quoting elements
+        # that themselves contain spaces. The tab title must therefore carry its own
+        # embedded quotes, otherwise wt.exe parses '--title Claude Code ...' as
+        # title='Claude' + a new-tab command that starts with the stray word 'Code'
+        # (giving 'error 0x80070002: The system cannot find the file specified.').
         [string[]]$ArgumentList = @(
-            '-w', '0', 'new-tab', '--title', 'Claude Code',
+            '-w', '0', 'new-tab', '--title', '"Claude Code"',
             'wsl.exe', '-d', $DistroName, '--cd', '~', '--', 'bash', '-l', '-c', 'claude'
         )
     )
