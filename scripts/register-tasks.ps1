@@ -26,6 +26,13 @@
 .PARAMETER Format
     Backup format passed through to wsl-ubuntu-backup.ps1: 'tar' or 'vhdx'. Defaults to 'tar'.
 
+.PARAMETER WakeBackupToRun
+    Register the backup task with -WakeToRun so Windows wakes the machine from sleep to run it.
+    Off by default: on Modern Standby (S0 low-power idle) laptops a scheduled wake can hang the
+    machine in a half-woken state, so the backup instead catches up via -StartWhenAvailable the
+    next time the machine is awake. Enable only on hardware where scheduled wake is reliable
+    (for example an S3-capable desktop).
+
 .PARAMETER BackupTaskName
     Name of the scheduled task that runs the backup. Defaults to 'WSL Ubuntu Daily Backup'.
 
@@ -76,6 +83,8 @@ param(
     [ValidateSet('tar', 'vhdx')]
     [string]$Format = 'tar',
 
+    [switch]$WakeBackupToRun,
+
     [string]$BackupTaskName = 'WSL Ubuntu Daily Backup',
 
     [string]$KeeperTaskName = 'Claude Code Session Keeper',
@@ -118,7 +127,8 @@ Import-Module (Join-Path $PSScriptRoot '..' 'src' 'WslAutomation') -Force
 
 try {
     Set-WslAutomationScheduledTasks -ScriptsDir $ScriptsDir -BackupDir $BackupDir -DistroName $DistroName `
-        -Format $Format -BackupTaskName $BackupTaskName -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
+        -Format $Format -WakeBackupToRun:$WakeBackupToRun -BackupTaskName $BackupTaskName `
+        -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
         -KeeperIntervalMinutes $KeeperIntervalMinutes -PwshPath $PwshPath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -WhatIf:$WhatIfPreference
 
