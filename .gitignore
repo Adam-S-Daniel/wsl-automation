@@ -1,0 +1,5 @@
+*.superseded-*
+*.log
+TestResults*.xml
+*.local.*
+task-backup*.xml
