@@ -2,8 +2,8 @@
 #requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup
-    and Claude Code session keeper scheduled tasks.
+    Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
+    Claude Code session keeper, and ccstatusline config sync scheduled tasks.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -13,8 +13,8 @@
     during a dry run.
 
 .PARAMETER ScriptsDir
-    Directory containing wsl-ubuntu-backup.ps1 and ensure-claude-session.ps1. Defaults to the
-    directory this script lives in.
+    Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
+    sync-ccstatusline-config.ps1. Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
     Directory the backup task writes exported WSL archives to.
@@ -46,8 +46,15 @@
 .PARAMETER KeeperIntervalMinutes
     How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
 
+.PARAMETER CcstatuslineTaskName
+    Name of the scheduled task that syncs the ccstatusline config from WSL. Defaults to
+    'ccstatusline Config Sync'.
+
+.PARAMETER CcstatuslineIntervalMinutes
+    How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults to 5.
+
 .PARAMETER PwshPath
-    Path to pwsh.exe used as the action executable for both tasks. Defaults to the stable
+    Path to pwsh.exe used as the action executable for all three tasks. Defaults to the stable
     per-user WindowsApps execution alias when present (survives PowerShell package updates),
     else the pwsh.exe found on PATH.
 
@@ -93,6 +100,10 @@ param(
 
     [int]$KeeperIntervalMinutes = 5,
 
+    [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
+
+    [int]$CcstatuslineIntervalMinutes = 5,
+
     # This script runs before Import-Module (the module isn't loaded until the body below), so
     # it cannot call the module's private Get-WslAutomationDefaultPwshPath helper and instead
     # inlines the same stable-alias-preferring logic. (Get-Command pwsh.exe).Source alone
@@ -129,7 +140,8 @@ try {
     Set-WslAutomationScheduledTasks -ScriptsDir $ScriptsDir -BackupDir $BackupDir -DistroName $DistroName `
         -Format $Format -WakeBackupToRun:$WakeBackupToRun -BackupTaskName $BackupTaskName `
         -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
-        -KeeperIntervalMinutes $KeeperIntervalMinutes -PwshPath $PwshPath `
+        -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
+        -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -WhatIf:$WhatIfPreference
 
     exit 0
