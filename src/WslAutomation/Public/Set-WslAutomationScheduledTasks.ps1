@@ -3,19 +3,21 @@
 function Set-WslAutomationScheduledTasks {
     <#
     .SYNOPSIS
-        Registers or updates the scheduled tasks that drive WSL backups and the Claude Code
-        session keeper.
+        Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
+        session keeper, and the ccstatusline config sync.
 
     .DESCRIPTION
-        Creates two Windows Scheduled Tasks, or updates them in place if they already exist:
-        a daily backup task that runs scripts/wsl-ubuntu-backup.ps1, and a session-keeper task
-        that runs scripts/ensure-claude-session.ps1 on a short repeating interval.
+        Creates three Windows Scheduled Tasks, or updates them in place if they already exist:
+        a daily backup task that runs scripts/wsl-ubuntu-backup.ps1, a session-keeper task that
+        runs scripts/ensure-claude-session.ps1 on a short repeating interval, and a ccstatusline
+        config sync task that runs scripts/sync-ccstatusline-config.ps1 on its own short
+        repeating interval.
 
         When the backup task already exists, its Action and Triggers are replaced but its
-        existing Settings and Principal objects are kept as-is. The keeper task's Settings and
-        Principal are always (re)built fresh from this function's parameters, whether the task
-        already exists or not, so its battery/idle behavior stays in sync. Re-running this
-        function is idempotent for both tasks.
+        existing Settings and Principal objects are kept as-is. The keeper and ccstatusline
+        tasks' Settings and Principal are always (re)built fresh from this function's
+        parameters, whether the task already exists or not, so their battery/idle behavior stays
+        in sync. Re-running this function is idempotent for all three tasks.
 
         Also archives any legacy scripts passed via -LegacyScriptsToArchive by renaming them
         out of the way, so a stale scheduled task still pointing at an old script path fails
@@ -24,7 +26,8 @@ function Set-WslAutomationScheduledTasks {
         Windows-only: throws immediately if $IsWindows is false.
 
     .PARAMETER ScriptsDir
-        Directory containing wsl-ubuntu-backup.ps1 and ensure-claude-session.ps1.
+        Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
+        sync-ccstatusline-config.ps1.
 
     .PARAMETER BackupDir
         Directory the backup task writes exported WSL archives to.
@@ -61,9 +64,17 @@ function Set-WslAutomationScheduledTasks {
     .PARAMETER KeeperIntervalMinutes
         How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
 
+    .PARAMETER CcstatuslineTaskName
+        Name of the scheduled task that syncs the ccstatusline config from WSL. Defaults to
+        'ccstatusline Config Sync'.
+
+    .PARAMETER CcstatuslineIntervalMinutes
+        How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults
+        to 5.
+
     .PARAMETER PwshPath
-        Path to pwsh.exe used as the action executable for both tasks. Defaults to the stable
-        per-user WindowsApps execution alias when present (survives PowerShell package
+        Path to pwsh.exe used as the action executable for all three tasks. Defaults to the
+        stable per-user WindowsApps execution alias when present (survives PowerShell package
         updates), else the pwsh.exe found on PATH.
 
     .PARAMETER LegacyScriptsToArchive
@@ -78,8 +89,8 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
 
-        Registers (or updates) both scheduled tasks using default names, backup time, and
-        keeper interval.
+        Registers (or updates) all three scheduled tasks using default names, backup time, and
+        keeper/ccstatusline intervals.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -WhatIf
@@ -89,7 +100,7 @@ function Set-WslAutomationScheduledTasks {
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         'PSUseSingularNouns',
         '',
-        Justification = 'This function manages two related scheduled tasks (backup and session keeper) by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
+        Justification = 'This function manages three related scheduled tasks (backup, session keeper, and ccstatusline config sync) by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
@@ -112,6 +123,10 @@ function Set-WslAutomationScheduledTasks {
         [string]$BackupTime = '02:00',
 
         [int]$KeeperIntervalMinutes = 5,
+
+        [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
+
+        [int]$CcstatuslineIntervalMinutes = 5,
 
         [string]$PwshPath = (Get-WslAutomationDefaultPwshPath),
 
@@ -208,6 +223,37 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- ccstatusline task: action + indefinitely-repeating trigger --------
+    $ccstatuslineScriptPath = Join-Path $ScriptsDir 'sync-ccstatusline-config.ps1'
+    $ccstatuslineArguments = "-NoProfile -WindowStyle Hidden -File `"$ccstatuslineScriptPath`" -DistroName $DistroName"
+    $ccstatuslineAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $ccstatuslineArguments
+
+    # Same indefinite-repetition construction as the keeper trigger above (-Once + creation-time
+    # -RepetitionInterval, never mutated afterward); see the comment on $keeperTrigger for why.
+    $ccstatuslineTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes $CcstatuslineIntervalMinutes)
+
+    # Settings/Principal are always rebuilt fresh for the ccstatusline task too, regardless of
+    # whether it already exists, so its battery/idle behavior always matches this function's
+    # defaults.
+    $ccstatuslineSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+    $ccstatuslinePrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+
+    $existingCcstatuslineTask = Get-ScheduledTask -TaskName $CcstatuslineTaskName -ErrorAction SilentlyContinue
+    if ($existingCcstatuslineTask) {
+        if ($PSCmdlet.ShouldProcess($CcstatuslineTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $CcstatuslineTaskName -Action $ccstatuslineAction -Trigger $ccstatuslineTrigger `
+                -Settings $ccstatuslineSettings -Principal $ccstatuslinePrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($CcstatuslineTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $CcstatuslineTaskName -Action $ccstatuslineAction -Trigger $ccstatuslineTrigger `
+                -Settings $ccstatuslineSettings -Principal $ccstatuslinePrincipal
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -277,4 +323,5 @@ function Set-WslAutomationScheduledTasks {
     # --- Summary -------------------------------------------------------------
     Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime)" -InformationAction Continue
     Write-Information -MessageData "Keeper task '$KeeperTaskName': $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName': $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
 }

@@ -17,7 +17,8 @@
         'Test-ClaudeSession',
         'Start-ClaudeSession',
         'Invoke-ClaudeSessionKeeper',
-        'Set-WslAutomationScheduledTasks'
+        'Set-WslAutomationScheduledTasks',
+        'Update-CcstatuslineConfig'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
