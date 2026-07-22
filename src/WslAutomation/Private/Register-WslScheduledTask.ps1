@@ -38,6 +38,18 @@ function Register-WslScheduledTask {
         $Principal
     )
 
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
-        -Settings $Settings -Principal $Principal | Out-Null
+    # -Trigger is omitted (not passed as $null) for an on-demand-only task such as the
+    # interactive session launcher: Register-ScheduledTask rejects a $null trigger but is happy
+    # with no -Trigger at all, producing a task that runs only when explicitly started.
+    $registerParams = @{
+        TaskName  = $TaskName
+        Action    = $Action
+        Settings  = $Settings
+        Principal = $Principal
+    }
+    if ($null -ne $Trigger) {
+        $registerParams['Trigger'] = $Trigger
+    }
+
+    Register-ScheduledTask @registerParams | Out-Null
 }

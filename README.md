@@ -83,7 +83,27 @@ vice versa, if you choose to gate the backup on session activity too).
    C:\Users\<you>\repos\wsl-automation
    ```
 
-2. Open an elevated PowerShell 7.6+ prompt (scheduled task registration
+2. **Background-keeper prerequisites (once per machine).** The session
+   keeper runs as a background (session 0) task so its frequent check never
+   flashes a window on the desktop. That imposes two one-time requirements:
+
+   - **PowerShell 7 installed via MSI** (not the Microsoft Store build). A
+     Store-packaged pwsh cannot be activated in session 0, so the keeper
+     task needs a non-packaged pwsh at `C:\Program Files\PowerShell\7\`.
+     Install it with `winget install --id Microsoft.PowerShell --scope
+     machine` or the MSI from the PowerShell releases page. `register-tasks`
+     prefers this path automatically and warns if only a Store pwsh is found.
+   - **The "Log on as a batch job" right** for your account, which a
+     background (S4U) task needs. On a machine where you are a local admin
+     this is *not* covered by the default Administrators grant (an S4U logon
+     gets a UAC-filtered token in which Administrators is deny-only). Grant
+     it to your own account from an elevated prompt:
+
+     ```powershell
+     .\scripts\grant-keeper-batch-logon.ps1
+     ```
+
+3. Open an elevated PowerShell 7.6+ prompt (scheduled task registration
    needs administrator rights) and run the task installer, pointing it at
    where you want backups written:
 
@@ -92,9 +112,9 @@ vice versa, if you choose to gate the backup on session activity too).
    .\scripts\register-tasks.ps1 -BackupDir 'D:\Backups\wsl'
    ```
 
-   This creates/updates the two scheduled tasks described below. Re-running
-   it is safe and idempotent - it will update the existing tasks in place
-   rather than duplicating them.
+   This creates/updates the scheduled tasks described below. Re-running it is
+   safe and idempotent - it will update the existing tasks in place rather
+   than duplicating them.
 
 ## Task descriptions
 
@@ -119,12 +139,31 @@ vice versa, if you choose to gate the backup on session activity too).
 
 - Runs `scripts\ensure-claude-session.ps1` on a repeating interval (default
   every 5 minutes), starting from midnight of the day it was registered.
+- Runs as a **background (S4U) task in session 0** - "run whether the user
+  is logged on or not", no stored password. This is what keeps the frequent
+  check from ever flashing a console window on the desktop: session 0 has no
+  interactive desktop to draw one on. (An interactive task with
+  `-WindowStyle Hidden` still flashes briefly, because Task Scheduler creates
+  the console window before pwsh can hide it.) See the prerequisites above -
+  this mode needs an MSI pwsh and the batch-logon right.
 - Settings: allowed to run on battery, won't stop if the machine switches
   to battery mid-run, 2 hour execution time limit, and will not start a
   second instance while one is already running.
-- Also runs interactively as the current user (a Claude Code session
-  launched in the background under a service account would not be visible
-  or usable).
+- Because it runs in session 0 it cannot open a terminal itself; when no
+  session is running it triggers the launcher task below.
+
+### Launcher task (default name: `Claude Code Session Launcher`)
+
+- Has **no trigger of its own** - it only ever runs on demand, started by
+  the background keeper when no session is found.
+- Runs **interactively** as the current user, so the Windows Terminal window
+  it opens is visible on the desktop. Its action is `wt.exe` directly (not
+  pwsh), selecting the distro's Windows Terminal profile (`-p <DistroName>`,
+  for the correct icon/colours) and running
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c claude`. Because it is a
+  separate GUI process, opening a session never flashes a pwsh console
+  either. It only produces a usable session when a user is logged on
+  interactively at the console; it is not meant to work headlessly.
 
 ### Legacy scripts
 
@@ -142,9 +181,10 @@ by anything.
   an interactive session exists.
 - The keeper **never boots a stopped distro** just to check or launch a
   session - if the distro isn't already `Running`, it does nothing.
-- Because the launch uses Windows Terminal (`wt.exe`) to open a new tab,
-  it only produces a usable, visible session when a user is logged on
-  interactively at the console; it is not meant to work headlessly.
+- The launch is performed by the interactive launcher task (see above),
+  which uses Windows Terminal (`wt.exe`) to open a new tab, so it only
+  produces a usable, visible session when a user is logged on interactively
+  at the console; it is not meant to work headlessly.
 - If a backup lock is present and fresh, the keeper waits (see "Lock
   protocol" above) rather than launching a session immediately, so a
   freshly-launched `claude` process never competes with an in-progress
@@ -166,8 +206,12 @@ under Pester's `TestDrive:`.
 
 ## Requirements
 
-- PowerShell 7.6 or later.
+- PowerShell 7.6 or later. For the background keeper specifically, an **MSI**
+  install of PowerShell 7 (`C:\Program Files\PowerShell\7\`) - a Store-packaged
+  pwsh cannot run in the session 0 the keeper uses.
 - Windows (Task Scheduler integration and `wt.exe` launch are
   Windows-only; the module's non-scheduling functions are otherwise plain
   PowerShell 7.6+).
+- The "Log on as a batch job" right for the account running the keeper (see
+  `scripts\grant-keeper-batch-logon.ps1`).
 - WSL2 with the distro you want to back up / keep alive already installed.

@@ -39,7 +39,18 @@ function Set-WslScheduledTask {
     )
 
     if ($PSCmdlet.ShouldProcess($TaskName, 'Set scheduled task')) {
-        Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
-            -Settings $Settings -Principal $Principal | Out-Null
+        # -Trigger is omitted (not passed as $null) for an on-demand-only task such as the
+        # interactive session launcher, which has no trigger to update.
+        $setParams = @{
+            TaskName  = $TaskName
+            Action    = $Action
+            Settings  = $Settings
+            Principal = $Principal
+        }
+        if ($null -ne $Trigger) {
+            $setParams['Trigger'] = $Trigger
+        }
+
+        Set-ScheduledTask @setParams | Out-Null
     }
 }

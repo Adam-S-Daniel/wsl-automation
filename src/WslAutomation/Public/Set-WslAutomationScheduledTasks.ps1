@@ -7,17 +7,24 @@ function Set-WslAutomationScheduledTasks {
         session keeper, and the ccstatusline config sync.
 
     .DESCRIPTION
-        Creates three Windows Scheduled Tasks, or updates them in place if they already exist:
-        a daily backup task that runs scripts/wsl-ubuntu-backup.ps1, a session-keeper task that
-        runs scripts/ensure-claude-session.ps1 on a short repeating interval, and a ccstatusline
-        config sync task that runs scripts/sync-ccstatusline-config.ps1 on its own short
-        repeating interval.
+        Creates four Windows Scheduled Tasks, or updates them in place if they already exist:
+        a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
+        runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
+        launcher task the keeper triggers to actually open a Claude Code session in Windows
+        Terminal; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
+        on its own short repeating interval.
+
+        The keeper and ccstatusline tasks run as background S4U tasks (session 0), so their
+        frequent checks never flash a console window on the desktop; the launcher is interactive
+        (it must show a terminal) and on-demand (no trigger); the backup is interactive. Both S4U
+        tasks require an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath
+        and scripts/grant-keeper-batch-logon.ps1.
 
         When the backup task already exists, its Action and Triggers are replaced but its
-        existing Settings and Principal objects are kept as-is. The keeper and ccstatusline
-        tasks' Settings and Principal are always (re)built fresh from this function's
+        existing Settings and Principal objects are kept as-is. The keeper, launcher, and
+        ccstatusline tasks' Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
-        in sync. Re-running this function is idempotent for all three tasks.
+        in sync. Re-running this function is idempotent for all four tasks.
 
         Also archives any legacy scripts passed via -LegacyScriptsToArchive by renaming them
         out of the way, so a stale scheduled task still pointing at an old script path fails
@@ -58,6 +65,10 @@ function Set-WslAutomationScheduledTasks {
         Name of the scheduled task that runs the session keeper. Defaults to 'Claude Code
         Session Keeper'.
 
+    .PARAMETER LauncherTaskName
+        Name of the interactive, on-demand task the keeper triggers to open a Claude Code
+        session. Defaults to 'Claude Code Session Launcher'.
+
     .PARAMETER BackupTime
         Time of day (HH:mm) the backup task's daily trigger fires. Defaults to '02:00'.
 
@@ -73,9 +84,15 @@ function Set-WslAutomationScheduledTasks {
         to 5.
 
     .PARAMETER PwshPath
-        Path to pwsh.exe used as the action executable for all three tasks. Defaults to the
-        stable per-user WindowsApps execution alias when present (survives PowerShell package
-        updates), else the pwsh.exe found on PATH.
+        Path to pwsh.exe used as the action executable for the pwsh-based tasks. Defaults to an
+        MSI install of PowerShell 7 (C:\Program Files\PowerShell\7) when present - required for
+        the S4U keeper and ccstatusline tasks, which run in session 0 where a Store-packaged pwsh
+        cannot launch - then the per-user WindowsApps alias, then the pwsh.exe found on PATH. A
+        warning is emitted if a Store-packaged path would be used for the keeper.
+
+    .PARAMETER WtPath
+        Path to wt.exe (Windows Terminal) used as the launcher task's action. Defaults to the
+        stable per-user WindowsApps execution alias when present, else wt.exe on PATH.
 
     .PARAMETER LegacyScriptsToArchive
         Paths to legacy scripts that should be renamed out of the way because this module
@@ -89,7 +106,7 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
 
-        Registers (or updates) all three scheduled tasks using default names, backup time, and
+        Registers (or updates) all four scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals.
 
     .EXAMPLE
@@ -100,7 +117,7 @@ function Set-WslAutomationScheduledTasks {
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         'PSUseSingularNouns',
         '',
-        Justification = 'This function manages three related scheduled tasks (backup, session keeper, and ccstatusline config sync) by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
+        Justification = 'This function manages four related scheduled tasks (backup, session keeper, session launcher, and ccstatusline config sync) by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
@@ -120,6 +137,8 @@ function Set-WslAutomationScheduledTasks {
 
         [string]$KeeperTaskName = 'Claude Code Session Keeper',
 
+        [string]$LauncherTaskName = 'Claude Code Session Launcher',
+
         [string]$BackupTime = '02:00',
 
         [int]$KeeperIntervalMinutes = 5,
@@ -129,6 +148,8 @@ function Set-WslAutomationScheduledTasks {
         [int]$CcstatuslineIntervalMinutes = 5,
 
         [string]$PwshPath = (Get-WslAutomationDefaultPwshPath),
+
+        [string]$WtPath = (Get-WslAutomationDefaultWtPath),
 
         [string[]]$LegacyScriptsToArchive = @()
     )
@@ -185,13 +206,30 @@ function Set-WslAutomationScheduledTasks {
 
     # --- Keeper task: action + indefinitely-repeating trigger --------------
     $keeperScriptPath = Join-Path $ScriptsDir 'ensure-claude-session.ps1'
-    # -WindowStyle Hidden keeps the routine every-few-minutes "is a session already
-    # running?" check from flashing a pwsh console window on the desktop. It only hides
-    # pwsh's own window (and any wsl.exe it runs shares that hidden console); when the
-    # keeper does need to start a session it launches wt.exe, a separate GUI process that
-    # still opens its window normally.
-    $keeperArguments = "-NoProfile -WindowStyle Hidden -File `"$keeperScriptPath`" -DistroName $DistroName"
+    # The keeper runs as a background (session 0, S4U) task - see $keeperPrincipal below - so its
+    # routine every-few-minutes "is a session already running?" check can never flash a window on
+    # the desktop: session 0 has no interactive desktop to draw one on. It therefore does not (and
+    # cannot) open the terminal itself; when a session needs starting it triggers the interactive
+    # launcher task below.
+    $keeperArguments = "-NoProfile -File `"$keeperScriptPath`" -DistroName $DistroName"
     $keeperAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $keeperArguments
+
+    # A Store-packaged pwsh (per-user WindowsApps alias or version-pinned WindowsApps package
+    # path) cannot be activated in the session 0 the S4U keeper runs in - the task fails with
+    # access denied every interval, silently. Warn loudly so the operator installs PowerShell 7
+    # via MSI (see the README and scripts/grant-keeper-batch-logon.ps1) instead.
+    $windowsAppsRoots = @(
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'),
+        (Join-Path $env:ProgramFiles 'WindowsApps')
+    )
+    foreach ($windowsAppsRoot in $windowsAppsRoots) {
+        if ($PwshPath -and $PwshPath.StartsWith($windowsAppsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Warning ("Keeper task pwsh '$PwshPath' is a Store-packaged path; a Store pwsh cannot launch in the " +
+                'non-interactive session 0 the S4U keeper uses, so the keeper would fail every interval. Install ' +
+                'PowerShell 7 via MSI (C:\Program Files\PowerShell\7) and re-run, or pass -PwshPath to a non-Store pwsh.')
+            break
+        }
+    }
 
     # -RepetitionInterval at creation time is the construction pwsh 7.6's ScheduledTasks module
     # actually supports for an indefinitely-repeating trigger: a -Once trigger built without it
@@ -207,7 +245,11 @@ function Set-WslAutomationScheduledTasks {
     # it already exists, so its battery/idle behavior always matches this function's defaults.
     $keeperSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew
-    $keeperPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+    # S4U ("run whether the user is logged on or not", no stored password) runs the check in the
+    # non-interactive session 0 - the only way to guarantee its console never appears on the
+    # desktop, even briefly. -WindowStyle Hidden could not: Task Scheduler still creates the pwsh
+    # console window before pwsh can hide it, producing the brief pop-to-front this replaced.
+    $keeperPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
 
     $existingKeeperTask = Get-ScheduledTask -TaskName $KeeperTaskName -ErrorAction SilentlyContinue
     if ($existingKeeperTask) {
@@ -223,9 +265,41 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
-    # --- ccstatusline task: action + indefinitely-repeating trigger --------
+    # --- Launcher task: interactive, on-demand terminal opener --------------
+    # The background keeper triggers this task (by name) when no session is running. It is the one
+    # task that runs in the user's interactive session, so its Windows Terminal window is actually
+    # visible. Its action is wt.exe DIRECTLY (not pwsh) so even opening a session never flashes a
+    # pwsh console. It has no trigger of its own - it only ever runs on demand (Trigger = $null;
+    # Register-/Set-WslScheduledTask omit -Trigger entirely for it).
+    $launcherArguments = (Get-ClaudeSessionWtArgumentList -DistroName $DistroName) -join ' '
+    $launcherAction = New-ScheduledTaskAction -Execute $WtPath -Argument $launcherArguments
+    $launcherSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew
+    $launcherPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+
+    $existingLauncherTask = Get-ScheduledTask -TaskName $LauncherTaskName -ErrorAction SilentlyContinue
+    if ($existingLauncherTask) {
+        if ($PSCmdlet.ShouldProcess($LauncherTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $LauncherTaskName -Action $launcherAction -Trigger $null `
+                -Settings $launcherSettings -Principal $launcherPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($LauncherTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $LauncherTaskName -Action $launcherAction -Trigger $null `
+                -Settings $launcherSettings -Principal $launcherPrincipal
+        }
+    }
+
+    # --- ccstatusline task: background config sync -------------------------
+    # Purely background work (reads the ccstatusline config out of WSL) that never needs a window,
+    # so - like the keeper - it runs as an S4U/session-0 task. Otherwise it would flash its own
+    # pwsh console every interval, the very flash the keeper split removed. -WindowStyle Hidden is
+    # dropped for the same reason it was dropped from the keeper (it only shrinks, not removes, the
+    # flash). Same session-0 requirements apply as the keeper: an MSI pwsh (see the warning above)
+    # and the batch-logon right.
     $ccstatuslineScriptPath = Join-Path $ScriptsDir 'sync-ccstatusline-config.ps1'
-    $ccstatuslineArguments = "-NoProfile -WindowStyle Hidden -File `"$ccstatuslineScriptPath`" -DistroName $DistroName"
+    $ccstatuslineArguments = "-NoProfile -File `"$ccstatuslineScriptPath`" -DistroName $DistroName"
     $ccstatuslineAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $ccstatuslineArguments
 
     # Same indefinite-repetition construction as the keeper trigger above (-Once + creation-time
@@ -238,7 +312,7 @@ function Set-WslAutomationScheduledTasks {
     # defaults.
     $ccstatuslineSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
-    $ccstatuslinePrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+    $ccstatuslinePrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
 
     $existingCcstatuslineTask = Get-ScheduledTask -TaskName $CcstatuslineTaskName -ErrorAction SilentlyContinue
     if ($existingCcstatuslineTask) {
@@ -322,6 +396,7 @@ function Set-WslAutomationScheduledTasks {
 
     # --- Summary -------------------------------------------------------------
     Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime)" -InformationAction Continue
-    Write-Information -MessageData "Keeper task '$KeeperTaskName': $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
-    Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName': $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
+    Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
 }

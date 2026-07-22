@@ -4,18 +4,25 @@ function Get-WslAutomationDefaultPwshPath {
         Resolves a default pwsh.exe path for scheduled task registration that survives
         PowerShell package updates.
     .DESCRIPTION
-        Store-installed (MSIX) PowerShell publishes a stable per-user execution alias at
-        "$env:LOCALAPPDATA\Microsoft\WindowsApps\pwsh.exe" that is preserved across package
-        updates. (Get-Command pwsh.exe).Source instead resolves to a version-pinned directory
-        such as "C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.3.0_x64__8wekyb3d8bbwe",
-        which is removed the next time the package updates - breaking any scheduled task action
-        that points directly at it. This helper prefers the stable alias when it exists, and
-        warns when it has to fall back to a resolved path that still looks version-pinned.
+        Prefers an MSI install of PowerShell 7 at "C:\Program Files\PowerShell\7\pwsh.exe". That
+        path is both stable across updates AND launchable from the non-interactive session 0 used
+        by the S4U session-keeper task. A Store (MSIX) PowerShell - whether via its per-user
+        execution alias "$env:LOCALAPPDATA\Microsoft\WindowsApps\pwsh.exe" or its version-pinned
+        package path - CANNOT be activated in session 0 (the task fails with access denied), so it
+        is only a fallback here, suitable for the interactive backup task but not the background
+        keeper. (Get-Command pwsh.exe).Source is the last resort and, on a Store-only machine,
+        resolves to a version-pinned "C:\Program Files\WindowsApps\Microsoft.PowerShell_<ver>_..."
+        path that is removed on the next package update; that case is warned about.
     .EXAMPLE
         Get-WslAutomationDefaultPwshPath
     #>
     [CmdletBinding()]
     param()
+
+    $msiInstallPath = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+    if (Test-Path -LiteralPath $msiInstallPath) {
+        return $msiInstallPath
+    }
 
     $stableAliasPath = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\pwsh.exe'
     if (Test-Path -LiteralPath $stableAliasPath) {

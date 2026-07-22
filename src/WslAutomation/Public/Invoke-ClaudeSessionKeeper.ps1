@@ -14,9 +14,15 @@ function Invoke-ClaudeSessionKeeper {
 
         Once the lock is clear - or ignored as stale, or the wait is exhausted - it checks
         whether a Claude Code session is already running (Test-ClaudeSession) and only launches
-        a new one (Start-ClaudeSession) when none is found.
+        a new one when none is found. Because the keeper itself runs as a background (session 0)
+        scheduled task - so its frequent check never flashes a window on the desktop - it cannot
+        show a terminal directly; it launches by triggering the interactive on-demand launcher
+        task (Start-ClaudeLauncherTask) instead.
     .PARAMETER DistroName
         Name of the WSL distro to check/launch into. Defaults to 'Ubuntu'.
+    .PARAMETER LauncherTaskName
+        Name of the interactive scheduled task that actually opens the session. Defaults to
+        'Claude Code Session Launcher'.
     .PARAMETER MaxWaitMinutes
         Maximum total time to wait for a fresh backup lock to clear before proceeding anyway.
         Defaults to 60.
@@ -45,6 +51,8 @@ function Invoke-ClaudeSessionKeeper {
     [CmdletBinding()]
     param(
         [string]$DistroName = 'Ubuntu',
+
+        [string]$LauncherTaskName = 'Claude Code Session Launcher',
 
         [int]$MaxWaitMinutes = 60,
 
@@ -103,7 +111,7 @@ function Invoke-ClaudeSessionKeeper {
         return [pscustomobject]@{ Status = 'DryRun'; WaitedSeconds = [int]$waited }
     }
 
-    Start-ClaudeSession -DistroName $DistroName
-    Write-WslAutomationLog -Message 'Launched new Claude session' -LogFile $LogFile
+    Start-ClaudeLauncherTask -LauncherTaskName $LauncherTaskName
+    Write-WslAutomationLog -Message "Launched new Claude session (via '$LauncherTaskName')" -LogFile $LogFile
     return [pscustomobject]@{ Status = 'Launched'; WaitedSeconds = [int]$waited }
 }

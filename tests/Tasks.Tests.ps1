@@ -145,6 +145,50 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
+        It 'runs both background tasks (keeper and ccstatusline) as S4U in session 0, where no desktop window can flash' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            # The keeper and the ccstatusline sync are the two windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
+                $LogonType -eq 'S4U'
+            }
+        }
+
+        It 'no longer relies on -WindowStyle Hidden in the background task actions (they need no window trick)' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $keeperAction = $script:capturedActions | Where-Object { $_.Argument -match 'ensure-claude-session\.ps1' }
+            $keeperAction.Argument | Should -Not -Match 'WindowStyle'
+            $ccstatuslineAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-ccstatusline-config\.ps1' }
+            $ccstatuslineAction.Argument | Should -Not -Match 'WindowStyle'
+        }
+
+        It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running claude, and no trigger of its own' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -DistroName 'Ubuntu' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Code Session Launcher' -and
+                $Action.Execute -eq 'C:\fake\wt.exe' -and
+                $Action.Argument -match 'new-tab' -and
+                $Action.Argument -match '-p Ubuntu' -and
+                $Action.Argument -match 'bash -l -c claude' -and
+                $null -eq $Trigger
+            }
+        }
+
+        It 'runs the launcher and backup tasks interactively (the keeper and ccstatusline tasks are the S4U ones)' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            # Backup + launcher are Interactive; keeper + ccstatusline are S4U/background.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
+                $LogonType -eq 'Interactive'
+            }
+        }
+
         It 'configures the keeper task repetition interval from KeeperIntervalMinutes' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -KeeperIntervalMinutes 5
