@@ -109,11 +109,15 @@ function Set-WslAutomationScheduledTasks {
 
         [string]$KeeperTaskName = 'Claude Code Session Keeper',
 
+        [string]$LauncherTaskName = 'Claude Code Session Launcher',
+
         [string]$BackupTime = '02:00',
 
         [int]$KeeperIntervalMinutes = 5,
 
         [string]$PwshPath = (Get-WslAutomationDefaultPwshPath),
+
+        [string]$WtPath = (Get-WslAutomationDefaultWtPath),
 
         [string[]]$LegacyScriptsToArchive = @()
     )
@@ -170,13 +174,30 @@ function Set-WslAutomationScheduledTasks {
 
     # --- Keeper task: action + indefinitely-repeating trigger --------------
     $keeperScriptPath = Join-Path $ScriptsDir 'ensure-claude-session.ps1'
-    # -WindowStyle Hidden keeps the routine every-few-minutes "is a session already
-    # running?" check from flashing a pwsh console window on the desktop. It only hides
-    # pwsh's own window (and any wsl.exe it runs shares that hidden console); when the
-    # keeper does need to start a session it launches wt.exe, a separate GUI process that
-    # still opens its window normally.
-    $keeperArguments = "-NoProfile -WindowStyle Hidden -File `"$keeperScriptPath`" -DistroName $DistroName"
+    # The keeper runs as a background (session 0, S4U) task - see $keeperPrincipal below - so its
+    # routine every-few-minutes "is a session already running?" check can never flash a window on
+    # the desktop: session 0 has no interactive desktop to draw one on. It therefore does not (and
+    # cannot) open the terminal itself; when a session needs starting it triggers the interactive
+    # launcher task below.
+    $keeperArguments = "-NoProfile -File `"$keeperScriptPath`" -DistroName $DistroName"
     $keeperAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $keeperArguments
+
+    # A Store-packaged pwsh (per-user WindowsApps alias or version-pinned WindowsApps package
+    # path) cannot be activated in the session 0 the S4U keeper runs in - the task fails with
+    # access denied every interval, silently. Warn loudly so the operator installs PowerShell 7
+    # via MSI (see the README and scripts/grant-keeper-batch-logon.ps1) instead.
+    $windowsAppsRoots = @(
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'),
+        (Join-Path $env:ProgramFiles 'WindowsApps')
+    )
+    foreach ($windowsAppsRoot in $windowsAppsRoots) {
+        if ($PwshPath -and $PwshPath.StartsWith($windowsAppsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Warning ("Keeper task pwsh '$PwshPath' is a Store-packaged path; a Store pwsh cannot launch in the " +
+                'non-interactive session 0 the S4U keeper uses, so the keeper would fail every interval. Install ' +
+                'PowerShell 7 via MSI (C:\Program Files\PowerShell\7) and re-run, or pass -PwshPath to a non-Store pwsh.')
+            break
+        }
+    }
 
     # -RepetitionInterval at creation time is the construction pwsh 7.6's ScheduledTasks module
     # actually supports for an indefinitely-repeating trigger: a -Once trigger built without it
@@ -192,7 +213,11 @@ function Set-WslAutomationScheduledTasks {
     # it already exists, so its battery/idle behavior always matches this function's defaults.
     $keeperSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew
-    $keeperPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+    # S4U ("run whether the user is logged on or not", no stored password) runs the check in the
+    # non-interactive session 0 - the only way to guarantee its console never appears on the
+    # desktop, even briefly. -WindowStyle Hidden could not: Task Scheduler still creates the pwsh
+    # console window before pwsh can hide it, producing the brief pop-to-front this replaced.
+    $keeperPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
 
     $existingKeeperTask = Get-ScheduledTask -TaskName $KeeperTaskName -ErrorAction SilentlyContinue
     if ($existingKeeperTask) {
@@ -205,6 +230,32 @@ function Set-WslAutomationScheduledTasks {
         if ($PSCmdlet.ShouldProcess($KeeperTaskName, 'Register scheduled task')) {
             Register-WslScheduledTask -TaskName $KeeperTaskName -Action $keeperAction -Trigger $keeperTrigger `
                 -Settings $keeperSettings -Principal $keeperPrincipal
+        }
+    }
+
+    # --- Launcher task: interactive, on-demand terminal opener --------------
+    # The background keeper triggers this task (by name) when no session is running. It is the one
+    # task that runs in the user's interactive session, so its Windows Terminal window is actually
+    # visible. Its action is wt.exe DIRECTLY (not pwsh) so even opening a session never flashes a
+    # pwsh console. It has no trigger of its own - it only ever runs on demand (Trigger = $null;
+    # Register-/Set-WslScheduledTask omit -Trigger entirely for it).
+    $launcherArguments = (Get-ClaudeSessionWtArgumentList -DistroName $DistroName) -join ' '
+    $launcherAction = New-ScheduledTaskAction -Execute $WtPath -Argument $launcherArguments
+    $launcherSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew
+    $launcherPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+
+    $existingLauncherTask = Get-ScheduledTask -TaskName $LauncherTaskName -ErrorAction SilentlyContinue
+    if ($existingLauncherTask) {
+        if ($PSCmdlet.ShouldProcess($LauncherTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $LauncherTaskName -Action $launcherAction -Trigger $null `
+                -Settings $launcherSettings -Principal $launcherPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($LauncherTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $LauncherTaskName -Action $launcherAction -Trigger $null `
+                -Settings $launcherSettings -Principal $launcherPrincipal
         }
     }
 
@@ -276,5 +327,6 @@ function Set-WslAutomationScheduledTasks {
 
     # --- Summary -------------------------------------------------------------
     Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime)" -InformationAction Continue
-    Write-Information -MessageData "Keeper task '$KeeperTaskName': $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
 }

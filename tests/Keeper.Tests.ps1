@@ -8,7 +8,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
 
     BeforeEach {
         # Absolute safety net: no test in this file may ever reach a real wsl.exe.
-        # Test-WslBackupLock / Test-ClaudeSession / Start-ClaudeSession are mocked directly below,
+        # Test-WslBackupLock / Test-ClaudeSession / Start-ClaudeLauncherTask are mocked directly below,
         # so Invoke-WslExe should never actually be reached, but this guards against any indirect path.
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{ ExitCode = 0; Output = @() }
@@ -18,7 +18,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $script:logFile = Join-Path $TestDrive 'keeper.log'
 
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
-        Mock -ModuleName WslAutomation Start-ClaudeSession { }
+        Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Start-Sleep { }
     }
 
@@ -31,7 +31,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile
 
         $result.Status | Should -Be 'SessionPresent'
-        Should -Invoke -ModuleName WslAutomation Start-ClaudeSession -Times 0 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
     }
 
@@ -44,7 +44,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile
 
         $result.Status | Should -Be 'Launched'
-        Should -Invoke -ModuleName WslAutomation Start-ClaudeSession -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
     }
 
@@ -57,7 +57,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -DryRun
 
         $result.Status | Should -Be 'DryRun'
-        Should -Invoke -ModuleName WslAutomation Start-ClaudeSession -Times 0 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
     }
 
     It 'waits through a fresh lock that clears after two polls, then launches' {
@@ -79,7 +79,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 2 -Exactly
         Should -Invoke -ModuleName WslAutomation Remove-WslBackupLock -Times 0 -Exactly
         $result.Status | Should -Be 'Launched'
-        Should -Invoke -ModuleName WslAutomation Start-ClaudeSession -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
 
         $logContent = Get-Content -Path $script:logFile -Raw
         ([regex]::Matches($logContent, 'Backup in progress; waiting')).Count | Should -Be 1
@@ -96,7 +96,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         Should -Invoke -ModuleName WslAutomation Remove-WslBackupLock -Times 1 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
         $result.Status | Should -Be 'Launched'
-        Should -Invoke -ModuleName WslAutomation Start-ClaudeSession -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
 
         $logContent = Get-Content -Path $script:logFile -Raw
         $logContent | Should -Match 'Ignoring stale backup lock'
@@ -114,7 +114,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 2 -Exactly
         Should -Invoke -ModuleName WslAutomation Remove-WslBackupLock -Times 0 -Exactly
         $result.Status | Should -Be 'Launched'
-        Should -Invoke -ModuleName WslAutomation Start-ClaudeSession -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
 
         $logContent = Get-Content -Path $script:logFile -Raw
         $logContent | Should -Match 'Backup still running after 1 min wait; proceeding anyway'

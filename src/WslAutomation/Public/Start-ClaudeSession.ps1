@@ -14,7 +14,9 @@ function Start-ClaudeSession {
         Host executable to start. Defaults to 'wt.exe' (Windows Terminal).
     .PARAMETER ArgumentList
         Arguments passed to -Executable. Defaults to opening a new Windows Terminal tab titled
-        'Claude Code' that runs 'wsl.exe -d <DistroName> --cd ~ -- bash -l -c claude'.
+        'Claude Code', using the <DistroName> profile, that runs
+        'wsl.exe -d <DistroName> --cd ~ -- bash -l -c claude'. See
+        Get-ClaudeSessionWtArgumentList for why the title is pre-quoted and the profile selected.
     .EXAMPLE
         Start-ClaudeSession -DistroName 'Ubuntu'
 
@@ -26,15 +28,7 @@ function Start-ClaudeSession {
 
         [string]$Executable = 'wt.exe',
 
-        # NOTE: Start-Process joins -ArgumentList with spaces WITHOUT quoting elements
-        # that themselves contain spaces. The tab title must therefore carry its own
-        # embedded quotes, otherwise wt.exe parses '--title Claude Code ...' as
-        # title='Claude' + a new-tab command that starts with the stray word 'Code'
-        # (giving 'error 0x80070002: The system cannot find the file specified.').
-        [string[]]$ArgumentList = @(
-            '-w', '0', 'new-tab', '--title', '"Claude Code"',
-            'wsl.exe', '-d', $DistroName, '--cd', '~', '--', 'bash', '-l', '-c', 'claude'
-        )
+        [string[]]$ArgumentList = (Get-ClaudeSessionWtArgumentList -DistroName $DistroName)
     )
 
     if ($PSCmdlet.ShouldProcess($Executable, "Launch Claude Code session in $DistroName")) {

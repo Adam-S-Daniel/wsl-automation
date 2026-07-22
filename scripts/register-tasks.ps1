@@ -47,9 +47,10 @@
     How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
 
 .PARAMETER PwshPath
-    Path to pwsh.exe used as the action executable for both tasks. Defaults to the stable
-    per-user WindowsApps execution alias when present (survives PowerShell package updates),
-    else the pwsh.exe found on PATH.
+    Path to pwsh.exe used as the action executable for both tasks. Defaults to an MSI install of
+    PowerShell 7 (C:\Program Files\PowerShell\7\pwsh.exe) when present - required for the S4U
+    background keeper task, which runs in session 0 where a Store-packaged pwsh cannot launch -
+    then the per-user WindowsApps alias, then the pwsh.exe found on PATH.
 
 .PARAMETER LegacyScriptsToArchive
     Paths to legacy scripts that should be renamed out of the way because this module
@@ -95,13 +96,18 @@ param(
 
     # This script runs before Import-Module (the module isn't loaded until the body below), so
     # it cannot call the module's private Get-WslAutomationDefaultPwshPath helper and instead
-    # inlines the same stable-alias-preferring logic. (Get-Command pwsh.exe).Source alone
-    # resolves to a version-pinned "C:\Program Files\WindowsApps\Microsoft.PowerShell_<ver>_..."
-    # path on Store installs, which is removed on the next PowerShell package update and breaks
-    # both scheduled tasks until someone re-runs this script.
+    # inlines the same MSI-preferring logic. An MSI PowerShell 7 (C:\Program Files\PowerShell\7)
+    # is both stable across updates and launchable from the non-interactive session 0 the S4U
+    # keeper task runs in; a Store pwsh (per-user WindowsApps alias, or a version-pinned
+    # "C:\Program Files\WindowsApps\Microsoft.PowerShell_<ver>_..." path that is removed on the
+    # next package update) cannot be activated in session 0, so it is only a fallback.
     [string]$PwshPath = $(
+        $msiInstallPath = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
         $stableAliasPath = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\pwsh.exe'
-        if (Test-Path -LiteralPath $stableAliasPath) {
+        if (Test-Path -LiteralPath $msiInstallPath) {
+            $msiInstallPath
+        }
+        elseif (Test-Path -LiteralPath $stableAliasPath) {
             $stableAliasPath
         }
         else {
@@ -110,8 +116,7 @@ param(
             if ($resolvedPath -and $resolvedPath.StartsWith($versionPinnedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
                 Write-Warning -Message ("Resolved pwsh.exe path '$resolvedPath' is a version-pinned Microsoft Store " +
                     'package path and will break on the next PowerShell update. Pass -PwshPath explicitly with a ' +
-                    'stable path (for example the per-user WindowsApps alias, or an MSI install under ' +
-                    'C:\Program Files\PowerShell\7).')
+                    'stable MSI install path under C:\Program Files\PowerShell\7.')
             }
             $resolvedPath
         }
