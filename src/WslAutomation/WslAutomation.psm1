@@ -23,5 +23,6 @@ Export-ModuleMember -Function @(
     'Test-ClaudeSession',
     'Start-ClaudeSession',
     'Invoke-ClaudeSessionKeeper',
-    'Set-WslAutomationScheduledTasks'
+    'Set-WslAutomationScheduledTasks',
+    'Update-CcstatuslineConfig'
 )

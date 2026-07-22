@@ -2,8 +2,8 @@
 #requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup
-    and Claude Code session keeper scheduled tasks.
+    Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
+    Claude Code session keeper, and ccstatusline config sync scheduled tasks.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -13,8 +13,8 @@
     during a dry run.
 
 .PARAMETER ScriptsDir
-    Directory containing wsl-ubuntu-backup.ps1 and ensure-claude-session.ps1. Defaults to the
-    directory this script lives in.
+    Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
+    sync-ccstatusline-config.ps1. Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
     Directory the backup task writes exported WSL archives to.
@@ -46,11 +46,18 @@
 .PARAMETER KeeperIntervalMinutes
     How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
 
+.PARAMETER CcstatuslineTaskName
+    Name of the scheduled task that syncs the ccstatusline config from WSL. Defaults to
+    'ccstatusline Config Sync'.
+
+.PARAMETER CcstatuslineIntervalMinutes
+    How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults to 5.
+
 .PARAMETER PwshPath
-    Path to pwsh.exe used as the action executable for both tasks. Defaults to an MSI install of
-    PowerShell 7 (C:\Program Files\PowerShell\7\pwsh.exe) when present - required for the S4U
-    background keeper task, which runs in session 0 where a Store-packaged pwsh cannot launch -
-    then the per-user WindowsApps alias, then the pwsh.exe found on PATH.
+    Path to pwsh.exe used as the action executable for all the tasks. Defaults to an MSI install
+    of PowerShell 7 (C:\Program Files\PowerShell\7\pwsh.exe) when present - required for the S4U
+    background keeper and ccstatusline tasks, which run in session 0 where a Store-packaged pwsh
+    cannot launch - then the per-user WindowsApps alias, then the pwsh.exe found on PATH.
 
 .PARAMETER LegacyScriptsToArchive
     Paths to legacy scripts that should be renamed out of the way because this module
@@ -64,8 +71,8 @@
 .EXAMPLE
     ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL'
 
-    Registers (or updates) both scheduled tasks from an elevated prompt, using default names,
-    backup time, and keeper interval.
+    Registers (or updates) all the scheduled tasks from an elevated prompt, using default names,
+    backup time, and intervals.
 
 .EXAMPLE
     ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL' -WhatIf
@@ -93,6 +100,10 @@ param(
     [string]$BackupTime = '02:00',
 
     [int]$KeeperIntervalMinutes = 5,
+
+    [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
+
+    [int]$CcstatuslineIntervalMinutes = 5,
 
     # This script runs before Import-Module (the module isn't loaded until the body below), so
     # it cannot call the module's private Get-WslAutomationDefaultPwshPath helper and instead
@@ -134,7 +145,8 @@ try {
     Set-WslAutomationScheduledTasks -ScriptsDir $ScriptsDir -BackupDir $BackupDir -DistroName $DistroName `
         -Format $Format -WakeBackupToRun:$WakeBackupToRun -BackupTaskName $BackupTaskName `
         -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
-        -KeeperIntervalMinutes $KeeperIntervalMinutes -PwshPath $PwshPath `
+        -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
+        -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -WhatIf:$WhatIfPreference
 
     exit 0

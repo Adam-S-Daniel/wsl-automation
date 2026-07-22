@@ -145,21 +145,24 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'registers the keeper task to run in the background as S4U (session 0 has no desktop to flash a window on)' {
+        It 'runs both background tasks (keeper and ccstatusline) as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 1 -Exactly -ParameterFilter {
+            # The keeper and the ccstatusline sync are the two windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
 
-        It 'no longer relies on -WindowStyle Hidden in the keeper action (the background task needs no window trick)' {
+        It 'no longer relies on -WindowStyle Hidden in the background task actions (they need no window trick)' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             $keeperAction = $script:capturedActions | Where-Object { $_.Argument -match 'ensure-claude-session\.ps1' }
             $keeperAction.Argument | Should -Not -Match 'WindowStyle'
+            $ccstatuslineAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-ccstatusline-config\.ps1' }
+            $ccstatuslineAction.Argument | Should -Not -Match 'WindowStyle'
         }
 
         It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running claude, and no trigger of its own' {
@@ -176,11 +179,11 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs the launcher (and backup) tasks interactively so the launcher terminal is visible, while only the keeper is S4U' {
+        It 'runs the launcher and backup tasks interactively (the keeper and ccstatusline tasks are the S4U ones)' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # Backup + launcher are Interactive; the keeper is the only S4U/background task.
+            # Backup + launcher are Interactive; keeper + ccstatusline are S4U/background.
             Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
                 $LogonType -eq 'Interactive'
             }
@@ -190,11 +193,31 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -KeeperIntervalMinutes 5
 
-            $keeperTrigger = $script:capturedTriggers | Where-Object { $_.IsOnce }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Code Session Keeper' -and $Trigger.Repetition.Interval -eq 'PT5M'
+            }
+        }
 
-            $keeperTrigger | Should -Not -BeNullOrEmpty
-            $keeperTrigger.Repetition | Should -Not -BeNullOrEmpty
-            $keeperTrigger.Repetition.Interval | Should -Be 'PT5M'
+        It 'creates the ccstatusline sync task with an action that references sync-ccstatusline-config.ps1 and threads DistroName' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
+
+            $ccstatuslineAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-ccstatusline-config\.ps1' }
+
+            $ccstatuslineAction | Should -Not -BeNullOrEmpty
+            $ccstatuslineAction.Argument | Should -Match '-DistroName Debian'
+        }
+
+        It 'registers the ccstatusline task via Register-WslScheduledTask with the sync action and a once/repeating trigger at the configured interval' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -CcstatuslineIntervalMinutes 5
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'ccstatusline Config Sync' -and
+                $Action.Argument -match 'sync-ccstatusline-config\.ps1' -and
+                $Trigger.IsOnce -eq $true -and
+                $Trigger.Repetition.Interval -eq 'PT5M'
+            }
         }
 
         It 'registers the backup task without -WakeToRun by default (no scheduled wake on Modern Standby)' {
@@ -276,6 +299,42 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'WSL Ubuntu Daily Backup' -and
                 $Trigger.Count -eq 1 -and $Trigger[0].IsDaily -eq $true
+            }
+        }
+    }
+
+    Context 'when the ccstatusline task already exists' {
+
+        BeforeEach {
+            $script:existingCcstatuslineTask = [pscustomobject]@{
+                TaskName  = 'ccstatusline Config Sync'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'ccstatusline Config Sync') {
+                    return $script:existingCcstatuslineTask
+                }
+                return $null
+            }
+        }
+
+        It 'updates it via Set-WslScheduledTask' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'ccstatusline Config Sync'
+            }
+        }
+
+        It 'does not create a second ccstatusline task via Register-WslScheduledTask' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'ccstatusline Config Sync'
             }
         }
     }
