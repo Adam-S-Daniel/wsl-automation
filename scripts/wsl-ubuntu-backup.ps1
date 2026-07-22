@@ -66,6 +66,15 @@ $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot '..' 'src' 'WslAutomation') -Force
 
+# Best-effort: keep the repo current (12h-gated inside) so scheduled tasks run
+# up-to-date code. A self-update failure must never fail the task itself.
+try {
+    Update-WslAutomationRepo -RepoPath (Split-Path -Path $PSScriptRoot -Parent) | Out-Null
+}
+catch {
+    Write-Warning "repo self-update skipped: $_"
+}
+
 try {
     $backupParams = @{
         BackupDir  = $BackupDir
