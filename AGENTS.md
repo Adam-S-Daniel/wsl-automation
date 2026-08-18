@@ -278,3 +278,149 @@ ref for review, not the setting, to catch.
 ## Repo-specific additions
 
 <!-- Add your repo-specific agent guidance below this line -->
+
+### There is no WSL lifecycle event to trigger on
+
+An event-driven trigger ("run the backup when WSL stops") was ruled out
+empirically against the modern MSI WSL package. Don't re-investigate; the daily
+timer is the answer.
+
+- **There is no WSL event log or provider at all.**
+  `Get-WinEvent -ListLog *Lxss*,*WSL*,*Subsystem*` returns nothing.
+- **There is no `LxssManager` service to watch.** Modern WSL's `WSLService`
+  (`C:\Program Files\WSL\wslservice.exe`) stays `Running` while the utility VM
+  comes and goes underneath it, so it never emits the SCM 7036 start/stop pair.
+  Expect a handful of WSL-related SCM events per *quarter*, not one per session.
+- **The only VM-lifecycle signal is the wrong VM.**
+  `Microsoft-Windows-Hyper-V-VmSwitch-Operational` Id 66 (switch delete) and Id
+  124/125 (restart) track the shared utility VM, not the distro — and any other
+  Hyper-V consumer on the box keeps that VM alive independently of WSL. The
+  classic Hyper-V-Worker / VMMS / Compute logs are not present.
+- **If you ever need cold-boot vs. resume**, the discriminator that does work is
+  `Kernel-Boot` Id 27: `0x0` full boot, `0x1` fast startup, `0x2` resume. With
+  Fast Startup enabled (`HiberbootEnabled=1`) most "shutdowns" are a hybrid
+  hibernate and surface as `0x1`, never `0x0`.
+
+Re-open this only if Microsoft ships a WSL event provider.
+
+### Why the backup is a daily timer and not an at-logon trigger
+
+`Set-WslAutomationScheduledTasks` deliberately replaces whatever triggers a
+backup task has accumulated with a single daily one. The at-logon alternative
+was measured and rejected — don't reintroduce it.
+
+- **An at-logon trigger fires only on a real logon.** Not on unlock (that is a
+  separate `SessionStateChangeTrigger` with `StateChange=SessionUnlock`) and not
+  on resume from sleep.
+- **Real logons are far rarer than daily on a laptop that mostly sleeps.**
+  Measured over a multi-week window from
+  `TerminalServices-LocalSessionManager/Operational` Id 21, logons clustered
+  onto under half the days, including one stretch of nearly two weeks with none
+  at all.
+
+So an at-logon trigger alone cannot guarantee a daily backup. The fixed daily
+time plus `-StartWhenAvailable` is the mechanism that actually catches up a
+missed run.
+
+### `wsl --export` fails on a *transitioning* WSL, not a busy one
+
+Don't schedule an export to land right after a boot or a resume — and don't
+blame a failed export on the distro being in use.
+
+- **Concurrent use is not the failure mode.** A full-size export completed
+  cleanly while the distro was actively being worked in.
+- **Both observed `exit -1` failures hit WSL mid-transition:** one where a
+  scheduled wake pulled the machine out of sleep and the export died seconds
+  later, and one where a `-StartWhenAvailable` catch-up fired a few minutes
+  after a cold boot. The corroborating signal in the same window is SCM 7011 —
+  "timeout (30000 ms) ... waiting for a transaction response from the WSLService
+  service".
+- **The WSL-init window runs up to roughly 270 seconds after boot.** Anything
+  triggered off boot or logon therefore needs a delay of ten minutes, not five;
+  five would have cleared the observed worst case by about a minute.
+
+This is the one gap `-StartWhenAvailable` leaves open: it deliberately fires a
+missed run at the next opportunity, which can be moments after a resume. Any
+work that adds a boot/resume-adjacent trigger owes it a delay.
+
+### Never leave an interactive prompt in a scheduled-task code path
+
+`Read-Host`, `pause`, and any `-Confirm` prompt must be unreachable when a
+script runs unattended. A scheduled task has no console to answer them, so the
+run does not fail — it **hangs until `ExecutionTimeLimit` kills it**.
+
+This is why `wsl-ubuntu-backup.ps1` keeps its `Read-Host` behind `-NoPause` and
+why the registered action must always pass it. Every new script wired into a
+task needs the same treatment — and the short-interval tasks (keeper,
+ccstatusline sync, both `-MultipleInstances IgnoreNew`) are where it bites
+hardest: one hung instance suppresses every subsequent interval for the whole
+execution-time limit, not just the next one.
+
+**Recognising it:** the run starts on time, the log stops a few seconds in, and
+Task Scheduler Id 329 terminates it at *exactly* `ExecutionTimeLimit` later (4h
+for the backup, 2h for the keeper, 5 min for ccstatusline).
+`LastTaskResult=267014` (`0x41306`, `SCHED_S_TASK_TERMINATED`) is the signature
+— a stuck prompt, not a slow export. Note it is a *terminated* result, not an
+error one, so failure-only alerting will not see it.
+
+The backup lock is not the tell: `Invoke-WslBackup` releases it in its own
+`finally`, which runs before the wrapper's prompt. A hung task holds no lock.
+
+### Keep the PowerShell sources ASCII-only
+
+Every tracked `.ps1` / `.psm1` / `.psd1` here is pure ASCII and carries no BOM.
+Keep it that way — in comments, comment-based help, and log strings alike. Use
+`-` rather than an em dash and `->` rather than an arrow character.
+
+Windows PowerShell 5.1 reads a BOM-less file as the active ANSI code page
+(Windows-1252 on a US-English install), not UTF-8. A predecessor of
+`wsl-ubuntu-backup.ps1` contained non-ASCII punctuation, and under 5.1 the three
+bytes of `->` as an arrow (`E2 86 92`) decode to three cp1252 characters ending
+in a smart quote — which 5.1 treats as a **string delimiter**, so the whole file
+fails to parse.
+
+What makes this latent rather than loud: pwsh 7 reads BOM-less UTF-8 correctly,
+and CI runs `shell: pwsh` on `windows-latest` — so CI will never catch it. The
+exposure is a human running `scripts\register-tasks.ps1` (or pasting it) from a
+5.1 prompt, which is a normal thing to do on Windows.
+
+A UTF-8 BOM also fixes it, but editors and tooling strip BOMs silently, so
+staying ASCII is the invariant that actually holds. Check with:
+
+```
+LC_ALL=C git grep -nP '[\x80-\xff]' -- '*.ps1' '*.psm1' '*.psd1'
+```
+
+It must find nothing. (Scope the pathspec — the Markdown files legitimately use
+em dashes.)
+
+### Task principal is the owning user — never SYSTEM
+
+All four tasks build their principal from `$env:USERDOMAIN\$env:USERNAME`. Do
+not switch one to `NT AUTHORITY\SYSTEM` to dodge an elevation or
+stored-password problem — the S4U tasks in particular make it look tempting.
+
+**Why it is not merely wrong but dangerous:** WSL distros are registered *per
+Windows user account*. A task running as SYSTEM sees no distro at all, so every
+`wsl.exe` call against it is meaningless. It registers cleanly, runs on
+schedule, exits, and backs up nothing — no error to notice.
+
+The accepted cost of a user principal is that these tasks cannot run before
+someone has logged on. That is expected; `-StartWhenAvailable` covers it for the
+backup.
+
+### `wsl --export --vhd` and throwaway distros
+
+Against a distro that was freshly `--import`ed and never booted,
+`wsl --export --vhd` fails with `ERROR_SHARING_VIOLATION`. A scratch distro spun
+up purely to exercise the vhdx path is therefore **not a valid test of it** —
+the failure is the scratch distro's state, not a bug in the export. `-Format
+tar` on the same distro succeeds.
+
+This matters because the vhdx path ships (`Invoke-WslBackup` appends `--vhd`
+when `-Format vhdx`) and no test exercises it for real — every test mocks the
+`Invoke-WslExe` seam. Real, previously-booted distros export to vhdx fine.
+
+Expect the vhdx to run roughly twice the size of the tar for the same distro,
+and the export to take proportionally longer — worth checking against the backup
+task's 4h `ExecutionTimeLimit` before switching a machine to `-Format vhdx`.
