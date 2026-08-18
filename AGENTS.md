@@ -424,3 +424,22 @@ when `-Format vhdx`) and no test exercises it for real — every test mocks the
 Expect the vhdx to run roughly twice the size of the tar for the same distro,
 and the export to take proportionally longer — worth checking against the backup
 task's 4h `ExecutionTimeLimit` before switching a machine to `-Format vhdx`.
+
+### PowerShell invoked from WSL is never elevated
+
+An agent working in WSL drives Windows through `powershell.exe` / `pwsh.exe`,
+and that process inherits a filtered, non-elevated token. There is no way to
+raise a UAC prompt from the WSL side. The failure is asymmetric, which is what
+makes it easy to misread:
+
+- **Reads succeed** — `Get-ScheduledTask`, `Get-Service`, registry reads. The
+  surface looks fully available.
+- **Writes fail with "Access is denied"** — `Register-ScheduledTask` /
+  `Set-ScheduledTask` on a `RunLevel=HighestAvailable` task, service changes,
+  LSA rights grants such as "Log on as a batch job".
+
+Don't chase it with a flag, a retry, or a downgraded principal. Investigate and
+compose the command from WSL, then hand the user the exact line to paste into
+an **elevated Windows** prompt, and say plainly that it needs elevation. Export
+any object you are about to rewrite first (e.g. `Export-ScheduledTask` to XML)
+so there is something to restore.
