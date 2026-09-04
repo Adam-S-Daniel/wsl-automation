@@ -218,19 +218,26 @@ task's 4h `ExecutionTimeLimit` before switching a machine to `-Format vhdx`.
 
 ### PowerShell invoked from WSL is never elevated
 
-An agent working in WSL drives Windows through `powershell.exe` / `pwsh.exe`,
-and that process inherits a filtered, non-elevated token. There is no way to
-raise a UAC prompt from the WSL side. The failure is asymmetric, which is what
-makes it easy to misread:
+The rule itself — `powershell.exe` / `pwsh.exe` launched from WSL holds a
+filtered token, so reads succeed while elevation-requiring writes fail with
+"Access is denied", and no flag, retry or downgraded principal fixes it — and
+the hand-over procedure live in the **`windows-elevation-from-wsl`** skill
+(`adam-local` bundle in `agentskills`; `/adam-local:windows-elevation-from-wsl`),
+pointed at from the fleet guidance's "Workstation layout" section. This
+section keeps only what is specific to this repo:
 
-- **Reads succeed** — `Get-ScheduledTask`, `Get-Service`, registry reads. The
-  surface looks fully available.
-- **Writes fail with "Access is denied"** — `Register-ScheduledTask` /
-  `Set-ScheduledTask` on a `RunLevel=HighestAvailable` task, service changes,
-  LSA rights grants such as "Log on as a batch job".
-
-Don't chase it with a flag, a retry, or a downgraded principal. Investigate and
-compose the command from WSL, then hand the user the exact line to paste into
-an **elevated Windows** prompt, and say plainly that it needs elevation. Export
-any object you are about to rewrite first (e.g. `Export-ScheduledTask` to XML)
-so there is something to restore.
+- **Both writes this repo makes need elevation.** `scripts\register-tasks.ps1`
+  carries `#requires -RunAsAdministrator`, so from WSL it refuses before the
+  first line runs ("The script cannot be run because it contains a '#requires'
+  statement for running as Administrator") rather than failing part-way with
+  "Access is denied" — and that holds for `-WhatIf` too, so even a dry run
+  needs the elevated prompt. `scripts\grant-keeper-batch-logon.ps1` is an LSA
+  rights grant (`SeBatchLogonRight`), the other denied shape.
+- **Reads are the WSL-side tool.** `Get-ScheduledTask`, `Get-ScheduledTaskInfo`
+  and `Export-ScheduledTask` against the four tasks work from WSL; use them to
+  investigate and to export what a re-registration will replace.
+- **The line to hand over is the installer, as the README's step 3 gives it:**
+  from an elevated PowerShell 7.6+ prompt in the Windows checkout
+  (`D:\repos\adam-s-daniel\wsl-automation`),
+  `.\scripts\register-tasks.ps1 -BackupDir '<dir>'` — re-running it updates
+  the existing tasks in place.
