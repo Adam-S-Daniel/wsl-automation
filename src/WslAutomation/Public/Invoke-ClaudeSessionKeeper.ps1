@@ -1,11 +1,12 @@
 function Invoke-ClaudeSessionKeeper {
     <#
     .SYNOPSIS
-        Ensures an interactive Claude Code session is running inside a WSL distro, waiting out
-        any in-progress backup first.
+        Ensures an interactive Claude Code session with Remote Control enabled is running inside
+        a WSL distro, waiting out any in-progress backup first.
     .DESCRIPTION
         Intended to run on a short recurring schedule (for example every 5 minutes) so a Claude
-        Code session is always available without ever colliding with a WSL export backup.
+        Code session that can be driven from claude.ai or the phone is always available, without
+        ever colliding with a WSL export backup.
         Before doing anything else it checks the shared backup lock (see New-WslBackupLock /
         Test-WslBackupLock): if a backup is in progress it polls on an interval, waiting up to a
         maximum total time, then proceeds anyway rather than waiting forever. A lock left behind
@@ -13,16 +14,18 @@ function Invoke-ClaudeSessionKeeper {
         and is cleared immediately, with no waiting.
 
         Once the lock is clear - or ignored as stale, or the wait is exhausted - it checks
-        whether a Claude Code session is already running (Test-ClaudeSession) and only launches
-        a new one when none is found. Because the keeper itself runs as a background (session 0)
-        scheduled task - so its frequent check never flashes a window on the desktop - it cannot
-        show a terminal directly; it launches by triggering the interactive on-demand launcher
-        task (Start-ClaudeLauncherTask) instead.
+        whether a Remote Control session is already running (Test-ClaudeSession) and only
+        launches a new one when none is found. Only Remote Control counts: a plain 'claude' tab
+        opened by hand cannot be reached remotely, so the keeper opens a Remote Control session
+        alongside it rather than treating it as satisfied. Because the keeper itself runs as a
+        background (session 0) scheduled task - so its frequent check never flashes a window on
+        the desktop - it cannot show a terminal directly; it launches by triggering the
+        interactive on-demand launcher task (Start-ClaudeLauncherTask) instead.
     .PARAMETER DistroName
         Name of the WSL distro to check/launch into. Defaults to 'Ubuntu'.
     .PARAMETER LauncherTaskName
-        Name of the interactive scheduled task that actually opens the session. Defaults to
-        'Claude Code Session Launcher'.
+        Name of the interactive scheduled task that actually opens the Remote Control session.
+        Defaults to 'Claude Code Session Launcher'.
     .PARAMETER MaxWaitMinutes
         Maximum total time to wait for a fresh backup lock to clear before proceeding anyway.
         Defaults to 60.
@@ -42,7 +45,8 @@ function Invoke-ClaudeSessionKeeper {
     .EXAMPLE
         Invoke-ClaudeSessionKeeper
 
-        Waits out any backup, then launches a Claude Code session if one isn't already running.
+        Waits out any backup, then launches a Remote Control Claude Code session if one isn't
+        already running.
     .EXAMPLE
         Invoke-ClaudeSessionKeeper -DryRun
 
@@ -102,16 +106,16 @@ function Invoke-ClaudeSessionKeeper {
     }
 
     if (Test-ClaudeSession -DistroName $DistroName) {
-        Write-WslAutomationLog -Message 'Claude session present; nothing to do' -LogFile $LogFile
+        Write-WslAutomationLog -Message 'Claude Remote Control session present; nothing to do' -LogFile $LogFile
         return [pscustomobject]@{ Status = 'SessionPresent'; WaitedSeconds = [int]$waited }
     }
 
     if ($DryRun) {
-        Write-WslAutomationLog -Message 'DryRun: would launch a Claude session' -LogFile $LogFile
+        Write-WslAutomationLog -Message 'DryRun: would launch a Claude Remote Control session' -LogFile $LogFile
         return [pscustomobject]@{ Status = 'DryRun'; WaitedSeconds = [int]$waited }
     }
 
     Start-ClaudeLauncherTask -LauncherTaskName $LauncherTaskName
-    Write-WslAutomationLog -Message "Launched new Claude session (via '$LauncherTaskName')" -LogFile $LogFile
+    Write-WslAutomationLog -Message "Launched new Claude Remote Control session (via '$LauncherTaskName')" -LogFile $LogFile
     return [pscustomobject]@{ Status = 'Launched'; WaitedSeconds = [int]$waited }
 }

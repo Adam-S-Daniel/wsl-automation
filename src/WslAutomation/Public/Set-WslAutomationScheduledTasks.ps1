@@ -10,8 +10,8 @@ function Set-WslAutomationScheduledTasks {
         Creates five Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
-        launcher task the keeper triggers to actually open a Claude Code session in Windows
-        Terminal; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
+        launcher task the keeper triggers to actually open a Remote Control Claude Code session
+        in Windows Terminal; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
         on its own short repeating interval; and a Codex Cloud environment sync task that runs
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running.
 
@@ -41,8 +41,8 @@ function Set-WslAutomationScheduledTasks {
         Directory the backup task writes exported WSL archives to.
 
     .PARAMETER DistroName
-        Name of the WSL distro to back up and to keep a Claude Code session alive in. Defaults
-        to 'Ubuntu'.
+        Name of the WSL distro to back up and to keep a Remote Control Claude Code session alive
+        in. Defaults to 'Ubuntu'.
 
     .PARAMETER Format
         Backup format passed through to wsl-ubuntu-backup.ps1: 'tar' or 'vhdx'. Defaults to
@@ -67,8 +67,8 @@ function Set-WslAutomationScheduledTasks {
         Session Keeper'.
 
     .PARAMETER LauncherTaskName
-        Name of the interactive, on-demand task the keeper triggers to open a Claude Code
-        session. Defaults to 'Claude Code Session Launcher'.
+        Name of the interactive, on-demand task the keeper triggers to open a Remote Control
+        Claude Code session. Defaults to 'Claude Code Session Launcher'.
 
     .PARAMETER BackupTime
         Time of day (HH:mm) the backup task's daily trigger fires. Defaults to '02:00'.
@@ -273,11 +273,13 @@ function Set-WslAutomationScheduledTasks {
     }
 
     # --- Launcher task: interactive, on-demand terminal opener --------------
-    # The background keeper triggers this task (by name) when no session is running. It is the one
-    # task that runs in the user's interactive session, so its Windows Terminal window is actually
-    # visible. Its action is wt.exe DIRECTLY (not pwsh) so even opening a session never flashes a
-    # pwsh console. It has no trigger of its own - it only ever runs on demand (Trigger = $null;
-    # Register-/Set-WslScheduledTask omit -Trigger entirely for it).
+    # The background keeper triggers this task (by name) when no Remote Control session is
+    # running. It is the one task that runs in the user's interactive session, so its Windows
+    # Terminal window is actually visible. Its action is wt.exe DIRECTLY (not pwsh) so even opening
+    # a session never flashes a pwsh console. It has no trigger of its own - it only ever runs on
+    # demand (Trigger = $null; Register-/Set-WslScheduledTask omit -Trigger entirely for it). The
+    # session it opens carries --remote-control, which is what makes it reachable from claude.ai
+    # and the phone, and what Test-ClaudeSession looks for - see Get-ClaudeSessionWtArgumentList.
     $launcherArguments = (Get-ClaudeSessionWtArgumentList -DistroName $DistroName) -join ' '
     $launcherAction = New-ScheduledTaskAction -Execute $WtPath -Argument $launcherArguments
     $launcherSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

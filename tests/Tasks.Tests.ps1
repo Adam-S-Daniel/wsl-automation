@@ -165,7 +165,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $ccstatuslineAction.Argument | Should -Not -Match 'WindowStyle'
         }
 
-        It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running claude, and no trigger of its own' {
+        It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running a Remote Control session, and no trigger of its own' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -DistroName 'Ubuntu' -Confirm:$false
 
@@ -174,7 +174,9 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Action.Execute -eq 'C:\fake\wt.exe' -and
                 $Action.Argument -match 'new-tab' -and
                 $Action.Argument -match '-p Ubuntu' -and
-                $Action.Argument -match 'bash -l -c claude' -and
+                # Quoted, so wt.exe hands bash -c one argument. See the Get-ClaudeSessionWtArgumentList
+                # tests for why losing these quotes is the failure that matters here.
+                $Action.Argument -match 'bash -l -c "claude --remote-control"' -and
                 $null -eq $Trigger
             }
         }

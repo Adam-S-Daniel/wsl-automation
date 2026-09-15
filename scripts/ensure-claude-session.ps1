@@ -5,7 +5,8 @@
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
-    Invoke-ClaudeSessionKeeper with the given parameters. Exits 0 whether a
+    Invoke-ClaudeSessionKeeper with the given parameters, keeping a Claude Code
+    session with Remote Control enabled alive in the distro. Exits 0 whether a
     session was already present, one was launched, or -DryRun was used;
     exits 1 on any error. Intended to run frequently (for example every 5
     minutes) from a scheduled task.
@@ -40,8 +41,8 @@
 .EXAMPLE
     ./ensure-claude-session.ps1
 
-    Waits out any backup, then launches a Claude Code session inside
-    'Ubuntu' if one isn't already running.
+    Waits out any backup, then launches a Remote Control Claude Code session
+    inside 'Ubuntu' if one isn't already running.
 #>
 [CmdletBinding()]
 param(
