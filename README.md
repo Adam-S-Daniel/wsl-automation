@@ -178,14 +178,17 @@ vice versa, if you choose to gate the backup on session activity too).
   distro is skipped without invoking a distro command. When it is running, the
   task refreshes the authenticated Codex CLI state, pages through the Code
   Review repository inventory, and maps each repository to a connected GitHub
-  connector by an exact repository-name lookup. Every target environment also
-  lists the target repository first, because Codex selects the first repository,
-  then includes `Adam-S-Daniel/_agent-guidance` (override with
-  `CODEX_CLOUD_GUIDANCE_REPOSITORY`) as the secondary checkout so setup can enter
-  its fixed workspace; the guidance repository itself has its own one-repository environment. Setup
-  and maintenance both run:
+  connector by an exact repository-name lookup. Each environment has only its
+  target repository selected, including the guidance repository's own environment.
+  Setup and maintenance clone the public
+  `Adam-S-Daniel/_agent-guidance` repository only when it is absent, preserving
+  the selected guidance checkout when that repository is the target. They run:
 
   ```bash
+  set -euo pipefail
+  if [[ ! -d /workspace/_agent-guidance/.git ]]; then
+    git clone --depth 1 https://github.com/Adam-S-Daniel/_agent-guidance.git /workspace/_agent-guidance
+  fi
   set -euo pipefail
   cd /workspace/_agent-guidance
   npm ci

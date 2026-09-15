@@ -100,7 +100,7 @@ export FAKE_INVENTORY_PAGE1='{"repo_review_settings":[{"repository":{"id":"guida
 export FAKE_INVENTORY_PAGE2='{"repo_review_settings":[],"next_token":null}'
 export FAKE_SEARCH_RESPONSE='{"repositories":[{"id":"guidance-1","name":"_agent-guidance"},{"id":"repo-1","name":"example-repo"}]}'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID='connector-1'
-expected_script=$'set -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="'
+expected_script=$'set -euo pipefail\nif [[ ! -d /workspace/_agent-guidance/.git ]]; then\n  git clone --depth 1 https://github.com/Adam-S-Daniel/_agent-guidance.git /workspace/_agent-guidance\nfi\nset -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="'
 expected_script+='$'
 expected_script+=$'{CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
 
@@ -116,23 +116,23 @@ run_sync "$test_root/create.out"
 [[ -f $test_root/requests/create.jsonl ]] || fail 'expected create requests'
 jq -s -e --arg expected "$expected_script" '
     length == 2 and
-    any(.[]; .repos == ["repo-1", "guidance-1"] and .setup == $expected and .maintenance_setup == $expected) and
+    any(.[]; .repos == ["repo-1"] and .setup == $expected and .maintenance_setup == $expected) and
     any(.[]; .repos == ["guidance-1"] and .setup == $expected and .maintenance_setup == $expected)
 ' "$test_root/requests/create.jsonl" >/dev/null || fail 'create payloads do not include the guidance repository correctly'
 
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
-idempotent_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1","guidance-1"],setup:[$setup],maintenance_setup:[$setup]},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$setup],maintenance_setup:[$setup]}]')
+idempotent_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1"],setup:[$setup],maintenance_setup:[$setup]},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$setup],maintenance_setup:[$setup]}]')
 export FAKE_ENVIRONMENTS="$idempotent_environment"
 run_sync "$test_root/idempotent.out"
 [[ ! -e $test_root/requests/create.jsonl && ! -e $test_root/requests/update.json ]] || fail 'idempotent sync wrote an environment'
 
-guidance_first_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["guidance-1","repo-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
-export FAKE_ENVIRONMENTS="$guidance_first_environment"
-run_sync "$test_root/guidance-first.out"
-jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and .repos == ["repo-1", "guidance-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'guidance-first environment was not repaired'
+legacy_dual_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["guidance-1","repo-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
+export FAKE_ENVIRONMENTS="$legacy_dual_environment"
+run_sync "$test_root/legacy-dual.out"
+jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and .repos == ["repo-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'dual-repository environment was not migrated to its target singleton'
 rm -f "$test_root/requests/update.json"
 
-invalid_matching_id_environment=$(jq -nc --arg setup "$expected_script" '[{id:"invalid/environment-id",github_connector_id:"connector-1",repos:["repo-1","guidance-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
+invalid_matching_id_environment=$(jq -nc --arg setup "$expected_script" '[{id:"invalid/environment-id",github_connector_id:"connector-1",repos:["repo-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
 export FAKE_ENVIRONMENTS="$invalid_matching_id_environment"
 if run_sync "$test_root/invalid-matching-id.out" --dry-run; then
     fail 'invalid matching environment ID was accepted as unchanged'
@@ -146,7 +146,7 @@ if [[ ! -f $test_root/requests/update.json ]]; then
     cat "$test_root/update.out" >&2
     fail 'expected update request'
 fi
-jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and .repos == ["repo-1", "guidance-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'legacy environment migration payload is incorrect'
+jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "setup"] and .etag == "etag-1" and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'single-repository script update payload is incorrect'
 
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
 export FAKE_ENVIRONMENTS='[]'

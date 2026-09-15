@@ -7,7 +7,7 @@ readonly api_base='https://chatgpt.com/backend-api'
 readonly connector_search_limit=10
 readonly inventory_page_size=100
 readonly max_inventory_pages=100
-readonly desired_script=$'set -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="${CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
+readonly desired_script=$'set -euo pipefail\nif [[ ! -d /workspace/_agent-guidance/.git ]]; then\n  git clone --depth 1 https://github.com/Adam-S-Daniel/_agent-guidance.git /workspace/_agent-guidance\nfi\nset -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="${CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
 
 dry_run=false
 connector_override="${CODEX_CLOUD_GITHUB_CONNECTOR_ID:-}"
@@ -280,23 +280,17 @@ while IFS= read -r repository; do
     repository_id=$(jq -er '.id' <<<"$repository")
     repository_name=$(jq -er '.name' <<<"$repository")
     connector_id=$(jq -er '.connector_id' <<<"$repository")
-    if [[ $repository_id == "$guidance_repository_id" ]]; then
-        expected_repos=$(jq -nc --arg guidance "$guidance_repository_id" '[$guidance]')
-    else
-        # Codex uses the first repository as the selected repository. Keep the target first
-        # and include the guidance checkout second so the fixed setup path is available.
-        expected_repos=$(jq -nc --arg target "$repository_id" --arg guidance "$guidance_repository_id" '[$target, $guidance]')
-    fi
-    expected_repo_set=$(jq -c 'sort' <<<"$expected_repos")
+    expected_repos=$(jq -nc --arg target "$repository_id" '[$target]')
     matches_file="$temporary_dir/matches.json"
     if [[ $repository_id == "$guidance_repository_id" ]]; then
-        jq --arg id "$repository_id" --argjson expected "$expected_repo_set" '
+        jq --arg id "$repository_id" --argjson expected "$expected_repos" '
             [.[] | .repos as $repos | select(($repos | type) == "array") |
                 select($repos | all(.[]; type == "string" and length > 0)) |
                 select(($repos | sort) == $expected)]
         ' "$environment_file" >"$matches_file"
     else
-        invalid_association_count=$(jq --arg id "$repository_id" --argjson expected "$expected_repo_set" '
+        legacy_dual_repo_set=$(jq -nc --arg target "$repository_id" --arg guidance "$guidance_repository_id" '[$target, $guidance] | sort')
+        invalid_association_count=$(jq --arg id "$repository_id" --argjson expected "$legacy_dual_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array" and ($repos | index($id))) |
                 select((($repos | all(.[]; type == "string" and length > 0)) | not) or (($repos | sort) != [$id] and ($repos | sort) != $expected))] | length
         ' "$environment_file")
@@ -304,7 +298,7 @@ while IFS= read -r repository; do
             printf '%s\n' 'an existing environment associates a target repository with unrelated repositories' >&2
             exit 1
         fi
-        jq --arg id "$repository_id" --argjson expected "$expected_repo_set" '
+        jq --arg id "$repository_id" --argjson expected "$legacy_dual_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array") |
                 select($repos | all(.[]; type == "string" and length > 0)) |
                 select(($repos | sort) == [$id] or ($repos | sort) == $expected)]
