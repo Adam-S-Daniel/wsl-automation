@@ -306,10 +306,21 @@ Describe 'WslAutomation helpers' {
         # its $0, which starts a session the keeper will never recognize and so relaunches
         # every interval.
 
-        It 'ends with a single pre-quoted bash -c command that enables Remote Control' {
+        It 'ends with a single pre-quoted bash -c command that starts in ~/repos with Remote Control' {
             $argumentList = InModuleScope WslAutomation { Get-ClaudeSessionWtArgumentList -DistroName 'Ubuntu' }
 
-            ($argumentList -join ' ') | Should -BeLike '* bash -l -c "claude --remote-control"'
+            ($argumentList -join ' ') | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec claude --remote-control"'
+        }
+
+        It 'does the ~/repos cd in bash, leaving wsl.exe --cd on the bare home shorthand' {
+            # wsl.exe --cd takes exactly '~', an absolute Linux path starting with '/', or an
+            # absolute Windows path - nothing else. '--cd ~/repos' is none of those and gets
+            # read as a Windows path, and the real home directory cannot be hardcoded here
+            # because the Linux username is not known at build time. bash is what expands '~'.
+            $joined = InModuleScope WslAutomation { (Get-ClaudeSessionWtArgumentList -DistroName 'Ubuntu') -join ' ' }
+
+            $joined | Should -BeLike '*--cd ~ --*'
+            $joined | Should -Not -BeLike '*--cd ~/repos*'
         }
 
         It 'passes the distro name through to both the terminal profile and wsl.exe' {

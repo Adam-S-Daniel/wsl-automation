@@ -163,13 +163,22 @@ vice versa, if you choose to gate the backup on session activity too).
   it opens is visible on the desktop. Its action is `wt.exe` directly (not
   pwsh), selecting the distro's Windows Terminal profile (`-p <DistroName>`,
   for the correct icon/colours) and running
-  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "claude --remote-control"`.
-  The command is quoted so `--remote-control` reaches `claude` rather than
-  `bash` - unquoted it becomes bash's `$0`, which silently produces a plain
-  local session the keeper never recognizes and so relaunches every interval.
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude --remote-control"`.
+  The command is quoted so it reaches `bash -c` as one argument - unquoted,
+  `--remote-control` becomes bash's `$0` and you get a plain local session the
+  keeper never recognizes, so it relaunches every interval.
   Because it is a separate GUI process, opening a session never flashes a pwsh
   console either. It only produces a usable session when a user is logged on
   interactively at the console; it is not meant to work headlessly.
+- The session opens in **`~/repos`** inside the distro. The `cd` is bash's job,
+  not `wsl.exe`'s: `wsl --cd` takes only the bare `~`, an absolute Linux path
+  starting with `/`, or an absolute Windows path, so `--cd ~/repos` would be
+  read as a Windows path - and the absolute Linux path can't be hardcoded here
+  because the distro username isn't known when the argument list is built.
+  `|| cd ~` means a missing `~/repos` costs you the working directory, not the
+  session: without it the failed `cd` would short-circuit the `&&`, the tab
+  would close before `claude` started, and the keeper would reopen it every
+  interval forever.
 
 ### Codex Cloud environment sync task (default name: `Codex Cloud Environment Sync`)
 
