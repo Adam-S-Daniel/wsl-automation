@@ -78,7 +78,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         Mock -ModuleName WslAutomation Rename-Item { }
     }
 
-    Context 'when neither scheduled task already exists' {
+    Context 'when none of the scheduled tasks already exists' {
 
         BeforeEach {
             Mock -ModuleName WslAutomation Get-ScheduledTask { $null }
@@ -110,7 +110,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter {
-                $Daily -eq $true
+                $Daily -eq $true -and $At -eq '02:00'
             }
             Should -Invoke -ModuleName WslAutomation New-ScheduledTaskTrigger -Times 0 -Exactly -ParameterFilter {
                 $AtLogOn -eq $true
@@ -145,12 +145,12 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs both background tasks (keeper and ccstatusline) as S4U in session 0, where no desktop window can flash' {
+        It 'runs all three background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The keeper and the ccstatusline sync are the two windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
+            # The keeper, ccstatusline sync, and Codex Cloud sync are windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 3 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -217,6 +217,23 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Action.Argument -match 'sync-ccstatusline-config\.ps1' -and
                 $Trigger.IsOnce -eq $true -and
                 $Trigger.Repetition.Interval -eq 'PT5M'
+            }
+        }
+
+        It 'registers the Codex Cloud sync task with only midnight and noon triggers and no catch-up setting' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Cloud Environment Sync' -and
+                $Action.Argument -match 'sync-codex-cloud-environments\.ps1' -and
+                $Action.Argument -match '-DistroName Debian' -and
+                $Trigger.Count -eq 2 -and $Trigger[0].IsDaily -and $Trigger[0].At -eq '00:00' -and
+                $Trigger[1].IsDaily -and $Trigger[1].At -eq '12:00'
+            }
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
+                $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
             }
         }
 
@@ -335,6 +352,44 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
                 $TaskName -eq 'ccstatusline Config Sync'
+            }
+        }
+    }
+
+    Context 'when the Codex Cloud sync task already exists' {
+
+        BeforeEach {
+            $script:existingCodexCloudTask = [pscustomobject]@{
+                TaskName  = 'Codex Cloud Environment Sync'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Codex Cloud Environment Sync') {
+                    return $script:existingCodexCloudTask
+                }
+                return $null
+            }
+        }
+
+        It 'rebuilds settings and principal while replacing the action with the two daily triggers' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Cloud Environment Sync' -and
+                $Action.Argument -match 'sync-codex-cloud-environments\.ps1' -and
+                $Trigger.Count -eq 2 -and $Settings.FakeSettings -and $Principal.FakePrincipal
+            }
+        }
+
+        It 'does not create a second Codex Cloud sync task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Cloud Environment Sync'
             }
         }
     }
