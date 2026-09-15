@@ -3,7 +3,7 @@
 <#
 .SYNOPSIS
     Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
-    Claude Code session keeper, and ccstatusline config sync scheduled tasks.
+    Claude Code session keeper, ccstatusline config sync, and Codex Cloud environment sync scheduled tasks.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -14,7 +14,8 @@
 
 .PARAMETER ScriptsDir
     Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1. Defaults to the directory this script lives in.
+    sync-ccstatusline-config.ps1, and sync-codex-cloud-environments.ps1. Defaults to the
+    directory this script lives in.
 
 .PARAMETER BackupDir
     Directory the backup task writes exported WSL archives to.
@@ -52,6 +53,10 @@
 
 .PARAMETER CcstatuslineIntervalMinutes
     How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults to 5.
+
+.PARAMETER CodexCloudEnvironmentSyncTaskName
+    Name of the scheduled task that reconciles Codex Cloud environments at midnight and noon.
+    Defaults to 'Codex Cloud Environment Sync'.
 
 .PARAMETER PwshPath
     Path to pwsh.exe used as the action executable for all the tasks. Defaults to an MSI install
@@ -105,6 +110,8 @@ param(
 
     [int]$CcstatuslineIntervalMinutes = 5,
 
+    [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
+
     # This script runs before Import-Module (the module isn't loaded until the body below), so
     # it cannot call the module's private Get-WslAutomationDefaultPwshPath helper and instead
     # inlines the same MSI-preferring logic. An MSI PowerShell 7 (C:\Program Files\PowerShell\7)
@@ -147,6 +154,7 @@ try {
         -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
+        -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -WhatIf:$WhatIfPreference
 
     exit 0

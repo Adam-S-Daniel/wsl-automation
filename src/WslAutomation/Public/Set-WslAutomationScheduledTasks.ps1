@@ -4,15 +4,16 @@ function Set-WslAutomationScheduledTasks {
     <#
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
-        session keeper, and the ccstatusline config sync.
+        session keeper, ccstatusline config sync, and Codex Cloud environment sync.
 
     .DESCRIPTION
-        Creates four Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates five Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
         launcher task the keeper triggers to actually open a Claude Code session in Windows
         Terminal; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
-        on its own short repeating interval.
+        on its own short repeating interval; and a Codex Cloud environment sync task that runs
+        scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running.
 
         The keeper and ccstatusline tasks run as background S4U tasks (session 0), so their
         frequent checks never flash a console window on the desktop; the launcher is interactive
@@ -22,9 +23,9 @@ function Set-WslAutomationScheduledTasks {
 
         When the backup task already exists, its Action and Triggers are replaced but its
         existing Settings and Principal objects are kept as-is. The keeper, launcher, and
-        ccstatusline tasks' Settings and Principal are always (re)built fresh from this function's
+        ccstatusline and Codex Cloud sync tasks' Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
-        in sync. Re-running this function is idempotent for all four tasks.
+        in sync. Re-running this function is idempotent for all five tasks.
 
         Also archives any legacy scripts passed via -LegacyScriptsToArchive by renaming them
         out of the way, so a stale scheduled task still pointing at an old script path fails
@@ -34,7 +35,7 @@ function Set-WslAutomationScheduledTasks {
 
     .PARAMETER ScriptsDir
         Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
-        sync-ccstatusline-config.ps1.
+        sync-ccstatusline-config.ps1, and sync-codex-cloud-environments.ps1.
 
     .PARAMETER BackupDir
         Directory the backup task writes exported WSL archives to.
@@ -83,6 +84,10 @@ function Set-WslAutomationScheduledTasks {
         How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults
         to 5.
 
+    .PARAMETER CodexCloudEnvironmentSyncTaskName
+        Name of the scheduled task that reconciles Codex Cloud environments. Defaults to
+        'Codex Cloud Environment Sync'.
+
     .PARAMETER PwshPath
         Path to pwsh.exe used as the action executable for the pwsh-based tasks. Defaults to an
         MSI install of PowerShell 7 (C:\Program Files\PowerShell\7) when present - required for
@@ -106,8 +111,8 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
 
-        Registers (or updates) all four scheduled tasks using default names, backup time, and
-        keeper/ccstatusline intervals.
+        Registers (or updates) all five scheduled tasks using default names, backup time, and
+        keeper/ccstatusline intervals, and the twice-daily Codex Cloud environment sync.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -WhatIf
@@ -117,7 +122,7 @@ function Set-WslAutomationScheduledTasks {
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         'PSUseSingularNouns',
         '',
-        Justification = 'This function manages four related scheduled tasks (backup, session keeper, session launcher, and ccstatusline config sync) by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
+        Justification = 'This function manages five related scheduled tasks by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
@@ -146,6 +151,8 @@ function Set-WslAutomationScheduledTasks {
         [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
 
         [int]$CcstatuslineIntervalMinutes = 5,
+
+        [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
 
         [string]$PwshPath = (Get-WslAutomationDefaultPwshPath),
 
@@ -328,6 +335,35 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Codex Cloud environment sync: exactly two daily triggers ---------
+    # This S4U task is background-only like the keeper and ccstatusline sync. It deliberately
+    # has no StartWhenAvailable setting: it preserves the exact noon/midnight attempts and a
+    # missed time stays missed. The wrapper checks state but never starts WSL.
+    $codexCloudSyncScriptPath = Join-Path $ScriptsDir 'sync-codex-cloud-environments.ps1'
+    $codexCloudSyncArguments = "-NoProfile -File `"$codexCloudSyncScriptPath`" -DistroName $DistroName"
+    $codexCloudSyncAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $codexCloudSyncArguments
+    $codexCloudSyncTriggers = @(
+        (New-ScheduledTaskTrigger -Daily -At '00:00'),
+        (New-ScheduledTaskTrigger -Daily -At '12:00')
+    )
+    $codexCloudSyncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
+    $codexCloudSyncPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingCodexCloudSyncTask = Get-ScheduledTask -TaskName $CodexCloudEnvironmentSyncTaskName -ErrorAction SilentlyContinue
+    if ($existingCodexCloudSyncTask) {
+        if ($PSCmdlet.ShouldProcess($CodexCloudEnvironmentSyncTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $CodexCloudEnvironmentSyncTaskName -Action $codexCloudSyncAction -Trigger $codexCloudSyncTriggers `
+                -Settings $codexCloudSyncSettings -Principal $codexCloudSyncPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($CodexCloudEnvironmentSyncTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $CodexCloudEnvironmentSyncTaskName -Action $codexCloudSyncAction -Trigger $codexCloudSyncTriggers `
+                -Settings $codexCloudSyncSettings -Principal $codexCloudSyncPrincipal
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -399,4 +435,5 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
 }

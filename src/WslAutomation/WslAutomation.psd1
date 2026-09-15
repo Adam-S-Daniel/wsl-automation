@@ -5,7 +5,7 @@
     Author            = 'Adam S. Daniel'
     CompanyName       = 'Unknown'
     Copyright         = '(c) 2026 Adam S. Daniel. All rights reserved.'
-    Description       = 'WSL backup automation, Claude Code session keeper, and scheduled task registration.'
+    Description       = 'WSL backup automation, Claude Code session keeper, Codex Cloud environment sync, and scheduled task registration.'
     PowerShellVersion = '7.6'
 
     FunctionsToExport = @(
@@ -19,6 +19,7 @@
         'Invoke-ClaudeSessionKeeper',
         'Set-WslAutomationScheduledTasks',
         'Update-CcstatuslineConfig',
+        'Invoke-CodexCloudEnvironmentSync',
         'Update-WslAutomationRepo'
     )
     CmdletsToExport   = @()
