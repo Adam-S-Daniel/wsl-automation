@@ -283,17 +283,20 @@ while IFS= read -r repository; do
     if [[ $repository_id == "$guidance_repository_id" ]]; then
         expected_repos=$(jq -nc --arg guidance "$guidance_repository_id" '[$guidance]')
     else
-        expected_repos=$(jq -nc --arg target "$repository_id" --arg guidance "$guidance_repository_id" '[$target, $guidance] | unique | sort')
+        # Codex uses the first repository as the selected repository. Keep the target first
+        # and include the guidance checkout second so the fixed setup path is available.
+        expected_repos=$(jq -nc --arg target "$repository_id" --arg guidance "$guidance_repository_id" '[$target, $guidance]')
     fi
+    expected_repo_set=$(jq -c 'sort' <<<"$expected_repos")
     matches_file="$temporary_dir/matches.json"
     if [[ $repository_id == "$guidance_repository_id" ]]; then
-        jq --arg id "$repository_id" --argjson expected "$expected_repos" '
+        jq --arg id "$repository_id" --argjson expected "$expected_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array") |
                 select($repos | all(.[]; type == "string" and length > 0)) |
                 select(($repos | sort) == $expected)]
         ' "$environment_file" >"$matches_file"
     else
-        invalid_association_count=$(jq --arg id "$repository_id" --argjson expected "$expected_repos" '
+        invalid_association_count=$(jq --arg id "$repository_id" --argjson expected "$expected_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array" and ($repos | index($id))) |
                 select((($repos | all(.[]; type == "string" and length > 0)) | not) or (($repos | sort) != [$id] and ($repos | sort) != $expected))] | length
         ' "$environment_file")
@@ -301,7 +304,7 @@ while IFS= read -r repository; do
             printf '%s\n' 'an existing environment associates a target repository with unrelated repositories' >&2
             exit 1
         fi
-        jq --arg id "$repository_id" --argjson expected "$expected_repos" '
+        jq --arg id "$repository_id" --argjson expected "$expected_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array") |
                 select($repos | all(.[]; type == "string" and length > 0)) |
                 select(($repos | sort) == [$id] or ($repos | sort) == $expected)]
@@ -340,7 +343,7 @@ while IFS= read -r repository; do
     fi
     if jq -e --arg desired "$desired_script" --argjson expected "$expected_repos" '
         def script: if type == "array" then join("\n") else . end;
-        (.setup | script) == $desired and (.maintenance_setup | script) == $desired and (.repos | sort) == $expected
+        (.setup | script) == $desired and (.maintenance_setup | script) == $desired and .repos == $expected
     ' <<<"$environment" >/dev/null; then
         ((unchanged+=1))
         continue
@@ -352,7 +355,7 @@ while IFS= read -r repository; do
     fi
     jq -n --argjson environment "$environment" --argjson expected "$expected_repos" --arg setup "$desired_script" '
         {etag: $environment.etag, setup: $setup, maintenance_setup: $setup} +
-        (if ($environment.repos | sort) == $expected then {} else {repos: $expected} end)
+        (if $environment.repos == $expected then {} else {repos: $expected} end)
     ' >"$payload_file"
     environment_id=$(jq -er '.id' <<<"$environment")
     if $dry_run; then

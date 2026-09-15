@@ -116,7 +116,7 @@ run_sync "$test_root/create.out"
 [[ -f $test_root/requests/create.jsonl ]] || fail 'expected create requests'
 jq -s -e --arg expected "$expected_script" '
     length == 2 and
-    any(.[]; (.repos | sort) == ["guidance-1", "repo-1"] and .setup == $expected and .maintenance_setup == $expected) and
+    any(.[]; .repos == ["repo-1", "guidance-1"] and .setup == $expected and .maintenance_setup == $expected) and
     any(.[]; .repos == ["guidance-1"] and .setup == $expected and .maintenance_setup == $expected)
 ' "$test_root/requests/create.jsonl" >/dev/null || fail 'create payloads do not include the guidance repository correctly'
 
@@ -125,6 +125,12 @@ idempotent_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environmen
 export FAKE_ENVIRONMENTS="$idempotent_environment"
 run_sync "$test_root/idempotent.out"
 [[ ! -e $test_root/requests/create.jsonl && ! -e $test_root/requests/update.json ]] || fail 'idempotent sync wrote an environment'
+
+guidance_first_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["guidance-1","repo-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
+export FAKE_ENVIRONMENTS="$guidance_first_environment"
+run_sync "$test_root/guidance-first.out"
+jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and .repos == ["repo-1", "guidance-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'guidance-first environment was not repaired'
+rm -f "$test_root/requests/update.json"
 
 invalid_matching_id_environment=$(jq -nc --arg setup "$expected_script" '[{id:"invalid/environment-id",github_connector_id:"connector-1",repos:["repo-1","guidance-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
 export FAKE_ENVIRONMENTS="$invalid_matching_id_environment"
@@ -140,7 +146,7 @@ if [[ ! -f $test_root/requests/update.json ]]; then
     cat "$test_root/update.out" >&2
     fail 'expected update request'
 fi
-jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and (.repos | sort) == ["guidance-1", "repo-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'legacy environment migration payload is incorrect'
+jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and .repos == ["repo-1", "guidance-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'legacy environment migration payload is incorrect'
 
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
 export FAKE_ENVIRONMENTS='[]'
@@ -202,4 +208,4 @@ if run_sync "$test_root/newline-token.out" --dry-run; then
 fi
 grep -qxF 'repository inventory response has an unexpected schema' "$test_root/newline-token.out" || fail 'pagination token failure was not sanitized'
 
-printf '%s\n' 'PASS: 13 Codex Cloud environment sync behaviors'
+printf '%s\n' 'PASS: 14 Codex Cloud environment sync behaviors'

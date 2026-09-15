@@ -179,9 +179,10 @@ vice versa, if you choose to gate the backup on session activity too).
   task refreshes the authenticated Codex CLI state, pages through the Code
   Review repository inventory, and maps each repository to a connected GitHub
   connector by an exact repository-name lookup. Every target environment also
-  includes `Adam-S-Daniel/_agent-guidance` (override with
-  `CODEX_CLOUD_GUIDANCE_REPOSITORY`) so setup can enter its fixed workspace;
-  the guidance repository itself has its own one-repository environment. Setup
+  lists the target repository first, because Codex selects the first repository,
+  then includes `Adam-S-Daniel/_agent-guidance` (override with
+  `CODEX_CLOUD_GUIDANCE_REPOSITORY`) as the secondary checkout so setup can enter
+  its fixed workspace; the guidance repository itself has its own one-repository environment. Setup
   and maintenance both run:
 
   ```bash
