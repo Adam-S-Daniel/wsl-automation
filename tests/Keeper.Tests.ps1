@@ -122,11 +122,11 @@ Describe 'Invoke-ClaudeSessionKeeper' {
 }
 
 Describe 'Test-ClaudeSession' {
-    # Test-ClaudeSession's include/exclude pattern filtering is exercised for real here (unlike
-    # Invoke-ClaudeSessionKeeper's tests above, which mock Test-ClaudeSession itself). This is
-    # exactly the kind of parsing that regresses silently: a change that made a helper process
-    # line count as a session would launch nothing new while the keeper reports SessionPresent
-    # forever.
+    # Test-ClaudeSession's include/require/exclude pattern filtering is exercised for real here
+    # (unlike Invoke-ClaudeSessionKeeper's tests above, which mock Test-ClaudeSession itself).
+    # This is exactly the kind of parsing that regresses silently: a change that let a helper
+    # process line - or a plain session with no Remote Control - count as a session would launch
+    # nothing new while the keeper reports SessionPresent forever.
 
     BeforeEach {
         # Get-WslDistroState itself calls through to Invoke-WslExe; mocking it directly here
@@ -134,7 +134,20 @@ Describe 'Test-ClaudeSession' {
         Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
     }
 
-    It 'counts a real interactive session line and returns true' {
+    It 'counts a Remote Control session line and returns true' {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{
+                ExitCode = 0
+                Output   = @('12345 claude --remote-control')
+            }
+        }
+
+        Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeTrue
+    }
+
+    It 'returns false for a plain interactive session started without Remote Control' {
+        # The whole point of the keeper is that a session can be driven remotely. A hand-opened
+        # 'claude' tab does not satisfy that, so it must not suppress the launch.
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{
                 ExitCode = 0
@@ -142,10 +155,10 @@ Describe 'Test-ClaudeSession' {
             }
         }
 
-        Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeTrue
+        Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeFalse
     }
 
-    It 'excludes each known infrastructure helper line (daemon, bg-pty-host, bg-spare) and returns false' {
+    It 'counts a Remote Control session running alongside a plain session and the helpers' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{
                 ExitCode = 0
@@ -153,6 +166,26 @@ Describe 'Test-ClaudeSession' {
                     '100 claude daemon run'
                     '101 claude bg-pty-host'
                     '102 claude bg-spare'
+                    '200 bash -l -c claude'
+                    '300 claude --remote-control'
+                )
+            }
+        }
+
+        Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeTrue
+    }
+
+    It 'excludes each known infrastructure helper line (daemon, bg-pty-host, bg-spare) and returns false' {
+        # These helper lines carry --remote-control deliberately. The exclude list is what has to
+        # reject them, and this test would pass for the wrong reason if the Remote Control check
+        # rejected them first - Claude Code's helper argv is not a contract this repo controls.
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{
+                ExitCode = 0
+                Output   = @(
+                    '100 claude daemon run --remote-control'
+                    '101 claude bg-pty-host --remote-control'
+                    '102 claude bg-spare --remote-control'
                 )
             }
         }
@@ -163,7 +196,7 @@ Describe 'Test-ClaudeSession' {
     It 'returns false without ever checking pgrep when the distro is not Running' {
         Mock -ModuleName WslAutomation Get-WslDistroState { 'Stopped' }
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 0; Output = @('12345 bash -l -c claude') }
+            [pscustomobject]@{ ExitCode = 0; Output = @('12345 claude --remote-control') }
         }
 
         Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeFalse
@@ -172,7 +205,7 @@ Describe 'Test-ClaudeSession' {
 
     It 'returns false when pgrep exits nonzero, even with a matching-looking output line' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 1; Output = @('12345 bash -l -c claude') }
+            [pscustomobject]@{ ExitCode = 1; Output = @('12345 claude --remote-control') }
         }
 
         Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeFalse

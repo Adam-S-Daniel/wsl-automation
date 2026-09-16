@@ -3,8 +3,9 @@
 PowerShell automation for a WSL2 Ubuntu distro on Windows:
 
 - A staged, atomic-ish backup of the distro (`tar` or `vhdx`) with retention.
-- A "keeper" that makes sure a Claude Code session is running in the distro,
-  coordinating with the backup via a lock file so the two never collide.
+- A "keeper" that makes sure a Claude Code session with Remote Control
+  enabled is running in the distro, coordinating with the backup via a lock
+  file so the two never collide.
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
 
@@ -16,9 +17,11 @@ Task Scheduler. It covers three jobs:
 
 1. **Backup** - export a WSL distro (`wsl --export`) on a schedule, with
    staging, retention, and a log in the historical format.
-2. **Session keeper** - periodically check whether a Claude Code session is
-   running inside the distro, and launch one (in a Windows Terminal tab) if
-   not - but only after waiting for any in-progress backup to clear.
+2. **Session keeper** - periodically check whether a Claude Code session with
+   Remote Control enabled is running inside the distro, and launch one (in a
+   Windows Terminal tab) if not - but only after waiting for any in-progress
+   backup to clear. Remote Control is the point: it is what lets you pick the
+   session up from claude.ai or the phone without being at the machine.
 3. **Task registration** - create or update the two Scheduled Tasks above
    idempotently, and archive any legacy ad-hoc scripts they replace.
 
@@ -150,20 +153,32 @@ vice versa, if you choose to gate the backup on session activity too).
   to battery mid-run, 2 hour execution time limit, and will not start a
   second instance while one is already running.
 - Because it runs in session 0 it cannot open a terminal itself; when no
-  session is running it triggers the launcher task below.
+  Remote Control session is running it triggers the launcher task below.
 
 ### Launcher task (default name: `Claude Code Session Launcher`)
 
 - Has **no trigger of its own** - it only ever runs on demand, started by
-  the background keeper when no session is found.
+  the background keeper when no Remote Control session is found.
 - Runs **interactively** as the current user, so the Windows Terminal window
   it opens is visible on the desktop. Its action is `wt.exe` directly (not
   pwsh), selecting the distro's Windows Terminal profile (`-p <DistroName>`,
   for the correct icon/colours) and running
-  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c claude`. Because it is a
-  separate GUI process, opening a session never flashes a pwsh console
-  either. It only produces a usable session when a user is logged on
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude --remote-control"`.
+  The command is quoted so it reaches `bash -c` as one argument - unquoted,
+  `--remote-control` becomes bash's `$0` and you get a plain local session the
+  keeper never recognizes, so it relaunches every interval.
+  Because it is a separate GUI process, opening a session never flashes a pwsh
+  console either. It only produces a usable session when a user is logged on
   interactively at the console; it is not meant to work headlessly.
+- The session opens in **`~/repos`** inside the distro. The `cd` is bash's job,
+  not `wsl.exe`'s: `wsl --cd` takes only the bare `~`, an absolute Linux path
+  starting with `/`, or an absolute Windows path, so `--cd ~/repos` would be
+  read as a Windows path - and the absolute Linux path can't be hardcoded here
+  because the distro username isn't known when the argument list is built.
+  `|| cd ~` means a missing `~/repos` costs you the working directory, not the
+  session: without it the failed `cd` would short-circuit the `&&`, the tab
+  would close before `claude` started, and the keeper would reopen it every
+  interval forever.
 
 ### Codex Cloud environment sync task (default name: `Codex Cloud Environment Sync`)
 
@@ -208,11 +223,18 @@ by anything.
 
 ## Keeper semantics
 
-- A "Claude session" is a running `claude` process, checked with
-  `pgrep -af claude` inside the distro. Infrastructure helper processes -
-  `claude daemon run`, `claude bg-pty-host`, `claude bg-spare` - are
-  explicitly excluded from the count, since their presence does not mean
-  an interactive session exists.
+- A "Claude session" is a running `claude` process **whose command line
+  carries `--remote-control`**, checked with `pgrep -af claude` inside the
+  distro. Infrastructure helper processes - `claude daemon run`,
+  `claude bg-pty-host`, `claude bg-spare` - are explicitly excluded from the
+  count, since their presence does not mean an interactive session exists.
+- A plain `claude` session you opened by hand does **not** satisfy the keeper.
+  It cannot be driven remotely, which is the only reason the keeper exists, so
+  the keeper opens a Remote Control session alongside it. Expect a second tab
+  in that case; that is the intended behavior, not a duplicate-launch bug.
+- The check reads the process command line, so a session where Remote Control
+  was turned on from *inside* it (the `/remote-control` command rather than the
+  flag) is not detected. That costs an extra session, never a missing one.
 - The keeper **never boots a stopped distro** just to check or launch a
   session - if the distro isn't already `Running`, it does nothing.
 - The launch is performed by the interactive launcher task (see above),
