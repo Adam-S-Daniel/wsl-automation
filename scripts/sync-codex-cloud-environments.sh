@@ -40,7 +40,7 @@ while (($#)); do
     shift
 done
 
-for dependency in codex curl jq flock mktemp; do
+for dependency in codex curl gh jq flock mktemp; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
         printf 'missing dependency: %s\n' "$dependency" >&2
         exit 1
@@ -227,6 +227,22 @@ while IFS= read -r inventory_repository; do
     repository_id=$(jq -er '.id' <<<"$inventory_repository")
     repository_name=$(jq -er '.name' <<<"$inventory_repository")
     repository_full_name=$(jq -er '.full_name' <<<"$inventory_repository")
+    if [[ ! $repository_full_name =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        printf '%s\n' 'repository inventory item has an invalid GitHub repository path' >&2
+        exit 1
+    fi
+    fork_metadata_file="$temporary_dir/github-repository.json"
+    if ! gh api --method GET "repos/$repository_full_name" >"$fork_metadata_file" 2>/dev/null; then
+        printf '%s\n' 'GitHub repository metadata lookup failed' >&2
+        exit 1
+    fi
+    if ! jq -e 'type == "object" and (.fork | type == "boolean")' "$fork_metadata_file" >/dev/null; then
+        printf '%s\n' 'GitHub repository metadata response has an unexpected schema' >&2
+        exit 1
+    fi
+    if [[ $(jq -r '.fork' "$fork_metadata_file") == true ]]; then
+        continue
+    fi
     matching_connectors="$temporary_dir/matching-connectors.json"
     jq -n '[]' >"$matching_connectors"
     while IFS= read -r connector_id; do
@@ -280,11 +296,7 @@ while IFS= read -r repository; do
     repository_id=$(jq -er '.id' <<<"$repository")
     repository_name=$(jq -er '.name' <<<"$repository")
     connector_id=$(jq -er '.connector_id' <<<"$repository")
-    if [[ $repository_id == "$guidance_repository_id" ]]; then
-        expected_repos=$(jq -nc --arg guidance "$guidance_repository_id" '[$guidance]')
-    else
-        expected_repos=$(jq -nc --arg target "$repository_id" --arg guidance "$guidance_repository_id" '[$target, $guidance] | unique | sort')
-    fi
+    expected_repos=$(jq -nc --arg target "$repository_id" '[$target]')
     matches_file="$temporary_dir/matches.json"
     if [[ $repository_id == "$guidance_repository_id" ]]; then
         jq --arg id "$repository_id" --argjson expected "$expected_repos" '
@@ -293,7 +305,8 @@ while IFS= read -r repository; do
                 select(($repos | sort) == $expected)]
         ' "$environment_file" >"$matches_file"
     else
-        invalid_association_count=$(jq --arg id "$repository_id" --argjson expected "$expected_repos" '
+        legacy_dual_repo_set=$(jq -nc --arg target "$repository_id" --arg guidance "$guidance_repository_id" '[$target, $guidance] | sort')
+        invalid_association_count=$(jq --arg id "$repository_id" --argjson expected "$legacy_dual_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array" and ($repos | index($id))) |
                 select((($repos | all(.[]; type == "string" and length > 0)) | not) or (($repos | sort) != [$id] and ($repos | sort) != $expected))] | length
         ' "$environment_file")
@@ -301,7 +314,7 @@ while IFS= read -r repository; do
             printf '%s\n' 'an existing environment associates a target repository with unrelated repositories' >&2
             exit 1
         fi
-        jq --arg id "$repository_id" --argjson expected "$expected_repos" '
+        jq --arg id "$repository_id" --argjson expected "$legacy_dual_repo_set" '
             [.[] | .repos as $repos | select(($repos | type) == "array") |
                 select($repos | all(.[]; type == "string" and length > 0)) |
                 select(($repos | sort) == [$id] or ($repos | sort) == $expected)]
@@ -340,7 +353,7 @@ while IFS= read -r repository; do
     fi
     if jq -e --arg desired "$desired_script" --argjson expected "$expected_repos" '
         def script: if type == "array" then join("\n") else . end;
-        (.setup | script) == $desired and (.maintenance_setup | script) == $desired and (.repos | sort) == $expected
+        (.setup | script) == $desired and (.maintenance_setup | script) == $desired and .repos == $expected
     ' <<<"$environment" >/dev/null; then
         ((unchanged+=1))
         continue
@@ -352,7 +365,7 @@ while IFS= read -r repository; do
     fi
     jq -n --argjson environment "$environment" --argjson expected "$expected_repos" --arg setup "$desired_script" '
         {etag: $environment.etag, setup: $setup, maintenance_setup: $setup} +
-        (if ($environment.repos | sort) == $expected then {} else {repos: $expected} end)
+        (if $environment.repos == $expected then {} else {repos: $expected} end)
     ' >"$payload_file"
     environment_id=$(jq -er '.id' <<<"$environment")
     if $dry_run; then

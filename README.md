@@ -193,11 +193,11 @@ vice versa, if you choose to gate the backup on session activity too).
   distro is skipped without invoking a distro command. When it is running, the
   task refreshes the authenticated Codex CLI state, pages through the Code
   Review repository inventory, and maps each repository to a connected GitHub
-  connector by an exact repository-name lookup. Every target environment also
-  includes `Adam-S-Daniel/_agent-guidance` (override with
-  `CODEX_CLOUD_GUIDANCE_REPOSITORY`) so setup can enter its fixed workspace;
-  the guidance repository itself has its own one-repository environment. Setup
-  and maintenance both run:
+  connector by an exact repository-name lookup. It uses authenticated GitHub CLI
+  metadata to skip forks, so only connected non-forks receive environments. Each
+  environment has only its target repository selected, including the guidance
+  repository's own environment. The enrolled repository setup provides
+  `/workspace/_agent-guidance`. Setup and maintenance both run:
 
   ```bash
   set -euo pipefail
@@ -271,5 +271,5 @@ under Pester's `TestDrive:`.
 - The "Log on as a batch job" right for the account running the keeper (see
   `scripts\grant-keeper-batch-logon.ps1`).
 - WSL2 with the distro you want to back up / keep alive already installed.
-- For Codex Cloud synchronization: an authenticated Codex CLI and `curl`,
-  `jq`, `flock`, and `mktemp` in that distro.
+- For Codex Cloud synchronization: authenticated Codex and GitHub CLIs, plus
+  `curl`, `jq`, `flock`, and `mktemp` in that distro.
