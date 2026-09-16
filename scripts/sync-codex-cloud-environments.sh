@@ -40,7 +40,7 @@ while (($#)); do
     shift
 done
 
-for dependency in codex curl jq flock mktemp; do
+for dependency in codex curl gh jq flock mktemp; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
         printf 'missing dependency: %s\n' "$dependency" >&2
         exit 1
@@ -227,6 +227,22 @@ while IFS= read -r inventory_repository; do
     repository_id=$(jq -er '.id' <<<"$inventory_repository")
     repository_name=$(jq -er '.name' <<<"$inventory_repository")
     repository_full_name=$(jq -er '.full_name' <<<"$inventory_repository")
+    if [[ ! $repository_full_name =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        printf '%s\n' 'repository inventory item has an invalid GitHub repository path' >&2
+        exit 1
+    fi
+    fork_metadata_file="$temporary_dir/github-repository.json"
+    if ! gh api --method GET "repos/$repository_full_name" >"$fork_metadata_file" 2>/dev/null; then
+        printf '%s\n' 'GitHub repository metadata lookup failed' >&2
+        exit 1
+    fi
+    if ! jq -e 'type == "object" and (.fork | type == "boolean")' "$fork_metadata_file" >/dev/null; then
+        printf '%s\n' 'GitHub repository metadata response has an unexpected schema' >&2
+        exit 1
+    fi
+    if [[ $(jq -r '.fork' "$fork_metadata_file") == true ]]; then
+        continue
+    fi
     matching_connectors="$temporary_dir/matching-connectors.json"
     jq -n '[]' >"$matching_connectors"
     while IFS= read -r connector_id; do

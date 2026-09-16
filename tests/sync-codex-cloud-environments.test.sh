@@ -15,6 +15,27 @@ make_fakes() {
     mkdir -p "$test_root/bin" "$test_root/codex"
     printf '%s\n' '{"tokens":{"access_token":"test-access","account_id":"test-account"}}' >"$test_root/codex/auth.json"
     printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$test_root/bin/codex"
+    cat >"$test_root/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+endpoint=''
+for argument in "$@"; do
+    case "$argument" in
+        repos/*) endpoint=$argument ;;
+    esac
+done
+[[ -n $endpoint ]] || exit 2
+if [[ ${FAKE_GH_LOOKUP_FAIL:-0} == 1 ]]; then
+    exit 1
+fi
+if [[ ${FAKE_GH_INVALID_RESPONSE:-0} == 1 ]]; then
+    printf '%s\n' '{"fork":"false"}'
+elif [[ $endpoint == "repos/${FAKE_FORK_REPOSITORY:-}" ]]; then
+    printf '%s\n' '{"fork":true}'
+else
+    printf '%s\n' '{"fork":false}'
+fi
+EOF
     cat >"$test_root/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -80,7 +101,7 @@ else
     printf '200'
 fi
 EOF
-    chmod 755 "$test_root/bin/codex" "$test_root/bin/curl"
+    chmod 755 "$test_root/bin/codex" "$test_root/bin/gh" "$test_root/bin/curl"
 }
 
 run_sync() {
@@ -96,6 +117,9 @@ mkdir -p "$test_root/runtime" "$test_root/requests"
 export FAKE_HTTP_FAIL=0
 export FAKE_PATCH_HTTP_FAIL=0
 export FAKE_REJECT_BROAD_SEARCH=1
+export FAKE_GH_LOOKUP_FAIL=0
+export FAKE_GH_INVALID_RESPONSE=0
+export FAKE_FORK_REPOSITORY=''
 export FAKE_INVENTORY_PAGE1='{"repo_review_settings":[{"repository":{"id":"guidance-1","name":"_agent-guidance","repository_full_name":"Adam-S-Daniel/_agent-guidance"}},{"repository":{"id":"repo-1","name":"example-repo","repository_full_name":"Example/example-repo"}}],"next_token":null}'
 export FAKE_INVENTORY_PAGE2='{"repo_review_settings":[],"next_token":null}'
 export FAKE_SEARCH_RESPONSE='{"repositories":[{"id":"guidance-1","name":"_agent-guidance"},{"id":"repo-1","name":"example-repo"}]}'
@@ -121,6 +145,30 @@ jq -s -e --arg expected "$expected_script" '
 ' "$test_root/requests/create.jsonl" >/dev/null || fail 'create payloads do not include the guidance repository correctly'
 
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
+export FAKE_FORK_REPOSITORY='Example/example-repo'
+export FAKE_ENVIRONMENTS='[{"id":"unrelated-environment","repos":[]}]'
+run_sync "$test_root/fork.out"
+jq -s -e --arg expected "$expected_script" 'length == 1 and .[0].repos == ["guidance-1"] and .[0].setup == $expected and .[0].maintenance_setup == $expected' "$test_root/requests/create.jsonl" >/dev/null || fail 'fork received a Codex Cloud environment'
+rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
+export FAKE_FORK_REPOSITORY=''
+
+export FAKE_GH_LOOKUP_FAIL=1
+if run_sync "$test_root/github-lookup-failure.out" --dry-run; then
+    fail 'GitHub metadata lookup failure was accepted'
+fi
+grep -qxF 'GitHub repository metadata lookup failed' "$test_root/github-lookup-failure.out" || fail 'GitHub metadata lookup failure was not sanitized'
+if grep -qF 'Example/example-repo' "$test_root/github-lookup-failure.out"; then
+    fail 'GitHub metadata lookup failure leaked a repository name'
+fi
+export FAKE_GH_LOOKUP_FAIL=0
+
+export FAKE_GH_INVALID_RESPONSE=1
+if run_sync "$test_root/github-schema-failure.out" --dry-run; then
+    fail 'non-boolean GitHub fork metadata was accepted'
+fi
+grep -qxF 'GitHub repository metadata response has an unexpected schema' "$test_root/github-schema-failure.out" || fail 'GitHub metadata schema failure was not sanitized'
+export FAKE_GH_INVALID_RESPONSE=0
+
 idempotent_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1"],setup:[$setup],maintenance_setup:[$setup]},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$setup],maintenance_setup:[$setup]}]')
 export FAKE_ENVIRONMENTS="$idempotent_environment"
 run_sync "$test_root/idempotent.out"
@@ -208,4 +256,4 @@ if run_sync "$test_root/newline-token.out" --dry-run; then
 fi
 grep -qxF 'repository inventory response has an unexpected schema' "$test_root/newline-token.out" || fail 'pagination token failure was not sanitized'
 
-printf '%s\n' 'PASS: 14 Codex Cloud environment sync behaviors'
+printf '%s\n' 'PASS: 17 Codex Cloud environment sync behaviors'
