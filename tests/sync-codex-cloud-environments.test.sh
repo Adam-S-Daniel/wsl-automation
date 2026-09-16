@@ -100,7 +100,7 @@ export FAKE_INVENTORY_PAGE1='{"repo_review_settings":[{"repository":{"id":"guida
 export FAKE_INVENTORY_PAGE2='{"repo_review_settings":[],"next_token":null}'
 export FAKE_SEARCH_RESPONSE='{"repositories":[{"id":"guidance-1","name":"_agent-guidance"},{"id":"repo-1","name":"example-repo"}]}'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID='connector-1'
-expected_script=$'set -euo pipefail\nif [[ ! -d /workspace/_agent-guidance/.git ]]; then\n  git clone --depth 1 https://github.com/Adam-S-Daniel/_agent-guidance.git /workspace/_agent-guidance\nfi\nset -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="'
+expected_script=$'set -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="'
 expected_script+='$'
 expected_script+=$'{CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
 

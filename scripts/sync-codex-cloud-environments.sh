@@ -7,7 +7,7 @@ readonly api_base='https://chatgpt.com/backend-api'
 readonly connector_search_limit=10
 readonly inventory_page_size=100
 readonly max_inventory_pages=100
-readonly desired_script=$'set -euo pipefail\nif [[ ! -d /workspace/_agent-guidance/.git ]]; then\n  git clone --depth 1 https://github.com/Adam-S-Daniel/_agent-guidance.git /workspace/_agent-guidance\nfi\nset -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="${CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
+readonly desired_script=$'set -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="${CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
 
 dry_run=false
 connector_override="${CODEX_CLOUD_GITHUB_CONNECTOR_ID:-}"
