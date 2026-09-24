@@ -34,11 +34,24 @@ Describe 'Invoke-CodexCloudEnvironmentSync' {
 
         $result.Status | Should -Be 'Completed'
         Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
-            ($Arguments -join '|') -eq '-d|Debian|--|wslpath|-a|-u|C:\repo\scripts\sync-codex-cloud-environments.sh'
+            ($Arguments -join '|') -eq '-d|Debian|--exec|wslpath|-a|-u|C:\repo\scripts\sync-codex-cloud-environments.sh'
         }
         Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
-            ($Arguments -join '|') -eq '-d|Debian|--|bash|/workspace/scripts/sync-codex-cloud-environments.sh'
+            ($Arguments -join '|') -eq '-d|Debian|--exec|bash|-l|/workspace/scripts/sync-codex-cloud-environments.sh'
         }
+    }
+
+    It 'never routes a distro command through the default shell with --' {
+        # Regression: wsl.exe -- <cmd> hands the command line to the distro's default
+        # shell, which strips backslashes from a Windows path before wslpath sees it.
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
+
+        Invoke-CodexCloudEnvironmentSync -DistroName 'Debian' -ScriptPath 'C:\repo\scripts\sync-codex-cloud-environments.sh' | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 0 -Exactly -ParameterFilter {
+            $Arguments -contains '--'
+        }
+        Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 2 -Exactly
     }
 
     It 'passes --dry-run to bash' {

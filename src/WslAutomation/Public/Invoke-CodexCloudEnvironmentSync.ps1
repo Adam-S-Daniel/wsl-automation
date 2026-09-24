@@ -27,12 +27,15 @@ function Invoke-CodexCloudEnvironmentSync {
         return [pscustomobject]@{ Status = 'SkippedDistroNotRunning' }
     }
 
-    $pathResult = Invoke-WslExe -Arguments @('-d', $DistroName, '--', 'wslpath', '-a', '-u', $ScriptPath)
+    # --exec runs wslpath directly; -- would hand the Windows path to the distro's
+    # default shell, which strips its backslashes before wslpath ever sees them.
+    $pathResult = Invoke-WslExe -Arguments @('-d', $DistroName, '--exec', 'wslpath', '-a', '-u', $ScriptPath)
     if ($pathResult.ExitCode -ne 0 -or $pathResult.Output.Count -ne 1 -or [string]::IsNullOrWhiteSpace($pathResult.Output[0])) {
         throw 'Could not convert the Codex Cloud synchronizer path for WSL.'
     }
 
-    $arguments = @('-d', $DistroName, '--', 'bash', $pathResult.Output[0])
+    # -l starts a login shell so the login profile puts ~/.local/bin (codex, jq) on PATH.
+    $arguments = @('-d', $DistroName, '--exec', 'bash', '-l', $pathResult.Output[0])
     if ($DryRun) {
         $arguments += '--dry-run'
     }
