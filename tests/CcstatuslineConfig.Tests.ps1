@@ -96,6 +96,68 @@ Describe 'Update-CcstatuslineConfig' -Skip:(-not $IsWindows) {
         }
     }
 
+    It 'invokes whoami with --exec, never --' {
+        # Regression: wsl.exe -- <cmd> hands the command line to the distro's default shell.
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = 0; Output = @('passp') }
+        }
+
+        Update-CcstatuslineConfig -DistroName 'Ubuntu' -DestinationPath $script:dst `
+            -LogFile (Join-Path $TestDrive 'sync.log') | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
+            ($Arguments -join '|') -eq "-d|Ubuntu|--exec|whoami"
+        }
+        Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 0 -Exactly -ParameterFilter {
+            $Arguments -contains '--'
+        }
+    }
+
+    It 'picks the username line out of whoami output that also carries a WSL transition warning on stderr' {
+        # Regression: while WSL is restarting (e.g. right after the daily backup), wsl.exe can
+        # print a warning on stderr and still exit 0. Invoke-WslExe merges stderr into Output, so
+        # the warning line arrives ahead of the real username - it must not be used as-is.
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{
+                ExitCode = 0
+                Output   = @(
+                    "wsl: Failed to start the systemd user session for 'passp'. See journalctl for more details.",
+                    'passp'
+                )
+            }
+        }
+        # Force the SourceUnavailable branch deterministically regardless of what UNC paths
+        # happen to resolve on the machine running this test - the point here is only which
+        # username the derivation used, observed through the path it builds and logs.
+        Mock -ModuleName WslAutomation Test-Path { $false }
+
+        $result = Update-CcstatuslineConfig -DistroName 'Ubuntu' -DestinationPath $script:dst `
+            -LogFile (Join-Path $TestDrive 'sync.log')
+
+        $result.Status | Should -Be 'SourceUnavailable'
+        $logContent = Get-Content -LiteralPath (Join-Path $TestDrive 'sync.log') -Raw
+        $logContent | Should -Match ([regex]::Escape('\\wsl.localhost\Ubuntu\home\passp\.config\ccstatusline\settings.json'))
+        $logContent | Should -Not -Match 'Failed to start'
+    }
+
+    It 'returns SourceUnavailable without logging raw output when whoami output is only a WSL transition warning' {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{
+                ExitCode = 0
+                Output   = @("wsl: Failed to start the systemd user session for 'passp'. See journalctl for more details.")
+            }
+        }
+
+        $result = Update-CcstatuslineConfig -DistroName 'Ubuntu' -DestinationPath $script:dst `
+            -LogFile (Join-Path $TestDrive 'sync.log')
+
+        $result.Status | Should -Be 'SourceUnavailable'
+        Test-Path -LiteralPath $script:dst | Should -BeFalse
+        $logContent = Get-Content -LiteralPath (Join-Path $TestDrive 'sync.log') -Raw
+        $logContent | Should -Match "could not determine WSL user for distro 'Ubuntu'"
+        $logContent | Should -Not -Match 'Failed to start'
+    }
+
     It 'does not write the destination and returns Skipped under -WhatIf' {
         Set-Content -LiteralPath $script:src -Value '{"version":3}' -NoNewline -Encoding utf8
 
