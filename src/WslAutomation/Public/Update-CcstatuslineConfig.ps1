@@ -61,13 +61,22 @@ function Update-CcstatuslineConfig {
 
     if (-not $SourcePath) {
         if (-not $WslUser) {
-            $whoami = Invoke-WslExe -Arguments @('-d', $DistroName, '--', 'whoami')
-            $whoamiUser = $whoami.Output | Select-Object -First 1
-            if ($whoami.ExitCode -ne 0 -or -not $whoamiUser -or -not "$whoamiUser".Trim()) {
+            # --exec runs whoami directly rather than through the distro's default shell (see
+            # Invoke-CodexCloudEnvironmentSync for the same fix). That alone isn't enough here:
+            # wsl.exe merges stderr into Output (Invoke-WslExe), and while WSL is mid-transition
+            # (e.g. right after the daily backup restarts it) it can print a warning line on
+            # stderr and still exit 0 - so the first output line is not reliably the username.
+            # Instead, pick the line that actually looks like a POSIX username and ignore the
+            # rest; if that isn't exactly one distinct value, treat the user as undetermined.
+            $whoami = Invoke-WslExe -Arguments @('-d', $DistroName, '--exec', 'whoami')
+            $usernamePattern = '^[a-z_][a-z0-9_-]*[$]?$'
+            $candidateUsers = @($whoami.Output | ForEach-Object { "$_".Trim() } |
+                Where-Object { $_ -match $usernamePattern } | Select-Object -Unique)
+            if ($whoami.ExitCode -ne 0 -or $candidateUsers.Count -ne 1) {
                 Write-WslAutomationLog -Message "could not determine WSL user for distro '$DistroName'" -LogFile $LogFile
                 return [pscustomobject]@{ Status = 'SourceUnavailable'; DestinationPath = $DestinationPath }
             }
-            $WslUser = "$whoamiUser".Trim()
+            $WslUser = $candidateUsers[0]
         }
 
         $SourcePath = "\\wsl.localhost\$DistroName\home\$WslUser\.config\ccstatusline\settings.json"
