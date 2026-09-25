@@ -17,8 +17,9 @@ function Invoke-CodexCloudEnvironmentSync {
         "$env:LOCALAPPDATA\wsl-automation\codex-cloud-sync.log". Every logged line is an
         outcome only - never wslpath or bash output, which may contain account or repository
         data. The one exception is the reconciler's own aggregate-only summary line, logged
-        only when it matches the expected "created/updated/unchanged" or "proposed changes"
-        shape.
+        only when it is an exact match for one of the two summary lines the reconciler prints
+        (dry run or complete); anything else - including a summary line the reconciler
+        appended extra text to - stays unlogged.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -66,8 +67,10 @@ function Invoke-CodexCloudEnvironmentSync {
     $statusLabel = if ($DryRun) { 'dry run completed' } else { 'completed' }
     # The reconciler's status output is aggregate-only (counts, never account or repository
     # data), but nothing here should trust that blindly - only forward it to the log when it
-    # matches the exact expected shape, and drop it silently otherwise.
-    $summaryLine = $syncResult.Output | Where-Object { $_ -match '^Codex Cloud environment sync( dry run)?: .*(changes|created)' } | Select-Object -Last 1
+    # is an exact, fully anchored match for one of the two summary lines
+    # scripts/sync-codex-cloud-environments.sh prints, and drop it silently otherwise (for
+    # example if extra text were ever appended to it).
+    $summaryLine = $syncResult.Output | Where-Object { $_ -match '^Codex Cloud environment sync (dry run: \d+ proposed changes, \d+ unchanged|complete: \d+ created, \d+ updated, \d+ unchanged)$' } | Select-Object -Last 1
     if ($summaryLine) {
         Write-WslAutomationLog -Message "${statusLabel}: $summaryLine" -LogFile $LogFile
     }

@@ -117,4 +117,36 @@ Describe 'Invoke-CodexCloudEnvironmentSync' {
 
         Get-Content -LiteralPath $script:logFile -Raw | Should -Match 'completed'
     }
+
+    It 'logs the exact reconciler summary line when it matches the expected shape' {
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            if ($Arguments -contains 'wslpath') {
+                return [pscustomobject]@{ ExitCode = 0; Output = @('/workspace/scripts/sync-codex-cloud-environments.sh') }
+            }
+            return [pscustomobject]@{ ExitCode = 0; Output = @('Codex Cloud environment sync complete: 0 created, 0 updated, 1 unchanged') }
+        }
+
+        Invoke-CodexCloudEnvironmentSync -LogFile $script:logFile | Out-Null
+
+        Get-Content -LiteralPath $script:logFile -Raw | Should -Match ([regex]::Escape('Codex Cloud environment sync complete: 0 created, 0 updated, 1 unchanged'))
+    }
+
+    It 'does not log a summary line with extra text appended, but still logs completed' {
+        # Regression: the anchored regex must reject a summary line the reconciler decorated
+        # with anything else (here, an email address), not just forward whatever it printed.
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            if ($Arguments -contains 'wslpath') {
+                return [pscustomobject]@{ ExitCode = 0; Output = @('/workspace/scripts/sync-codex-cloud-environments.sh') }
+            }
+            return [pscustomobject]@{ ExitCode = 0; Output = @('Codex Cloud environment sync complete: 0 created, 0 updated, 1 unchanged for someone@example.com') }
+        }
+
+        Invoke-CodexCloudEnvironmentSync -LogFile $script:logFile | Out-Null
+
+        $logContent = Get-Content -LiteralPath $script:logFile -Raw
+        $logContent | Should -Not -Match 'example.com'
+        $logContent | Should -Match 'completed'
+    }
 }
