@@ -11,7 +11,9 @@
 param(
     [string]$DistroName = 'Ubuntu',
 
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    [string]$LogFile
 )
 
 Set-StrictMode -Version Latest
@@ -29,6 +31,7 @@ catch {
 try {
     $parameters = @{ DistroName = $DistroName }
     if ($DryRun) { $parameters['DryRun'] = $true }
+    if ($PSBoundParameters.ContainsKey('LogFile')) { $parameters['LogFile'] = $LogFile }
     $result = Invoke-CodexCloudEnvironmentSync @parameters
     Write-Information -MessageData "Codex Cloud environment sync: $($result.Status)" -InformationAction Continue
     exit 0

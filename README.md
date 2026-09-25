@@ -213,6 +213,8 @@ vice versa, if you choose to gate the backup on session activity too).
 - The synchronizer calls Codex's private ChatGPT web API. That contract is not
   a public stability guarantee, so this script may need an update if Codex
   changes the environment or repository-discovery endpoints.
+- Logs outcomes, without response data, to
+  `%LOCALAPPDATA%\wsl-automation\codex-cloud-sync.log`.
 
 ### Legacy scripts
 
