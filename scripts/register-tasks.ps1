@@ -73,6 +73,12 @@
     looking like `C:\...` or `\\server\share\...`) is automatically expanded back into separate
     paths before archiving.
 
+.PARAMETER SkipTaskHistory
+    Skips enabling the Microsoft-Windows-TaskScheduler/Operational event log (the "History" tab
+    in Task Scheduler), which this installer otherwise enables once per run if it is currently
+    disabled. A failure to enable it only warns; it never aborts task registration. See
+    README.md's "Task history" section for what the log records and how to read it.
+
 .EXAMPLE
     ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL'
 
@@ -140,7 +146,9 @@ param(
         }
     ),
 
-    [string[]]$LegacyScriptsToArchive = @()
+    [string[]]$LegacyScriptsToArchive = @(),
+
+    [switch]$SkipTaskHistory
 )
 
 Set-StrictMode -Version Latest
@@ -155,7 +163,7 @@ try {
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
-        -LegacyScriptsToArchive $LegacyScriptsToArchive -WhatIf:$WhatIfPreference
+        -LegacyScriptsToArchive $LegacyScriptsToArchive -SkipTaskHistory:$SkipTaskHistory -WhatIf:$WhatIfPreference
 
     exit 0
 }

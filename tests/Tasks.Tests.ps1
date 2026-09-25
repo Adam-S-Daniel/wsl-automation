@@ -76,6 +76,20 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         Mock -ModuleName WslAutomation Set-ScheduledTask { }
         Mock -ModuleName WslAutomation Unregister-ScheduledTask { }
         Mock -ModuleName WslAutomation Rename-Item { }
+
+        # Absolute safety net for the Task Scheduler history log, mirroring the Invoke-WslExe
+        # mock above: no test in this file may ever reach the real event log. Every test that
+        # reaches Set-WslAutomationScheduledTasks - which now calls Enable-TaskSchedulerHistory
+        # once per run - mocks this seam, default-shaped as a currently-disabled log with a
+        # SaveChanges ScriptMethod tests can assert against or override per-test.
+        $script:taskHistorySaveChangesCallCount = 0
+        Mock -ModuleName WslAutomation Get-TaskSchedulerHistoryLog {
+            [pscustomobject]@{
+                IsEnabled = $false
+            } | Add-Member -MemberType ScriptMethod -Name SaveChanges -Value {
+                $script:taskHistorySaveChangesCallCount++
+            } -PassThru
+        }
     }
 
     Context 'when none of the scheduled tasks already exists' {
@@ -491,6 +505,70 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
 
             Should -Invoke -ModuleName WslAutomation Rename-Item -Times 0 -Exactly
             $warnings | Where-Object { $_ -match 'Legacy script not found' } | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Task Scheduler history' {
+
+        BeforeEach {
+            Mock -ModuleName WslAutomation Get-ScheduledTask { $null }
+        }
+
+        It 'enables the log and reports Enabled when it is currently disabled' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -InformationVariable infoMessages | Out-Null
+
+            $script:taskHistorySaveChangesCallCount | Should -Be 1
+            ($infoMessages | Out-String) | Should -Match ([regex]::Escape('Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): Enabled'))
+        }
+
+        It 'does not call SaveChanges when the log is already enabled, and reports AlreadyEnabled' {
+            Mock -ModuleName WslAutomation Get-TaskSchedulerHistoryLog {
+                [pscustomobject]@{ IsEnabled = $true } | Add-Member -MemberType ScriptMethod -Name SaveChanges -Value {
+                    $script:taskHistorySaveChangesCallCount++
+                } -PassThru
+            }
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -InformationVariable infoMessages | Out-Null
+
+            $script:taskHistorySaveChangesCallCount | Should -Be 0
+            ($infoMessages | Out-String) | Should -Match ([regex]::Escape('Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): AlreadyEnabled'))
+        }
+
+        It 'does not call SaveChanges under -WhatIf' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WhatIf | Out-Null
+
+            $script:taskHistorySaveChangesCallCount | Should -Be 0
+        }
+
+        It 'never invokes the task-history helper when -SkipTaskHistory is passed' {
+            Mock -ModuleName WslAutomation Enable-TaskSchedulerHistory { 'Enabled' }
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -SkipTaskHistory
+
+            Should -Invoke -ModuleName WslAutomation Enable-TaskSchedulerHistory -Times 0 -Exactly
+        }
+
+        It 'warns but still registers the other tasks when SaveChanges throws' {
+            Mock -ModuleName WslAutomation Get-TaskSchedulerHistoryLog {
+                [pscustomobject]@{ IsEnabled = $false } | Add-Member -MemberType ScriptMethod -Name SaveChanges -Value {
+                    throw 'access denied'
+                } -PassThru
+            }
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+
+            $warnings | Where-Object { $_ -match 'Failed to enable Task Scheduler history' } | Should -Not -BeNullOrEmpty
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Code Session Keeper'
+            }
         }
     }
 }

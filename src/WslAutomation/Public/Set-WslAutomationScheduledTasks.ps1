@@ -108,6 +108,13 @@ function Set-WslAutomationScheduledTasks {
         (each looking like `C:\...` or `\\server\share\...`) is automatically expanded back into
         separate paths before archiving.
 
+    .PARAMETER SkipTaskHistory
+        Skips enabling the Microsoft-Windows-TaskScheduler/Operational event log (the "History"
+        tab in Task Scheduler), which this function otherwise enables once per run if it is
+        currently disabled. A failure to enable it only warns; it never aborts task
+        registration. See README.md's "Task history" section for what the log records and how
+        to read it.
+
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
 
@@ -158,7 +165,9 @@ function Set-WslAutomationScheduledTasks {
 
         [string]$WtPath = (Get-WslAutomationDefaultWtPath),
 
-        [string[]]$LegacyScriptsToArchive = @()
+        [string[]]$LegacyScriptsToArchive = @(),
+
+        [switch]$SkipTaskHistory
     )
 
     if (-not $IsWindows) {
@@ -432,10 +441,30 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Task Scheduler operational log (History tab) ----------------------
+    # Disabled on a fresh Windows install. Without it a scheduled task leaves only its last
+    # result code behind - no start/finish times, no per-run exit code, no record of a run that
+    # was terminated at its execution time limit (see AGENTS.md's interactive-prompt section).
+    # This is best-effort and never fatal: every task above has already been registered or
+    # updated by the time this runs, so a failure here only warns.
+    if ($SkipTaskHistory) {
+        $taskHistoryResult = 'Skipped (-SkipTaskHistory)'
+    }
+    else {
+        try {
+            $taskHistoryResult = Enable-TaskSchedulerHistory -WhatIf:$WhatIfPreference -Confirm:$false
+        }
+        catch {
+            Write-Warning "Failed to enable Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $_"
+            $taskHistoryResult = 'Failed'
+        }
+    }
+
     # --- Summary -------------------------------------------------------------
     Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime)" -InformationAction Continue
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
+    Write-Information -MessageData "Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $taskHistoryResult" -InformationAction Continue
 }

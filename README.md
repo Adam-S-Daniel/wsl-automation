@@ -221,6 +221,46 @@ Any paths passed via `-LegacyScriptsToArchive` are renamed in place to
 this module replaces are preserved for reference but no longer picked up
 by anything.
 
+## Task history
+
+Windows ships with the Task Scheduler operational log
+(`Microsoft-Windows-TaskScheduler/Operational`, the "History" tab in Task
+Scheduler) **disabled**. Without it, a scheduled task leaves only its last
+result code behind - no start or finish times, no per-run exit codes, and no
+record of a run that was terminated at its execution time limit. That gap is
+exactly what made a failed Codex Cloud sync run on a new machine hard to
+diagnose: the only evidence was a single result code, with no way to tell
+when it ran or what it did before failing.
+
+The installer (`scripts\register-tasks.ps1`, via
+`Set-WslAutomationScheduledTasks`) enables this log once per run if it is
+currently disabled. Pass `-SkipTaskHistory` to opt out. A failure to enable
+it only warns - it never aborts task registration.
+
+To read it, once enabled:
+
+```powershell
+Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational |
+    Where-Object Message -match '<task name>'
+```
+
+Event IDs worth knowing:
+
+- **100** - task instance started.
+- **102** - task instance finished.
+- **201** - action completed, with its return code.
+- **329** - task terminated at its execution time limit (see AGENTS.md's
+  "Never leave an interactive prompt in a scheduled-task code path" section -
+  this is the signature of a hung `Read-Host` or other unattended prompt, not
+  a slow run).
+
+To enable it by hand, from an elevated prompt, without running the
+installer:
+
+```powershell
+wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
+```
+
 ## Keeper semantics
 
 - A "Claude session" is a running `claude` process **whose command line
