@@ -172,14 +172,20 @@ window.
   line each - since the hourly retry would otherwise add up to 23 identical
   "already exists" lines to the shared log every day.
 - **What counts as activity** (`Test-WslActivity`, via `ps` inside the
-  distro): any process with a real tty that isn't the Claude Code Remote
-  Control session's own tty, or a `tmux`/`screen` multiplexer session (which
-  commonly has no tty at all). The Remote Control session itself - the
-  keeper's always-on session, kept alive so it can be driven from claude.ai
-  or the phone - does **not** count as activity by itself. **Known
-  limitation:** this only sees processes with a real pty; VS Code Remote -
-  WSL and other tty-less work (for example a `nohup`'d dev server) are not
-  detected as activity and will not defer a backup.
+  distro): a `pts/*` pty (a real console tty, `console`, and no-tty `?` are
+  always infrastructure, never counted) that carries at least one process
+  outside the shell/login set (`login`, `bash`, `sh`, `dash`, `zsh`, `fish`)
+  - an idle prompt loses nothing meaningful if the backup interrupts it, so a
+  pty holding only a login and/or shell process is not activity. The Claude
+  Code Remote Control session's own pty(s), and any pty carrying a
+  `docker-desktop*` process (the WSL integration's own always-present proxy),
+  are excluded outright. A `tmux`/`screen` multiplexer session (which
+  commonly has no tty at all) always counts. The Remote Control session
+  itself - the keeper's always-on session, kept alive so it can be driven
+  from claude.ai or the phone - does **not** count as activity by itself.
+  **Known limitation:** this only sees processes with a real pty; VS Code
+  Remote - WSL and other tty-less work (for example a `nohup`'d dev server)
+  are not detected as activity and will not defer a backup.
 - **Immediately before the export**, once the lock is held, the Claude Code
   Remote Control session is stopped with `SIGTERM` (best-effort - a failure
   only logs). It doesn't count as activity and the keeper relaunches it
