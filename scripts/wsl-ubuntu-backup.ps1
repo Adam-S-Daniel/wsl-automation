@@ -6,10 +6,11 @@
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
     Invoke-WslBackup with the given parameters. Exits 0 when the backup
-    completed or was skipped (already exists for today), exits 1 on any
-    error. Pauses for a keypress on exit unless -NoPause is supplied, so a
-    double-clicked run stays visible; scheduled-task invocations should pass
-    -NoPause.
+    completed, was skipped (already exists for today), or was deferred
+    (recent wake, or WSL in active use) - a deferral is expected, retried
+    behavior, not a failure. Exits 1 on any error. Pauses for a keypress on
+    exit unless -NoPause is supplied, so a double-clicked run stays visible;
+    scheduled-task invocations should pass -NoPause.
 
 .PARAMETER BackupDir
     Directory the finished backup file is written to. Created if missing.
@@ -31,6 +32,19 @@
 .PARAMETER RetentionCount
     Number of backups to keep per tag (daily/weekly). Passed through to
     Invoke-WslBackup only when supplied.
+
+.PARAMETER ForceAfterDays
+    Once the newest existing backup (any tag/format) is more than this many days old, or none
+    exists, force the export through regardless of WSL activity. Passed through to
+    Invoke-WslBackup only when supplied.
+
+.PARAMETER MinMinutesSinceWake
+    Minimum minutes that must have passed since this machine last booted or resumed from sleep
+    before an export is attempted. Passed through to Invoke-WslBackup only when supplied.
+
+.PARAMETER IgnoreActivity
+    Skip the activity gate entirely and export regardless of whether WSL looks in use. Passed
+    through to Invoke-WslBackup only when set.
 
 .PARAMETER NoPause
     Skip the "Press Enter to close" prompt on exit. Use this for scheduled
@@ -58,6 +72,12 @@ param(
 
     [int]$RetentionCount,
 
+    [int]$ForceAfterDays,
+
+    [int]$MinMinutesSinceWake,
+
+    [switch]$IgnoreActivity,
+
     [switch]$NoPause
 )
 
@@ -84,6 +104,9 @@ try {
     if ($PSBoundParameters.ContainsKey('StagingDir')) { $backupParams['StagingDir'] = $StagingDir }
     if ($PSBoundParameters.ContainsKey('LogFile')) { $backupParams['LogFile'] = $LogFile }
     if ($PSBoundParameters.ContainsKey('RetentionCount')) { $backupParams['RetentionCount'] = $RetentionCount }
+    if ($PSBoundParameters.ContainsKey('ForceAfterDays')) { $backupParams['ForceAfterDays'] = $ForceAfterDays }
+    if ($PSBoundParameters.ContainsKey('MinMinutesSinceWake')) { $backupParams['MinMinutesSinceWake'] = $MinMinutesSinceWake }
+    if ($PSBoundParameters.ContainsKey('IgnoreActivity')) { $backupParams['IgnoreActivity'] = $IgnoreActivity }
 
     $result = Invoke-WslBackup @backupParams
     Write-Information -MessageData "Backup result: $($result.Status) - $($result.FilePath)" -InformationAction Continue

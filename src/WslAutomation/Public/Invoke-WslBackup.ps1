@@ -12,6 +12,23 @@ function Invoke-WslBackup {
         OneDrive-synced (or similarly watched) destination, which would otherwise
         cause continuous partial-file re-sync churn.
 
+        'wsl --export' stops the distro it exports (see AGENTS.md's "wsl --export stops the
+        running distro" section), so before exporting this function runs three gates, in order:
+
+        1. A wake guard: too soon after a boot or a resume from sleep, 'wsl --export' can fail
+           outright while WSL is still transitioning (Get-LastWakeTime, -MinMinutesSinceWake).
+        2. A force check: once the newest existing backup (any tag/format) is more than
+           -ForceAfterDays days old (or none exists), the export is forced through regardless of
+           activity, rather than let a persistently busy distro postpone every backup forever.
+        3. Unless forced or -IgnoreActivity is set, an activity gate (Test-WslActivity): a distro
+           that looks actively in use is left alone rather than stopped out from under the user.
+
+        Immediately before the export - after the lock is held - the Claude Code Remote Control
+        session (the keeper's always-on session) is stopped best-effort with SIGTERM. It does not
+        count as activity on its own, and the keeper relaunches it within its own polling
+        interval, so there is nothing gained by leaving it running through an export that is
+        about to stop the whole distro anyway.
+
         A backup.lock file is held for the duration of the export so other
         automation (for example Invoke-ClaudeSessionKeeper) can detect that a
         backup is in progress and wait rather than interrupt it.
@@ -48,11 +65,25 @@ function Invoke-WslBackup {
         Path to the backup lock file. Defaults to the module's standard lock
         path under $env:LOCALAPPDATA.
 
+    .PARAMETER ForceAfterDays
+        Once the newest existing backup (any tag/format) is more than this many days old, or none
+        exists, force the export through regardless of WSL activity. 0 disables forcing entirely.
+        Defaults to 9.
+
+    .PARAMETER MinMinutesSinceWake
+        Minimum number of minutes that must have passed since this machine last booted or resumed
+        from sleep before an export is attempted. Defaults to 10 (see AGENTS.md's "wsl --export
+        fails on a transitioning WSL" section for why 5 was not enough).
+
+    .PARAMETER IgnoreActivity
+        Skip the activity gate (Test-WslActivity) entirely and export regardless of whether WSL
+        looks in use. The wake guard still applies.
+
     .EXAMPLE
         Invoke-WslBackup -BackupDir 'C:\Backups\WSL'
 
         Exports the 'Ubuntu' distro as a tar file into C:\Backups\WSL, staging it
-        locally first.
+        locally first, deferring if the machine just woke or the distro looks in active use.
 
     .EXAMPLE
         Invoke-WslBackup -BackupDir 'C:\Backups\WSL' -Format vhdx -RetentionCount 4
@@ -76,10 +107,14 @@ function Invoke-WslBackup {
 
         [int]$RetentionCount = 2,
 
-        [string]$LockPath = (Get-WslBackupLockPath)
-    )
+        [string]$LockPath = (Get-WslBackupLockPath),
 
-    Write-WslAutomationLog -Message "=== WSL backup starting (distro=$DistroName format=$Format) ===" -LogFile $LogFile
+        [int]$ForceAfterDays = 9,
+
+        [int]$MinMinutesSinceWake = 10,
+
+        [switch]$IgnoreActivity
+    )
 
     # Step 1: compute prefix / tag / final file name.
     $prefix = "wsl-$($DistroName.ToLowerInvariant())"
@@ -89,17 +124,10 @@ function Invoke-WslBackup {
     $FileName = "$prefix-$tag-$dateStamp.$Format"
     $finalPath = Join-Path $BackupDir $FileName
 
-    # Step 2: ensure directories exist.
-    if (-not (Test-Path -LiteralPath $BackupDir)) {
-        New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
-    }
-    if (-not (Test-Path -LiteralPath $StagingDir)) {
-        New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
-    }
-
-    # Step 3: skip-guard.
+    # Step 2: skip-guard, ahead of everything else and with NO log line - the backup task's
+    # hourly retry trigger (see Set-WslAutomationScheduledTasks) would otherwise add up to 23
+    # identical "already exists" lines to the log every day.
     if (Test-Path -LiteralPath $finalPath) {
-        Write-WslAutomationLog -Message "Already exists ($FileName) - skipping." -LogFile $LogFile
         $existingItem = Get-Item -LiteralPath $finalPath
         $skipSizeMB = [math]::Round($existingItem.Length / 1MB, 2)
         return [pscustomobject]@{
@@ -109,13 +137,72 @@ function Invoke-WslBackup {
         }
     }
 
-    # Step 4: clean stale staging artifacts from prior runs.
+    # Step 3: wake guard. 'wsl --export' can fail outright (exit -1) while WSL is still
+    # transitioning after a boot or a resume - see AGENTS.md - so refuse to attempt it too soon
+    # after either.
+    $lastWakeTime = Get-LastWakeTime
+    $minutesSinceWake = ((Get-Date) - $lastWakeTime).TotalMinutes
+    if ($minutesSinceWake -lt $MinMinutesSinceWake) {
+        $roundedMinutesSinceWake = [math]::Floor($minutesSinceWake)
+        Write-WslAutomationLog -Message "Deferred: only $roundedMinutesSinceWake min since boot/resume (need $MinMinutesSinceWake)" -LogFile $LogFile
+        return [pscustomobject]@{
+            Status   = 'DeferredRecentWake'
+            FilePath = $null
+            SizeMB   = $null
+        }
+    }
+
+    # Step 4: force check - once the newest existing backup (any tag/format) is more than
+    # -ForceAfterDays days old, or none exists, the export proceeds regardless of activity rather
+    # than let a persistently busy distro postpone every backup forever.
+    $existingBackups = @(Get-ChildItem -Path $BackupDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "$prefix-*" -and ($_.Extension -eq '.tar' -or $_.Extension -eq '.vhdx') })
+    $newestExistingBackup = $existingBackups | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
+    $backupAgeDays = if ($newestExistingBackup) { [math]::Floor(((Get-Date) - $newestExistingBackup.LastWriteTime).TotalDays) } else { $null }
+    $backupAgeDisplay = if ($null -ne $backupAgeDays) { "$backupAgeDays day(s) old" } else { 'unknown (no prior backup exists)' }
+    $force = $ForceAfterDays -gt 0 -and (-not $newestExistingBackup -or $backupAgeDays -gt $ForceAfterDays)
+
+    # Step 5: activity gate. Deferring while WSL looks actively used is what keeps 'wsl --export'
+    # - which stops the whole distro - from silently killing the user's work. -IgnoreActivity and
+    # a forced export both skip the check outright; only a forced export also logs why.
+    $activity = $null
+    if ($IgnoreActivity) {
+        # Skip the gate entirely and silently - the operator asked for this explicitly.
+    }
+    elseif ($force) {
+        Write-WslAutomationLog -Message "Forcing export: newest backup is $backupAgeDisplay (limit $ForceAfterDays)" -LogFile $LogFile
+    }
+    else {
+        $activity = Test-WslActivity -DistroName $DistroName
+        if ($activity.IsActive) {
+            $activeCommandsJoined = $activity.ActiveCommands -join ', '
+            Write-WslAutomationLog -Message "Deferred: WSL in use ($($activity.ActiveProcessCount) interactive process(es): $activeCommandsJoined); newest backup is $backupAgeDisplay" -LogFile $LogFile
+            return [pscustomobject]@{
+                Status   = 'DeferredBusy'
+                FilePath = $null
+                SizeMB   = $null
+            }
+        }
+    }
+
+    # Step 6: only now commit to actually running the export.
+    Write-WslAutomationLog -Message "=== WSL backup starting (distro=$DistroName format=$Format) ===" -LogFile $LogFile
+
+    # Step 7: ensure directories exist.
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $StagingDir)) {
+        New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
+    }
+
+    # Step 8: clean stale staging artifacts from prior runs.
     Get-ChildItem -Path $StagingDir -Filter "$prefix-*.$Format" -File -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
     Get-ChildItem -Path $StagingDir -Filter '*.partial' -File -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
 
-    # A hard kill (ExecutionTimeLimit, power loss) mid Move-Item (step 9) can orphan a
+    # A hard kill (ExecutionTimeLimit, power loss) mid Move-Item (step 14) can orphan a
     # "<name>.<Format>.partial" file directly in BackupDir. Nothing else in this function ever
     # revisits BackupDir looking for these - the retention filter and the retained-listing
     # extension check both exclude ".partial" - so left alone they persist forever, consuming
@@ -123,20 +210,40 @@ function Invoke-WslBackup {
     Get-ChildItem -Path $BackupDir -Filter "$prefix-*.$Format.partial" -File -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
 
-    # Step 5: acquire the backup lock; everything after this runs in try/finally.
+    # Step 9: acquire the backup lock; everything after this runs in try/finally.
     New-WslBackupLock -LockPath $LockPath -DistroName $DistroName | Out-Null
 
     try {
+        # Step 10: best-effort stop the Claude Code Remote Control session right before the
+        # export. 'wsl --export' is about to stop the whole distro regardless, and the keeper
+        # relaunches the session within its own polling interval, so nothing is preserved by
+        # leaving it running through the export - and killing it first means the export's own
+        # forced 'systemctl poweroff' doesn't take it down uncleanly instead.
+        if ($null -eq $activity) {
+            # Not gathered above under -IgnoreActivity or a forced export - gather it now, purely
+            # to learn the Remote Control session's pid(s).
+            $activity = Test-WslActivity -DistroName $DistroName
+        }
+        foreach ($remoteControlProcessId in $activity.RemoteControlPids) {
+            try {
+                Invoke-WslExe -Arguments @('-d', $DistroName, '--exec', 'kill', '-TERM', "$remoteControlProcessId") | Out-Null
+                Write-WslAutomationLog -Message 'Stopped Claude Remote Control session before export (the keeper relaunches it)' -LogFile $LogFile
+            }
+            catch {
+                Write-WslAutomationLog -Message "Failed to stop Claude Remote Control session (pid $remoteControlProcessId): $_" -LogFile $LogFile
+            }
+        }
+
         $stagingPath = Join-Path $StagingDir $FileName
 
-        # Step 6: run the export.
+        # Step 11: run the export.
         $exportArgs = @('--export', $DistroName, $stagingPath)
         if ($Format -eq 'vhdx') {
             $exportArgs += '--vhd'
         }
         $result = Invoke-WslExe -Arguments $exportArgs
 
-        # Step 7: handle export failure.
+        # Step 12: handle export failure.
         if ($result.ExitCode -ne 0) {
             Write-WslAutomationLog -Message "ERROR: wsl --export failed (exit $($result.ExitCode))" -LogFile $LogFile
             Write-WslAutomationLog -Message "  args: wsl $($exportArgs -join ' ')" -LogFile $LogFile
@@ -152,14 +259,14 @@ function Invoke-WslBackup {
             throw "wsl --export failed (exit $($result.ExitCode))"
         }
 
-        # Step 8: verify the staging file landed and is non-empty.
+        # Step 13: verify the staging file landed and is non-empty.
         $stagingItem = Get-Item -LiteralPath $stagingPath -ErrorAction SilentlyContinue
         if (-not $stagingItem -or $stagingItem.Length -le 0) {
             Write-WslAutomationLog -Message "ERROR: staging file missing or empty after export ($stagingPath)" -LogFile $LogFile
             throw "Staging file missing or empty after export: $stagingPath"
         }
 
-        # Step 9: move into place via a two-step move + rename.
+        # Step 14: move into place via a two-step move + rename.
         $finalPartialPath = "$finalPath.partial"
         try {
             Move-Item -LiteralPath $stagingPath -Destination $finalPartialPath -Force
@@ -173,12 +280,12 @@ function Invoke-WslBackup {
             throw
         }
 
-        # Step 10: log completion size.
+        # Step 15: log completion size.
         $finalItem = Get-Item -LiteralPath $finalPath
         $sizeMB = [math]::Round($finalItem.Length / 1MB, 2)
         Write-WslAutomationLog -Message "Export complete: $sizeMB MB" -LogFile $LogFile
 
-        # Step 11: retention pruning per tag.
+        # Step 16: retention pruning per tag.
         foreach ($retentionTag in @('daily', 'weekly')) {
             $matchingBackups = Get-ChildItem -Path $BackupDir -Filter "$prefix-$retentionTag-*.$Format" -File -ErrorAction SilentlyContinue |
                 Sort-Object -Property Name -Descending
@@ -189,7 +296,7 @@ function Invoke-WslBackup {
             }
         }
 
-        # Step 12: list retained backups (both formats, any tag).
+        # Step 17: list retained backups (both formats, any tag).
         Write-WslAutomationLog -Message 'Retained:' -LogFile $LogFile
         $retainedBackups = Get-ChildItem -Path $BackupDir -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like "$prefix-*" -and ($_.Extension -eq '.tar' -or $_.Extension -eq '.vhdx') } |
@@ -200,7 +307,7 @@ function Invoke-WslBackup {
             Write-WslAutomationLog -Message "  $($retainedItem.Name)  [$retainedSizeMB MB]  $retainedStamp" -LogFile $LogFile
         }
 
-        # Step 13: done.
+        # Step 18: done.
         Write-WslAutomationLog -Message '=== Done ===' -LogFile $LogFile
 
         return [pscustomobject]@{

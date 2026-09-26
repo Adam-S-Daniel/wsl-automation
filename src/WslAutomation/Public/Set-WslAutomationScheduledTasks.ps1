@@ -22,10 +22,19 @@ function Set-WslAutomationScheduledTasks {
         and scripts/grant-keeper-batch-logon.ps1.
 
         When the backup task already exists, its Action and Triggers are replaced but its
-        existing Settings and Principal objects are kept as-is. The keeper, launcher, and
-        ccstatusline and Codex Cloud sync tasks' Settings and Principal are always (re)built fresh from this function's
+        existing Settings and Principal objects are otherwise kept as-is - except that
+        StartWhenAvailable is always reset to $false on the carried-through Settings object (see
+        -BackupRetryIntervalMinutes for why). The keeper, launcher, and ccstatusline and Codex
+        Cloud sync tasks' Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
         in sync. Re-running this function is idempotent for all five tasks.
+
+        The backup task's trigger fires daily at -BackupTime and then repeats every
+        -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
+        deferred (a recent wake, or WSL in active use) - or one simply missed because the machine
+        was asleep at -BackupTime - gets retried on an hourly cadence instead of relying on
+        -StartWhenAvailable, which used to fire a missed run the instant the machine woke, before
+        WSL had finished its own post-wake transition (see AGENTS.md).
 
         Also archives any legacy scripts passed via -LegacyScriptsToArchive by renaming them
         out of the way, so a stale scheduled task still pointing at an old script path fails
@@ -53,11 +62,16 @@ function Set-WslAutomationScheduledTasks {
         from sleep to run the backup. Off by default: on Modern Standby (S0 low-power idle)
         laptops - which never truly sleep and instead sit in connected standby - a scheduled
         wake pulls the SoC back out of its low-power phase and has been observed to hang the
-        machine in a half-woken state that only a hard power-off recovers. With this off the
-        backup instead relies on -StartWhenAvailable, running at the next opportunity the
-        machine is already awake if its scheduled time was missed. Only enable this on hardware
-        where scheduled wake is reliable (for example an S3-capable desktop). This only affects
-        a freshly registered backup task; an existing task's Settings are preserved as-is.
+        machine in a half-woken state that only a hard power-off recovers. With this off, a
+        missed 02:00 run is instead caught by the trigger's own hourly repetition
+        (-BackupRetryIntervalMinutes) the next time the machine is awake - not by
+        -StartWhenAvailable, which this task no longer sets on either a fresh registration or an
+        update: it used to fire a missed run the instant the machine woke, straight into the WSL
+        transition window Invoke-WslBackup's own wake guard now defers instead (see AGENTS.md).
+        Only enable -WakeBackupToRun on hardware where scheduled wake is reliable (for example an
+        S3-capable desktop). This only affects a freshly registered task's WakeToRun setting; an
+        existing task's WakeToRun is preserved as-is, though its StartWhenAvailable is always
+        reset to $false.
 
     .PARAMETER BackupTaskName
         Name of the scheduled task that runs the backup. Defaults to 'WSL Ubuntu Daily Backup'.
@@ -72,6 +86,12 @@ function Set-WslAutomationScheduledTasks {
 
     .PARAMETER BackupTime
         Time of day (HH:mm) the backup task's daily trigger fires. Defaults to '02:00'.
+
+    .PARAMETER BackupRetryIntervalMinutes
+        How often, in minutes, the backup task's trigger repeats over the day following
+        -BackupTime, so a run deferred by Invoke-WslBackup's wake guard or activity gate (or
+        simply missed because the machine was asleep) gets retried without -StartWhenAvailable.
+        Defaults to 60.
 
     .PARAMETER KeeperIntervalMinutes
         How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
@@ -153,6 +173,8 @@ function Set-WslAutomationScheduledTasks {
 
         [string]$BackupTime = '02:00',
 
+        [int]$BackupRetryIntervalMinutes = 60,
+
         [int]$KeeperIntervalMinutes = 5,
 
         [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
@@ -184,16 +206,37 @@ function Set-WslAutomationScheduledTasks {
     $ScriptsDir = $ScriptsDir.TrimEnd('\')
     $PwshPath = $PwshPath.TrimEnd('\')
 
-    # --- Backup task: action + single daily trigger -----------------------
+    # --- Backup task: action + daily trigger repeating over the following day ---------------
     $backupScriptPath = Join-Path $ScriptsDir 'wsl-ubuntu-backup.ps1'
     $backupArguments = "-NoProfile -File `"$backupScriptPath`" -BackupDir `"$BackupDir`" -DistroName $DistroName -Format $Format -NoPause"
     $backupAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $backupArguments
     $backupTrigger = New-ScheduledTaskTrigger -Daily -At $BackupTime
 
+    # -Daily has no -RepetitionInterval/-RepetitionDuration parameter set at all (unlike -Once,
+    # see the keeper trigger comment below), and a trigger built without one has Repetition =
+    # $null - mutating .Repetition.Interval on that $null throws the same "property 'Interval'
+    # cannot be found" error a -Once trigger hits. Building a whole new MSFT_TaskRepetitionPattern
+    # CimInstance and assigning it to .Repetition (rather than mutating a property on the existing
+    # null one) is the construction that actually works; verified by hand against pwsh 7.6's
+    # ScheduledTasks module (construction only, nothing registered).
+    # [System.Xml.XmlConvert]::ToString(timespan) is used rather than hand-formatting an ISO 8601
+    # duration string so a non-round-number interval (for example 90 minutes) still comes out
+    # correct ('PT1H30M'), not just the common cases.
+    $backupRepetition = New-CimInstance -ClassName MSFT_TaskRepetitionPattern -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClientOnly -Property @{
+        Interval          = [System.Xml.XmlConvert]::ToString([timespan]::FromMinutes($BackupRetryIntervalMinutes))
+        Duration          = [System.Xml.XmlConvert]::ToString([timespan]::FromDays(1))
+        StopAtDurationEnd = $false
+    }
+    $backupTrigger.Repetition = $backupRepetition
+
     $existingBackupTask = Get-ScheduledTask -TaskName $BackupTaskName -ErrorAction SilentlyContinue
     if ($existingBackupTask) {
         # Keep the existing Settings/Principal; only Action and Triggers are replaced (this
         # intentionally drops any logon/other trigger the task may have picked up over time).
+        # StartWhenAvailable is always forced off on the carried-through Settings object - see
+        # -BackupRetryIntervalMinutes for why - everything else on it (including WakeToRun) is
+        # left exactly as the existing task had it.
+        $existingBackupTask.Settings.StartWhenAvailable = $false
         if ($PSCmdlet.ShouldProcess($BackupTaskName, 'Update scheduled task')) {
             Set-WslScheduledTask -TaskName $BackupTaskName -Action $backupAction -Trigger $backupTrigger `
                 -Settings $existingBackupTask.Settings -Principal $existingBackupTask.Principal
@@ -201,10 +244,11 @@ function Set-WslAutomationScheduledTasks {
     }
     else {
         # -WakeToRun is opt-in (see -WakeBackupToRun): waking a Modern Standby laptop for the
-        # backup can hang it in a half-woken state. -StartWhenAvailable still catches up a missed
-        # run the next time the machine is awake, which is the intended behavior when not waking.
+        # backup can hang it in a half-woken state. StartWhenAvailable is off - the trigger's own
+        # -BackupRetryIntervalMinutes repetition is what catches up a missed run now, without
+        # firing the instant the machine wakes into WSL's own post-wake transition window.
         $backupSettingsParams = @{
-            StartWhenAvailable = $true
+            StartWhenAvailable = $false
             ExecutionTimeLimit = New-TimeSpan -Hours 4
             MultipleInstances  = 'IgnoreNew'
         }
@@ -461,7 +505,7 @@ function Set-WslAutomationScheduledTasks {
     }
 
     # --- Summary -------------------------------------------------------------
-    Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime)" -InformationAction Continue
+    Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime, retrying every $BackupRetryIntervalMinutes min for up to 1 day)" -InformationAction Continue
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue

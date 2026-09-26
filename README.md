@@ -123,20 +123,68 @@ vice versa, if you choose to gate the backup on session activity too).
 
 ### Backup task (default name: `WSL Ubuntu Daily Backup`)
 
-- Runs `scripts\wsl-ubuntu-backup.ps1` once a day at a fixed time (default
-  02:00), via a single daily trigger (any pre-existing logon or other
-  triggers on the task are replaced with just this one).
-- Settings: does **not** wake the machine to run by default - it starts as
-  soon as possible once the machine is next awake if the scheduled time was
-  missed (`-StartWhenAvailable`), has a 4 hour execution time limit, and
-  will not start a second instance while one is already running
-  (`-MultipleInstances IgnoreNew`). Pass `-WakeBackupToRun` to register it
-  with `-WakeToRun` instead. Waking is off by default because on Modern
+`wsl --export` stops the distro it exports - tar or vhdx, in use or not (see
+AGENTS.md's "wsl --export stops the running distro" section) - so this task
+is built around not exporting out from under a live session, and around
+retrying rather than waking straight into WSL's own post-wake transition
+window.
+
+- Runs `scripts\wsl-ubuntu-backup.ps1` daily at a fixed time (default 02:00),
+  then **retries every `-BackupRetryIntervalMinutes` (default 60 minutes) for
+  the following day** if that run didn't complete - any pre-existing logon or
+  other triggers on the task are replaced with just this one. This replaces
+  the previous `-StartWhenAvailable` catch-up, which used to fire a missed
+  run the instant the machine came back from sleep, before `Invoke-WslBackup`
+  had a chance to check anything.
+- Settings: does **not** wake the machine to run (`-WakeToRun` is off by
+  default) and does **not** use `-StartWhenAvailable` - the hourly retry
+  above is what catches up a missed run instead. Has a 4 hour execution time
+  limit and will not start a second instance while one is already running
+  (`-MultipleInstances IgnoreNew`). Pass `-WakeBackupToRun` to register a
+  *fresh* task with `-WakeToRun`; waking is off by default because on Modern
   Standby (S0 low-power idle) laptops a scheduled wake can hang the machine
-  in a half-woken state; enable it only on hardware where scheduled wake is
-  reliable, such as an S3-capable desktop.
+  in a half-woken state - enable it only on hardware where scheduled wake is
+  reliable, such as an S3-capable desktop. Re-running the installer against
+  an *existing* backup task always forces `StartWhenAvailable` back to
+  `$false` while leaving everything else on it (including `WakeToRun`) as it
+  already was.
 - Runs the backup interactively as the current user (needed for `wsl.exe`
   to reach the right WSL session).
+- **Before every export**, `Invoke-WslBackup` runs three checks, in order:
+  1. **Wake guard.** If fewer than `-MinMinutesSinceWake` (default 10)
+     minutes have passed since the machine last booted or resumed from
+     sleep, the run is deferred (`DeferredRecentWake`) and logs one line
+     explaining why - `wsl --export` can otherwise fail outright while WSL is
+     still transitioning (see AGENTS.md).
+  2. **Force check.** Once the newest existing backup (any tag/format) is
+     more than `-ForceAfterDays` (default 9; 0 disables this) days old, or
+     none exists yet, the export is forced through regardless of activity -
+     a persistently busy distro must not be allowed to postpone every backup
+     forever.
+  3. **Activity gate**, unless forced or `-IgnoreActivity` is passed: if the
+     distro looks actively used (`Test-WslActivity` - see below), the run is
+     deferred (`DeferredBusy`) rather than kill live work, and logs one line
+     naming how many interactive processes and which command names (never
+     raw arguments) made it look busy.
+
+  A run that finds today's backup file already present returns `Skipped`
+  with **no log line at all** - unlike the deferrals above, which do log one
+  line each - since the hourly retry would otherwise add up to 23 identical
+  "already exists" lines to the shared log every day.
+- **What counts as activity** (`Test-WslActivity`, via `ps` inside the
+  distro): any process with a real tty that isn't the Claude Code Remote
+  Control session's own tty, or a `tmux`/`screen` multiplexer session (which
+  commonly has no tty at all). The Remote Control session itself - the
+  keeper's always-on session, kept alive so it can be driven from claude.ai
+  or the phone - does **not** count as activity by itself. **Known
+  limitation:** this only sees processes with a real pty; VS Code Remote -
+  WSL and other tty-less work (for example a `nohup`'d dev server) are not
+  detected as activity and will not defer a backup.
+- **Immediately before the export**, once the lock is held, the Claude Code
+  Remote Control session is stopped with `SIGTERM` (best-effort - a failure
+  only logs). It doesn't count as activity and the keeper relaunches it
+  within its own polling interval, so nothing is preserved by leaving it
+  running through an export that is about to stop the whole distro anyway.
 
 ### Keeper task (default name: `Claude Code Session Keeper`)
 

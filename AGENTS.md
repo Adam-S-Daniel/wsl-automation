@@ -119,8 +119,9 @@ Re-open this only if Microsoft ships a WSL event provider.
 ### Why the backup is a daily timer and not an at-logon trigger
 
 `Set-WslAutomationScheduledTasks` deliberately replaces whatever triggers a
-backup task has accumulated with a single daily one. The at-logon alternative
-was measured and rejected — don't reintroduce it.
+backup task has accumulated with a single daily trigger (now repeating hourly
+for the following day — see below). The at-logon alternative was measured and
+rejected — don't reintroduce it.
 
 - **An at-logon trigger fires only on a real logon.** Not on unlock (that is a
   separate `SessionStateChangeTrigger` with `StateChange=SessionUnlock`) and not
@@ -131,17 +132,52 @@ was measured and rejected — don't reintroduce it.
   onto under half the days, including one stretch of nearly two weeks with none
   at all.
 
-So an at-logon trigger alone cannot guarantee a daily backup. The fixed daily
-time plus `-StartWhenAvailable` is the mechanism that actually catches up a
-missed run.
+So an at-logon trigger alone cannot guarantee a daily backup. A fixed daily
+time is still the mechanism.
 
-### `wsl --export` fails on a *transitioning* WSL, not a busy one
+**The catch-up for a missed run is now the trigger's own hourly repetition
+(`-BackupRetryIntervalMinutes`, default 60, for one day), not
+`-StartWhenAvailable`.** `-StartWhenAvailable` used to fire a missed run the
+instant the machine came back — which is exactly the wrong moment twice over:
+it lands inside the WSL post-wake transition window (see below), and it gives
+`Invoke-WslBackup`'s own wake guard and activity gate (`Test-WslActivity`) no
+chance to defer first. An hourly retry still catches up a missed day within
+the same day, without racing the wake.
 
-Don't schedule an export to land right after a boot or a resume — and don't
-blame a failed export on the distro being in use.
+### `wsl --export` stops the running distro
 
-- **Concurrent use is not the failure mode.** A full-size export completed
-  cleanly while the distro was actively being worked in.
+Verified 2026-09-25 on BOXY (WSL 2.7.14): a throwaway distro's shell was
+watching `dmesg -w` when a backup export ran against it, and the export
+killed it exactly as `wsl --shutdown` would. The production journal shows the
+same thing on every real backup, right after the export starts:
+
+```
+InitTerminateInstanceInternal ... systemctl poweroff
+```
+
+**No flag or config avoids this** — `wsl --export` always stops the distro it
+exports, tar or vhdx, in use or not. This is why `Invoke-WslBackup` gates on
+`Test-WslActivity` before exporting (deferring while the distro looks
+actively used, forcing through anyway once the newest backup is more than
+`-ForceAfterDays` days old) rather than trying to export around a live
+session.
+
+`--vhd` needs the vhdx detached from the WSL utility VM to export, which does
+not happen while any *other* distro is still attached to that same shared VM
+(for example `docker-desktop`, which most machines keep running) — a second,
+independent reason a vhdx export can fail with `ERROR_SHARING_VIOLATION` even
+against an idle target distro, on top of the freshly-`--import`ed-and-never-
+booted case below.
+
+### `wsl --export` fails on a *transitioning* WSL, not (only) a busy one
+
+Don't schedule an export to land right after a boot or a resume. Concurrent
+use is not itself a Windows-side failure mode for the export call — a
+full-size export completed cleanly while the distro was actively being
+worked in — but the export still stops the distro either way (see above), so
+`Invoke-WslBackup`'s activity gate exists independently of this transition
+issue.
+
 - **Both observed `exit -1` failures hit WSL mid-transition:** one where a
   scheduled wake pulled the machine out of sleep and the export died seconds
   later, and one where a `-StartWhenAvailable` catch-up fired a few minutes
@@ -152,9 +188,13 @@ blame a failed export on the distro being in use.
   triggered off boot or logon therefore needs a delay of ten minutes, not five;
   five would have cleared the observed worst case by about a minute.
 
-This is the one gap `-StartWhenAvailable` leaves open: it deliberately fires a
-missed run at the next opportunity, which can be moments after a resume. Any
-work that adds a boot/resume-adjacent trigger owes it a delay.
+This is the gap `Invoke-WslBackup`'s own wake guard (`-MinMinutesSinceWake`,
+via the private `Get-LastWakeTime`) now closes directly, rather than relying
+on the scheduled task's own timing: any run — the daily trigger, an hourly
+retry, or a manual invocation — checks minutes-since-boot-or-resume itself
+and defers (`DeferredRecentWake`) rather than attempt the export inside the
+transition window. Any other work that adds a boot/resume-adjacent trigger
+owes the same delay.
 
 ### Never leave an interactive prompt in a scheduled-task code path
 
