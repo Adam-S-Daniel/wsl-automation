@@ -273,6 +273,37 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
+        It 'registers the backup task with StartWhenAvailable = $false (hourly retry replaces the catch-up run)' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            # Only the backup task's Settings explicitly pins StartWhenAvailable; the other
+            # New-ScheduledTaskSettingsSet calls (keeper, ccstatusline, Codex Cloud) never pass
+            # the parameter at all, so it binds as $null there, not $false.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
+                $StartWhenAvailable -eq $false
+            }
+        }
+
+        It 'builds the backup trigger with Repetition.Interval PT1H and Duration P1D by default' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Trigger.Repetition.Interval -eq 'PT1H' -and $Trigger.Repetition.Duration -eq 'P1D'
+            }
+        }
+
+        It 'builds the backup trigger repetition interval from -BackupRetryIntervalMinutes' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -BackupRetryIntervalMinutes 30
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and $Trigger.Repetition.Interval -eq 'PT30M'
+            }
+        }
+
         It 'sanitizes a trailing backslash in BackupDir so the composed action arguments stay well-formed' {
             $backupDirWithTrailingSlash = $script:backupDir + '\'
 
@@ -295,7 +326,12 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         BeforeEach {
             $script:existingBackupTask = [pscustomobject]@{
                 TaskName  = 'WSL Ubuntu Daily Backup'
-                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                # StartWhenAvailable = $true mirrors what a task registered before this change
+                # actually has on disk (a real Get-ScheduledTask result always carries this
+                # property) - the fixture needs it present so the implementation's in-place
+                # ".StartWhenAvailable = $false" mutation has a real property to write to,
+                # exactly as it would against a real CimInstance from Get-ScheduledTask.
+                Settings  = [pscustomobject]@{ ExistingSettings = $true; StartWhenAvailable = $true }
                 Principal = [pscustomobject]@{ ExistingPrincipal = $true }
             }
 
@@ -332,6 +368,28 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'WSL Ubuntu Daily Backup' -and
                 $Trigger.Count -eq 1 -and $Trigger[0].IsDaily -eq $true
+            }
+        }
+
+        It 'sets Repetition.Interval PT1H and Duration P1D on the trigger by default' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Trigger[0].Repetition.Interval -eq 'PT1H' -and $Trigger[0].Repetition.Duration -eq 'P1D'
+            }
+        }
+
+        It 'forces StartWhenAvailable to $false on the carried-through Settings object while keeping the rest' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $script:existingBackupTask.Settings.StartWhenAvailable | Should -BeFalse
+            $script:existingBackupTask.Settings.ExistingSettings | Should -BeTrue
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Settings.StartWhenAvailable -eq $false -and $Settings.ExistingSettings -eq $true
             }
         }
     }

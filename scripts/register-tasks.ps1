@@ -44,6 +44,11 @@
 .PARAMETER BackupTime
     Time of day (HH:mm) the backup task's daily trigger fires. Defaults to '02:00'.
 
+.PARAMETER BackupRetryIntervalMinutes
+    How often, in minutes, the backup task's trigger repeats over the day following -BackupTime,
+    so a run Invoke-WslBackup itself deferred (recent wake, or WSL busy) - or one simply missed
+    because the machine was asleep - gets retried without -StartWhenAvailable. Defaults to 60.
+
 .PARAMETER KeeperIntervalMinutes
     How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
 
@@ -110,6 +115,8 @@ param(
 
     [string]$BackupTime = '02:00',
 
+    [int]$BackupRetryIntervalMinutes = 60,
+
     [int]$KeeperIntervalMinutes = 5,
 
     [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
@@ -160,6 +167,7 @@ try {
     Set-WslAutomationScheduledTasks -ScriptsDir $ScriptsDir -BackupDir $BackupDir -DistroName $DistroName `
         -Format $Format -WakeBackupToRun:$WakeBackupToRun -BackupTaskName $BackupTaskName `
         -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
+        -BackupRetryIntervalMinutes $BackupRetryIntervalMinutes `
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
