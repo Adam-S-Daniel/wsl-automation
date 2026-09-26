@@ -25,13 +25,34 @@ function Test-WslActivity {
         identified as any process whose comm is 'claude' and whose args match
         -RemoteControlPattern, and its pid(s) and tty(s) are recorded separately.
 
-        The distro is considered ACTIVE if, excluding the 'ps' process this check itself runs and
-        any Remote Control process:
+        Only 'pts/*' ttys are considered for the tty rule below - a real console tty (e.g.
+        'tty1', a getty's always-present login prompt), 'console', and '?' (no tty at all) are
+        ignored by it, since none of them can be a user's interactive terminal. Within the
+        remaining ptys, two more things are excluded before anything counts as activity:
 
-        - any remaining process has a real tty (not '?') that is not one of the Remote Control
-          session's own ttys; or
+        - the Remote Control session's own pty(s), as before; and
+        - any pty on which any process's comm starts with 'docker-desktop' (the WSL integration's
+          own always-present proxy process, never a user), and any process anywhere whose comm
+          starts with 'docker-desktop', even one off such a pty.
+
+        Of what remains, an idle login prompt or a shell sitting at an empty prompt loses nothing
+        meaningful if a backup interrupts it, so a pty only counts as ACTIVE if it carries at
+        least one process whose comm is NOT in the shell/login set: 'login', 'bash', 'sh', 'dash',
+        'zsh', 'fish', '-bash', '-sh', '-zsh'. A pty holding only login and/or shell processes is
+        idle.
+
+        The distro overall is considered ACTIVE if, excluding the 'ps' process this check itself
+        runs:
+
+        - any pty, per the rules above, is itself active; or
         - any process's comm is 'tmux: server', 'tmux', 'screen', or 'SCREEN' (a multiplexer
-          session, which commonly runs detached with no tty of its own).
+          session, which commonly runs detached with no tty of its own, so it is never subject to
+          the pty rules above).
+
+        ActiveProcessCount counts the non-shell/login processes on active ptys, plus any
+        multiplexer processes; ActiveCommands lists their distinct comm names; ActiveTerminalCount
+        counts the active ptys themselves (a detached multiplexer session adds to the process
+        count and to ActiveCommands but, having no pty, never to the terminal count).
 
         Process argument lists are never returned or logged - only distinct command names - since
         the backup log lives in a shared OneDrive folder.
@@ -60,11 +81,12 @@ function Test-WslActivity {
 
     if ((Get-WslDistroState -DistroName $DistroName) -ne 'Running') {
         return [pscustomobject]@{
-            IsActive           = $false
-            Reason             = 'NotRunning'
-            ActiveProcessCount = 0
-            ActiveCommands     = @()
-            RemoteControlPids  = @()
+            IsActive            = $false
+            Reason              = 'NotRunning'
+            ActiveProcessCount  = 0
+            ActiveCommands      = @()
+            ActiveTerminalCount = 0
+            RemoteControlPids   = @()
         }
     }
 
@@ -72,11 +94,12 @@ function Test-WslActivity {
 
     if ($result.ExitCode -ne 0) {
         return [pscustomobject]@{
-            IsActive           = $true
-            Reason             = 'ProbeFailed'
-            ActiveProcessCount = 0
-            ActiveCommands     = @()
-            RemoteControlPids  = @()
+            IsActive            = $true
+            Reason              = 'ProbeFailed'
+            ActiveProcessCount  = 0
+            ActiveCommands      = @()
+            ActiveTerminalCount = 0
+            RemoteControlPids   = @()
         }
     }
 
@@ -126,29 +149,58 @@ function Test-WslActivity {
         }
     }
 
+    $shellCommands = @('login', 'bash', 'sh', 'dash', 'zsh', 'fish', '-bash', '-sh', '-zsh')
     $multiplexerCommands = @('tmux: server', 'tmux', 'screen', 'SCREEN')
-    $activeProcesses = @($processes | Where-Object {
-            $_.Comm -ne 'ps' -and (
-                ($_.Tty -ne '?' -and $remoteControlTtys -notcontains $_.Tty) -or
-                $multiplexerCommands -contains $_.Comm
-            )
+
+    # Any pty carrying a docker-desktop process is excluded outright, on top of the Remote
+    # Control session's own pty(s).
+    $dockerDesktopTtys = @($processes | Where-Object { $_.Comm -like 'docker-desktop*' } |
+            Select-Object -ExpandProperty Tty -Unique)
+    $excludedTtys = @($remoteControlTtys + $dockerDesktopTtys | Select-Object -Unique)
+
+    # Only pts/* ttys are candidate user terminals - a console getty, 'console' and '?' (no tty
+    # at all) are always infrastructure or headless, never a user. 'ps' itself and any
+    # docker-desktop process are never counted, even on a pty this loop would otherwise consider.
+    $candidateProcesses = @($processes | Where-Object {
+            $_.Comm -ne 'ps' -and
+            $_.Comm -notlike 'docker-desktop*' -and
+            $_.Tty -like 'pts/*' -and
+            $excludedTtys -notcontains $_.Tty
         })
+
+    # A pty only counts as active if it carries at least one process outside the shell/login set
+    # - an idle prompt loses nothing meaningful if the backup interrupts it.
+    $activeProcesses = @()
+    $activeTerminalCount = 0
+    foreach ($ttyGroup in @($candidateProcesses | Group-Object -Property Tty)) {
+        $nonShellProcesses = @($ttyGroup.Group | Where-Object { $shellCommands -notcontains $_.Comm })
+        if ($nonShellProcesses.Count -gt 0) {
+            $activeTerminalCount++
+            $activeProcesses += $nonShellProcesses
+        }
+    }
+
+    # A multiplexer session commonly runs detached with no tty of its own, so it is active
+    # regardless of the pty rules above, and never adds to ActiveTerminalCount.
+    $activeProcesses += @($processes | Where-Object { $multiplexerCommands -contains $_.Comm })
 
     if ($activeProcesses.Count -gt 0) {
         return [pscustomobject]@{
-            IsActive           = $true
-            Reason             = 'Active'
-            ActiveProcessCount = $activeProcesses.Count
-            ActiveCommands     = @($activeProcesses | Select-Object -ExpandProperty Comm -Unique)
-            RemoteControlPids  = $remoteControlPids
+            IsActive            = $true
+            Reason              = 'Active'
+            ActiveProcessCount  = $activeProcesses.Count
+            ActiveCommands      = @($activeProcesses | Select-Object -ExpandProperty Comm -Unique)
+            ActiveTerminalCount = $activeTerminalCount
+            RemoteControlPids   = $remoteControlPids
         }
     }
 
     return [pscustomobject]@{
-        IsActive           = $false
-        Reason             = 'Idle'
-        ActiveProcessCount = 0
-        ActiveCommands     = @()
-        RemoteControlPids  = $remoteControlPids
+        IsActive            = $false
+        Reason              = 'Idle'
+        ActiveProcessCount  = 0
+        ActiveCommands      = @()
+        ActiveTerminalCount = 0
+        RemoteControlPids   = $remoteControlPids
     }
 }
