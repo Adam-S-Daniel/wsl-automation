@@ -295,12 +295,18 @@ Describe 'Test-WslActivity' {
         BeforeAll {
             # Shared snapshot for these tests: pid 500 is the login shell on pts/5; pid 31073 is
             # a non-Remote-Control claude session on pts/5 with an npm/sh/node MCP child tree.
-            function New-ClaudeTreeInvokeWslExeMock {
+            function Get-ClaudeTreeInvokeWslExeMock {
                 param(
                     [string]$SessionStatusJson = $null,
                     [int]$SessionStatusExitCode = 0,
                     [switch]$ExtraIdlePtyVim
                 )
+
+                # Captured into plain locals - rather than read directly from the parameters
+                # inside the returned scriptblock below - so both parameters are used here, in
+                # this function's own body, and not only inside the nested closure.
+                $capturedSessionStatusJson = $SessionStatusJson
+                $capturedSessionStatusExitCode = $SessionStatusExitCode
 
                 $psLines = @(
                     '  500      1 pts/5  bash            -bash'
@@ -320,8 +326,8 @@ Describe 'Test-WslActivity' {
                         return [pscustomobject]@{ ExitCode = 0; Output = $psLines }
                     }
                     return [pscustomobject]@{
-                        ExitCode = $SessionStatusExitCode
-                        Output   = if ($null -ne $SessionStatusJson) { @($SessionStatusJson) } else { @() }
+                        ExitCode = $capturedSessionStatusExitCode
+                        Output   = if ($null -ne $capturedSessionStatusJson) { @($capturedSessionStatusJson) } else { @() }
                     }
                 }.GetNewClosure()
             }
@@ -329,7 +335,7 @@ Describe 'Test-WslActivity' {
 
         It '(a) reports not active, with IdleClaudePids populated, when the session file reports status idle' {
             Mock -ModuleName WslAutomation Invoke-WslExe (
-                New-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":31073,"sessionId":"x","status":"idle"}'
+                Get-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":31073,"sessionId":"x","status":"idle"}'
             )
 
             $activity = Test-WslActivity -DistroName 'Ubuntu'
@@ -340,7 +346,7 @@ Describe 'Test-WslActivity' {
 
         It '(b) reports active, with claude in ActiveCommands, when the session file reports status busy' {
             Mock -ModuleName WslAutomation Invoke-WslExe (
-                New-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":31073,"sessionId":"x","status":"busy"}'
+                Get-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":31073,"sessionId":"x","status":"busy"}'
             )
 
             $activity = Test-WslActivity -DistroName 'Ubuntu'
@@ -352,7 +358,7 @@ Describe 'Test-WslActivity' {
 
         It '(c) reports active when the session file is missing (cat exits non-zero)' {
             Mock -ModuleName WslAutomation Invoke-WslExe (
-                New-ClaudeTreeInvokeWslExeMock -SessionStatusExitCode 1
+                Get-ClaudeTreeInvokeWslExeMock -SessionStatusExitCode 1
             )
 
             $activity = Test-WslActivity -DistroName 'Ubuntu'
@@ -364,7 +370,7 @@ Describe 'Test-WslActivity' {
 
         It '(d) reports active when the session file content is malformed JSON' {
             Mock -ModuleName WslAutomation Invoke-WslExe (
-                New-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{not valid json'
+                Get-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{not valid json'
             )
 
             $activity = Test-WslActivity -DistroName 'Ubuntu'
@@ -376,7 +382,7 @@ Describe 'Test-WslActivity' {
 
         It '(e) reports active when the session file pid does not match the process pid, even with status idle' {
             Mock -ModuleName WslAutomation Invoke-WslExe (
-                New-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":99999,"sessionId":"x","status":"idle"}'
+                Get-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":99999,"sessionId":"x","status":"idle"}'
             )
 
             $activity = Test-WslActivity -DistroName 'Ubuntu'
@@ -388,7 +394,7 @@ Describe 'Test-WslActivity' {
 
         It '(f) reports active because of vim on another pty, while still reporting the idle claude session' {
             Mock -ModuleName WslAutomation Invoke-WslExe (
-                New-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":31073,"sessionId":"x","status":"idle"}' -ExtraIdlePtyVim
+                Get-ClaudeTreeInvokeWslExeMock -SessionStatusJson '{"pid":31073,"sessionId":"x","status":"idle"}' -ExtraIdlePtyVim
             )
 
             $activity = Test-WslActivity -DistroName 'Ubuntu'

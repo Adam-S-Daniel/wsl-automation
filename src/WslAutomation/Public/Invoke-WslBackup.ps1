@@ -253,6 +253,7 @@ function Invoke-WslBackup {
             catch {
                 # Best-effort - a failure here is not worth failing the backup over, and the
                 # message must never carry a pid or session id.
+                Write-Verbose 'Failed to stop an idle Claude session before export'
             }
         }
         if ($stoppedIdleClaudeCount -gt 0) {

@@ -206,6 +206,7 @@ function Test-WslActivity {
         catch {
             # Missing file, non-zero exit surfaced as an exception, malformed JSON - all fail
             # safe to busy ($isIdle stays $false). Never log the exception or the file content.
+            Write-Verbose 'Claude session status check failed; treating as busy'
         }
 
         if ($isIdle) {
