@@ -186,11 +186,27 @@ window.
   **Known limitation:** this only sees processes with a real pty; VS Code
   Remote - WSL and other tty-less work (for example a `nohup`'d dev server)
   are not detected as activity and will not defer a backup.
+- **A Claude Code session only counts as activity while it is busy.** Every
+  `claude` process that isn't the Remote Control session gets its own status
+  read from `~/.claude/sessions/<pid>.json` (one `wsl --exec` call per pid) -
+  a per-session file Claude Code itself writes, observed in Claude Code
+  2.1.282, undocumented and Claude Code-internal. Its `status` field is
+  `busy` while a turn is running; anything else this check recognises as
+  `idle` is not counted, and it and everything it spawned (MCP servers,
+  shells) is excluded before the pty rules above run - a pty holding only an
+  idle Claude session and a login shell is idle. Because the file's shape is
+  undocumented, this **fails safe to busy** on anything unexpected: a missing
+  file, a read failure, a parse error, a pid that doesn't match, or any
+  status other than exactly `idle`.
 - **Immediately before the export**, once the lock is held, the Claude Code
   Remote Control session is stopped with `SIGTERM` (best-effort - a failure
   only logs). It doesn't count as activity and the keeper relaunches it
   within its own polling interval, so nothing is preserved by leaving it
   running through an export that is about to stop the whole distro anyway.
+  Every idle Claude session found above is stopped the same way at the same
+  point - it's resumable afterwards with `claude --resume`, and the export is
+  about to stop the whole distro regardless. Only the count of sessions
+  stopped is logged, never a pid or session id.
 
 ### Keeper task (default name: `Claude Code Session Keeper`)
 

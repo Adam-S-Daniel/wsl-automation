@@ -33,6 +33,7 @@ Describe 'Invoke-WslBackup' {
                 ActiveProcessCount = 0
                 ActiveCommands     = @()
                 RemoteControlPids  = @()
+                IdleClaudePids     = @()
             }
         }
     }
@@ -262,6 +263,7 @@ Describe 'Invoke-WslBackup' {
                     ActiveProcessCount = 1
                     ActiveCommands     = @('bash')
                     RemoteControlPids  = @()
+                    IdleClaudePids     = @()
                 }
             }
             Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
@@ -295,6 +297,7 @@ Describe 'Invoke-WslBackup' {
                     ActiveProcessCount = 1
                     ActiveCommands     = @('bash')
                     RemoteControlPids  = @()
+                    IdleClaudePids     = @()
                 }
             }
             Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
@@ -320,6 +323,7 @@ Describe 'Invoke-WslBackup' {
                     ActiveProcessCount = 1
                     ActiveCommands     = @('bash')
                     RemoteControlPids  = @()
+                    IdleClaudePids     = @()
                 }
             }
             Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
@@ -343,6 +347,7 @@ Describe 'Invoke-WslBackup' {
                     ActiveProcessCount = 1
                     ActiveCommands     = @('bash')
                     RemoteControlPids  = @()
+                    IdleClaudePids     = @()
                 }
             }
             Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
@@ -371,6 +376,7 @@ Describe 'Invoke-WslBackup' {
                     ActiveProcessCount = 0
                     ActiveCommands     = @()
                     RemoteControlPids  = @(4242)
+                    IdleClaudePids     = @()
                 }
             }
 
@@ -400,6 +406,70 @@ Describe 'Invoke-WslBackup' {
 
             $logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
             (Get-Content -Path $logFile -Raw) | Should -Match 'Stopped Claude Remote Control session before export'
+        }
+    }
+
+    Context 'idle Claude session stop' {
+        It 'sends kill -TERM to each idle Claude pid strictly before the export call, and logs only the count' {
+            Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{
+                    IsActive           = $false
+                    Reason             = 'Idle'
+                    ActiveProcessCount = 0
+                    ActiveCommands     = @()
+                    RemoteControlPids  = @()
+                    IdleClaudePids     = @(31073, 42424)
+                }
+            }
+
+            $script:callOrder = [System.Collections.Generic.List[string]]::new()
+            Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
+                param($Arguments)
+                $script:callOrder.Add($Arguments -join ' ')
+                if ($Arguments[0] -eq '--export') {
+                    Set-Content -Path $Arguments[2] -Value 'fake tar payload' -NoNewline
+                }
+                [pscustomobject]@{ ExitCode = 0; Output = @() }
+            }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+
+            $killIndexes = @()
+            $exportIndex = -1
+            for ($i = 0; $i -lt $script:callOrder.Count; $i++) {
+                if ($script:callOrder[$i] -match 'kill -TERM (31073|42424)') { $killIndexes += $i }
+                if ($exportIndex -lt 0 -and $script:callOrder[$i] -match '^--export ') { $exportIndex = $i }
+            }
+            $killIndexes.Count | Should -Be 2
+            $exportIndex | Should -BeGreaterOrEqual 0
+            foreach ($killIndex in $killIndexes) {
+                $killIndex | Should -BeLessThan $exportIndex
+            }
+
+            $logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
+            $logContent = Get-Content -Path $logFile -Raw
+            $logContent | Should -Match 'Stopped 2 idle Claude session\(s\) before export \(resumable with claude --resume\)'
+            # Never a session id, pid or path in the log.
+            $logContent | Should -Not -Match '31073'
+            $logContent | Should -Not -Match '42424'
+        }
+
+        It 'logs nothing extra when there are no idle Claude sessions to stop' {
+            Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
+                param($Arguments)
+                if ($Arguments[0] -eq '--export') {
+                    Set-Content -Path $Arguments[2] -Value 'fake tar payload' -NoNewline
+                }
+                [pscustomobject]@{ ExitCode = 0; Output = @() }
+            }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            $logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
+            (Get-Content -Path $logFile -Raw) | Should -Not -Match 'idle Claude session'
         }
     }
 }
