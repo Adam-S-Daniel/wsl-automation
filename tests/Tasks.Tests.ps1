@@ -54,7 +54,16 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         Mock -ModuleName WslAutomation New-ScheduledTaskSettingsSet {
-            [pscustomobject]@{ FakeSettings = $true }
+            # DisallowStartIfOnBatteries/StopIfGoingOnBatteries start $false here (unlike their
+            # real $true default) so the backup task's explicit post-construction assignment
+            # (there is no constructor parameter for either - see Set-WslAutomationScheduledTasks)
+            # has a real property to write to and is actually observable by the tests below,
+            # rather than being indistinguishable from a default that was never touched.
+            [pscustomobject]@{
+                FakeSettings               = $true
+                DisallowStartIfOnBatteries = $false
+                StopIfGoingOnBatteries     = $false
+            }
         }
 
         Mock -ModuleName WslAutomation New-ScheduledTaskPrincipal {
@@ -285,6 +294,21 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
+        It 'registers the backup task AC-only: DisallowStartIfOnBatteries and StopIfGoingOnBatteries both $true' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            # Owner decision: no 27 GB export on battery, and no export cut off mid-way by
+            # unplugging. There is no New-ScheduledTaskSettingsSet constructor parameter for
+            # either (only -AllowStartIfOnBatteries/-DontStopIfGoingOnBatteries to request the
+            # opposite), so Set-WslAutomationScheduledTasks sets both explicitly on the resulting
+            # Settings object before registering the backup task with it.
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Settings.DisallowStartIfOnBatteries -eq $true -and $Settings.StopIfGoingOnBatteries -eq $true
+            }
+        }
+
         It 'builds the backup trigger with Repetition.Interval PT1H and Duration P1D by default' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
@@ -331,7 +355,16 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 # property) - the fixture needs it present so the implementation's in-place
                 # ".StartWhenAvailable = $false" mutation has a real property to write to,
                 # exactly as it would against a real CimInstance from Get-ScheduledTask.
-                Settings  = [pscustomobject]@{ ExistingSettings = $true; StartWhenAvailable = $true }
+                # DisallowStartIfOnBatteries/StopIfGoingOnBatteries = $false mirrors a task
+                # registered before those were made explicit (or one hand-edited since) - the
+                # fixture needs both present so the implementation's in-place mutation of each
+                # has a real property to write to, same as StartWhenAvailable above.
+                Settings  = [pscustomobject]@{
+                    ExistingSettings           = $true
+                    StartWhenAvailable         = $true
+                    DisallowStartIfOnBatteries = $false
+                    StopIfGoingOnBatteries     = $false
+                }
                 Principal = [pscustomobject]@{ ExistingPrincipal = $true }
             }
 
@@ -390,6 +423,20 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'WSL Ubuntu Daily Backup' -and
                 $Settings.StartWhenAvailable -eq $false -and $Settings.ExistingSettings -eq $true
+            }
+        }
+
+        It 'forces DisallowStartIfOnBatteries and StopIfGoingOnBatteries to $true on the carried-through Settings object (AC-only, owner decision)' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $script:existingBackupTask.Settings.DisallowStartIfOnBatteries | Should -BeTrue
+            $script:existingBackupTask.Settings.StopIfGoingOnBatteries | Should -BeTrue
+            $script:existingBackupTask.Settings.ExistingSettings | Should -BeTrue
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Settings.DisallowStartIfOnBatteries -eq $true -and $Settings.StopIfGoingOnBatteries -eq $true -and
+                $Settings.ExistingSettings -eq $true
             }
         }
     }

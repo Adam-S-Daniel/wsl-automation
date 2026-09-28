@@ -237,6 +237,12 @@ function Set-WslAutomationScheduledTasks {
         # -BackupRetryIntervalMinutes for why - everything else on it (including WakeToRun) is
         # left exactly as the existing task had it.
         $existingBackupTask.Settings.StartWhenAvailable = $false
+        # AC-only by owner decision: no 27 GB export on battery, and no export cut off mid-way by
+        # unplugging. New-ScheduledTaskSettingsSet already defaults both of these to $true, but
+        # that default is made explicit here so it can't silently change on a carried-through
+        # Settings object either.
+        $existingBackupTask.Settings.DisallowStartIfOnBatteries = $true
+        $existingBackupTask.Settings.StopIfGoingOnBatteries = $true
         if ($PSCmdlet.ShouldProcess($BackupTaskName, 'Update scheduled task')) {
             Set-WslScheduledTask -TaskName $BackupTaskName -Action $backupAction -Trigger $backupTrigger `
                 -Settings $existingBackupTask.Settings -Principal $existingBackupTask.Principal
@@ -256,6 +262,13 @@ function Set-WslAutomationScheduledTasks {
             $backupSettingsParams['WakeToRun'] = $true
         }
         $backupSettings = New-ScheduledTaskSettingsSet @backupSettingsParams
+        # AC-only by owner decision: no 27 GB export on battery, and no export cut off mid-way by
+        # unplugging. New-ScheduledTaskSettingsSet already defaults both of these to $true (there
+        # is no constructor parameter to request them directly - only -AllowStartIfOnBatteries
+        # and -DontStopIfGoingOnBatteries to request the opposite), so they are set explicitly
+        # here on the resulting Settings object so that default can't silently change.
+        $backupSettings.DisallowStartIfOnBatteries = $true
+        $backupSettings.StopIfGoingOnBatteries = $true
         $backupPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
 
         if ($PSCmdlet.ShouldProcess($BackupTaskName, 'Register scheduled task')) {

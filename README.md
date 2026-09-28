@@ -148,6 +148,14 @@ window.
   an *existing* backup task always forces `StartWhenAvailable` back to
   `$false` while leaving everything else on it (including `WakeToRun`) as it
   already was.
+- **The backup task runs on AC power only** (`DisallowStartIfOnBatteries` and
+  `StopIfGoingOnBatteries`, both explicitly forced `$true`, on a fresh
+  registration and on every re-run against an existing task) - an owner
+  decision, not just a default: no multi-gigabyte export drains a laptop
+  battery, and none is cut off mid-way by unplugging. A retry due while the
+  machine is on battery simply doesn't start; the task waits for AC, and even
+  `-ForceAfterDays` can't override this, because the task never starts to
+  reach it.
 - Runs the backup interactively as the current user (needed for `wsl.exe`
   to reach the right WSL session).
 - **Before every export**, `Invoke-WslBackup` runs three checks, in order:
