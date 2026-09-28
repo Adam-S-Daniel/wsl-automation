@@ -29,6 +29,13 @@ function Invoke-WslBackup {
         interval, so there is nothing gained by leaving it running through an export that is
         about to stop the whole distro anyway.
 
+        Any OTHER Claude Code session Test-WslActivity found idle (IdleClaudePids - see that
+        function's help) is stopped the same way, best-effort, at the same point. An idle session
+        is resumable with 'claude --resume', and 'wsl --export' is about to stop the whole distro
+        regardless, so nothing is lost by stopping it first instead of letting the export's own
+        forced 'systemctl poweroff' take it down uncleanly. Only the count of sessions stopped is
+        logged - never a session id, a pid, or any other identifying detail.
+
         A backup.lock file is held for the duration of the export so other
         automation (for example Invoke-ClaudeSessionKeeper) can detect that a
         backup is in progress and wait rather than interrupt it.
@@ -232,6 +239,25 @@ function Invoke-WslBackup {
             catch {
                 Write-WslAutomationLog -Message "Failed to stop Claude Remote Control session (pid $remoteControlProcessId): $_" -LogFile $LogFile
             }
+        }
+
+        # Step 10b: best-effort stop every OTHER idle Claude session too, for the same reason -
+        # 'wsl --export' is about to stop the distro anyway, and an idle session is resumable
+        # with 'claude --resume'. Only the count is logged, never a pid or session id.
+        $stoppedIdleClaudeCount = 0
+        foreach ($idleClaudeProcessId in $activity.IdleClaudePids) {
+            try {
+                Invoke-WslExe -Arguments @('-d', $DistroName, '--exec', 'kill', '-TERM', "$idleClaudeProcessId") | Out-Null
+                $stoppedIdleClaudeCount++
+            }
+            catch {
+                # Best-effort - a failure here is not worth failing the backup over, and the
+                # message must never carry a pid or session id.
+                Write-Verbose 'Failed to stop an idle Claude session before export'
+            }
+        }
+        if ($stoppedIdleClaudeCount -gt 0) {
+            Write-WslAutomationLog -Message "Stopped $stoppedIdleClaudeCount idle Claude session(s) before export (resumable with claude --resume)" -LogFile $LogFile
         }
 
         $stagingPath = Join-Path $StagingDir $FileName

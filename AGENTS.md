@@ -196,6 +196,28 @@ and defers (`DeferredRecentWake`) rather than attempt the export inside the
 transition window. Any other work that adds a boot/resume-adjacent trigger
 owes the same delay.
 
+### Idle Claude Code sessions no longer count as backup activity
+
+Observed live 2026-09-27: a second interactive Claude Code session
+(`claude --resume <id>`, left open in a terminal alongside its npm/node MCP
+child processes) deferred the backup 13 consecutive daily runs with
+`Deferred: WSL in use (... claude, npm, node)`. Only the 9-day
+`-ForceAfterDays` override would ever have let a backup through — people
+routinely leave Claude sessions open, so this defeated the activity gate's
+whole point. Don't re-treat a `claude` process as activity on sight; it isn't
+one any more.
+
+`Test-WslActivity` now reads each non-Remote-Control `claude` process's own
+`~/.claude/sessions/<pid>.json` (one `wsl --exec` call per pid, `status`
+`busy` vs `idle`) and excludes an idle session, and everything it spawned,
+before the pty rules run. This **fails safe to busy** on anything it doesn't
+recognise — the file is Claude Code-internal and undocumented (observed in
+2.1.282), so a missing file, a non-zero exit, a parse error, a pid mismatch,
+or any status other than exactly `idle` all count as busy, same as before
+this existed. `Invoke-WslBackup` also `SIGTERM`s the idle sessions it finds,
+immediately before the export, the same way it already did for the Remote
+Control session — they're resumable afterwards with `claude --resume`.
+
 ### Never leave an interactive prompt in a scheduled-task code path
 
 `Read-Host`, `pause`, and any `-Confirm` prompt must be unreachable when a
