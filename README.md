@@ -412,7 +412,10 @@ the prompts for the repos under your owner roots (default
   `/home/<user>/.codex/config.toml`, and Codex keys are the plain Linux path,
   for example `[projects."/home/<user>/repos/x"]`; no `/mnt/<drive>/` key is
   written. Path containment is case-sensitive there (case-insensitive on
-  Windows). The hook runs the Linux `pwsh`, and the installer sets the hook
+  Windows). The hook runs the Linux `pwsh` (the installer prefers a stable path such as
+  `/usr/bin/pwsh` or `/snap/bin/pwsh` over a version-pinned snap path, which vanishes on
+  the next snap refresh, and warns if it has to fall back to one; pass `-PwshPath` to
+  override), and the installer sets the hook
   file to mode 0755, because git silently ignores a non-executable hook; a
   current hook that lost its executable bit is fixed on the next run.
 - Git copies template hooks only at `git init` or `git clone`, so clones that
@@ -428,7 +431,8 @@ the prompts for the repos under your owner roots (default
   and writes `.git/hooks/post-checkout` (same bytes as the template hook, 0755
   on Linux). It skips, without error: a `.git` file (a linked worktree, which
   shares its main repo's hooks), a child that is not a git repo, a repo with a
-  local `core.hooksPath` (git would ignore the hook; a warning names it), and
+  local `core.hooksPath` that points elsewhere (git would ignore the hook; a warning names it;
+  a value equal to the repo's own `.git/hooks` is fine and gets the hook), and
   a repo whose existing `post-checkout` was not written by this installer (a
   warning names it; never overwritten, not even with `-Force`). `-WhatIf`
   writes nothing. The returned object lists the repos it changed in

@@ -402,6 +402,50 @@ Describe 'Set-AgentWorkspaceTrust' {
     }
 }
 
+Describe 'Get-AgentTrustDefaultPwshPath' {
+
+    It 'returns the first existing candidate and skips missing ones off Windows' {
+        $missing = Join-Path $TestDrive 'pw-missing' 'pwsh'
+        $second = Join-Path $TestDrive 'pw-second' 'pwsh'
+        $third = Join-Path $TestDrive 'pw-third' 'pwsh'
+        foreach ($f in @($second, $third)) {
+            New-Dir (Split-Path $f -Parent) | Out-Null
+            Write-Utf8 $f ''
+        }
+        InModuleScope WslAutomation -Parameters @{ C = @($missing, $second, $third); Want = $second } {
+            Get-AgentTrustDefaultPwshPath -IsWindowsHost $false -Candidate $C | Should -BeExactly $Want
+        }
+    }
+
+    It 'returns what Get-WslAutomationDefaultPwshPath returns on Windows' {
+        Mock -ModuleName WslAutomation Get-WslAutomationDefaultPwshPath { 'C:\stub\pwsh.exe' }
+        InModuleScope WslAutomation {
+            Get-AgentTrustDefaultPwshPath -IsWindowsHost $true | Should -BeExactly 'C:\stub\pwsh.exe'
+        }
+    }
+
+    It 'warns and returns the PATH result when it is a version-pinned snap path' {
+        Mock -ModuleName WslAutomation Get-Command { [pscustomobject]@{ Source = '/snap/powershell/405/opt/powershell/pwsh' } }
+        $none = Join-Path $TestDrive 'pw-none' 'pwsh'
+        InModuleScope WslAutomation -Parameters @{ C = @($none) } {
+            $result = Get-AgentTrustDefaultPwshPath -IsWindowsHost $false -Candidate $C -WarningVariable warn -WarningAction SilentlyContinue
+            $result | Should -BeExactly '/snap/powershell/405/opt/powershell/pwsh'
+            @($warn).Count | Should -Be 1
+            "$($warn[0])" | Should -BeLike '*version-pinned*snap*-PwshPath*'
+        }
+    }
+
+    It 'does not warn when the PATH fallback is /snap/bin/pwsh or another stable path' {
+        Mock -ModuleName WslAutomation Get-Command { [pscustomobject]@{ Source = '/snap/bin/pwsh' } }
+        $none = Join-Path $TestDrive 'pw-none' 'pwsh'
+        InModuleScope WslAutomation -Parameters @{ C = @($none) } {
+            $result = Get-AgentTrustDefaultPwshPath -IsWindowsHost $false -Candidate $C -WarningVariable warn -WarningAction SilentlyContinue
+            $result | Should -BeExactly '/snap/bin/pwsh'
+            @($warn).Count | Should -Be 0
+        }
+    }
+}
+
 Describe 'Install-AgentTrustGitHook' {
 
     BeforeEach {
@@ -493,8 +537,8 @@ Describe 'Install-AgentTrustGitHook' {
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments -notcontains '--get' }
     }
 
-    It 'defaults -PwshPath to the pwsh on PATH off Windows' -Skip:$IsWindows {
-        $expected = [System.IO.Path]::GetFullPath((Get-Command pwsh).Source).Replace('\', '/')
+    It 'defaults -PwshPath to the stable pwsh path off Windows' -Skip:$IsWindows {
+        $expected = InModuleScope WslAutomation { [System.IO.Path]::GetFullPath((Get-AgentTrustDefaultPwshPath)).Replace('\', '/') }
         Install-AgentTrustGitHook -TemplateDir $script:tpl -TrustScriptPath $script:trustPath | Out-Null
         (Read-Utf8 $script:hook).Contains($expected) | Should -BeTrue
     }
@@ -590,6 +634,36 @@ Describe 'Install-AgentTrustGitHook' {
             }
         }
 
+        It 'treats a local core.hooksPath equal to the repo own absolute .git/hooks as unset' {
+            $script:gitState.LocalHooksPath[$script:repoA] = (Join-Path $script:repoA '.git' 'hooks')
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install -WarningVariable warn -WarningAction SilentlyContinue
+
+            @($result.ExistingClones) | Should -Be @($script:repoA)
+            Read-Utf8 $script:cloneHook | Should -BeExactly (Read-Utf8 $script:hook)
+            @($warn).Count | Should -Be 0
+        }
+
+        It 'treats a relative local core.hooksPath of .git/hooks as the repo own hooks directory' {
+            $script:gitState.LocalHooksPath[$script:repoA] = '.git/hooks/'
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install -WarningVariable warn -WarningAction SilentlyContinue
+
+            @($result.ExistingClones) | Should -Be @($script:repoA)
+            Test-Path -LiteralPath $script:cloneHook | Should -BeTrue
+            @($warn).Count | Should -Be 0
+        }
+
+        It 'still warns and skips a local core.hooksPath pointing at another repo hooks directory' {
+            $other = New-Dir (Join-Path $script:owner 'other')
+            $script:gitState.LocalHooksPath[$script:repoA] = (Join-Path $other '.git' 'hooks')
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install -WarningVariable warn -WarningAction SilentlyContinue
+
+            @($result.ExistingClones).Count | Should -Be 0
+            Test-Path -LiteralPath $script:cloneHook | Should -BeFalse
+            @($warn).Count | Should -Be 1
+        }
         It 'overwrites an older hook that carries the installer marker' {
             New-Dir (Split-Path $script:cloneHook -Parent) | Out-Null
             Write-Utf8 $script:cloneHook "#!/bin/sh`n# Installed by wsl-automation scripts/install-agent-trust-hook.ps1.`necho old`n"
