@@ -119,6 +119,10 @@ vice versa, if you choose to gate the backup on session activity too).
    safe and idempotent - it will update the existing tasks in place rather
    than duplicating them.
 
+4. **Windows ccstatusline runtime (once per machine).** Run
+   `.\scripts\install-ccstatusline.ps1` from a normal PowerShell 7 prompt; see
+   [Windows runtime (one-time)](#windows-runtime-one-time).
+
 ## Task descriptions
 
 ### Backup task (default name: `WSL Ubuntu Daily Backup`)
@@ -258,6 +262,39 @@ window.
   would close before `claude` started, and the keeper would reopen it every
   interval forever.
 
+### ccstatusline config sync task (default name: `ccstatusline Config Sync`)
+
+- Runs `scripts\sync-ccstatusline-config.ps1` every 5 minutes as a background
+  S4U task for the current Windows user (same MSI PowerShell and batch-logon
+  prerequisites as the keeper).
+- Copies the WSL `~/.config/ccstatusline/settings.json` to
+  `%USERPROFILE%\.config\ccstatusline\settings.json`. WSL is the source of
+  truth: the Windows copy is kept read-only, and the task never writes back
+  into WSL.
+- A shut-down distro (or a source file that is not there) is a no-op that
+  keeps the existing Windows copy rather than treating it as deleted.
+- Logs outcomes to `%LOCALAPPDATA%\wsl-automation\ccstatusline-sync.log`. A run
+  that finds the copy already in sync logs nothing.
+
+#### Windows runtime (one-time)
+
+The task copies only the layout. Windows Claude Code also needs its own
+runtime (Bun plus the `ccstatusline` npm package) and its own `statusLine`
+entry in `%USERPROFILE%\.claude\settings.json`, because `statusLine` is a
+per-OS command: the WSL entry points at a Linux path, and the settings sync
+skill deliberately never copies it. From a normal (non-elevated) PowerShell 7
+prompt:
+
+```powershell
+.\scripts\install-ccstatusline.ps1
+```
+
+It is idempotent, installs Bun with winget when needed, pins the Bun and
+ccstatusline versions, backs up `settings.json` before editing it, and refuses
+to replace a different existing `statusLine` unless you pass `-Force`. Restart
+Windows Terminal (and any Windows Claude Code sessions) afterwards so they pick
+up the new PATH.
+
 ### Codex Cloud environment sync task (default name: `Codex Cloud Environment Sync`)
 
 - Runs `scripts\sync-codex-cloud-environments.ps1` at exactly 00:00 and 12:00.
@@ -391,5 +428,6 @@ under Pester's `TestDrive:`.
 - The "Log on as a batch job" right for the account running the keeper (see
   `scripts\grant-keeper-batch-logon.ps1`).
 - WSL2 with the distro you want to back up / keep alive already installed.
+- `winget` (for the one-time ccstatusline runtime install).
 - For Codex Cloud synchronization: authenticated Codex and GitHub CLIs, plus
   `curl`, `jq`, `flock`, and `mktemp` in that distro.
