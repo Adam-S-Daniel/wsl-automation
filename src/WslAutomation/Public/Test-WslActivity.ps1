@@ -22,12 +22,17 @@ function Test-WslActivity {
 
         The Claude Code Remote Control session (the keeper's always-on session, kept alive so it
         can be driven from claude.ai or the phone) does not count as activity by itself: it is
-        identified as any process whose comm is 'claude' and whose args match
+        identified as any Claude Code process (see below) whose args match
         -RemoteControlPattern, and its pid(s) and tty(s) are recorded separately. This
         identification, and everything downstream of it, is unchanged by the Claude session-status
         check below.
 
-        Every OTHER 'claude' process (i.e. not identified as Remote Control) is checked for
+        A Claude Code process is one whose comm is 'claude', or one run as its versioned binary
+        directly (comm is the binary's file name, e.g. '2.1.285', as with sessions spawned by
+        'claude rc' and resumed sessions) whose first args token (argv0) is a path ending in
+        'claude/versions/<version>'. A version-like comm alone, with any other argv0, is not Claude.
+
+        Every OTHER Claude Code process (i.e. not identified as Remote Control) is checked for
         whether its own interactive session is idle, one 'wsl --exec' call per pid:
         'wsl -d <DistroName> --exec sh -c "cat \"$HOME/.claude/sessions/$1.json\"" sh <pid>'.
         '--exec' again passes the arguments verbatim with no distro-shell mangling, so '$HOME' and
@@ -90,7 +95,7 @@ function Test-WslActivity {
     .PARAMETER DistroName
         Name of the WSL distro to inspect. Defaults to 'Ubuntu'.
     .PARAMETER RemoteControlPattern
-        Regex a process's args must match, alongside a comm of 'claude', to be identified as the
+        Regex a process's args must match, on a Claude Code process, to be identified as the
         Remote Control session. Defaults to Get-ClaudeRemoteControlPattern (the 'rc' /
         'remote-control' subcommand, or the older '--remote-control' flag).
     .EXAMPLE
@@ -169,10 +174,22 @@ function Test-WslActivity {
         }
     }
 
+    # A Claude Code process is either the 'claude' launcher (comm 'claude') or its versioned
+    # binary run directly, whose comm is the binary's file name (e.g. '2.1.285') and whose argv0
+    # is a path ending in 'claude/versions/<version>'. A version-like comm alone is not enough.
+    $isClaudeProcess = {
+        param($Process)
+        if ($Process.Comm -eq 'claude') {
+            return $true
+        }
+        $argv0 = ($Process.ProcArgs -split '\s+')[0]
+        return ($argv0 -match '(^|/)claude/versions/[^/\s]+$')
+    }
+
     $remoteControlPids = @()
     $remoteControlTtys = @()
     foreach ($process in $processes) {
-        if ($process.Comm -eq 'claude' -and $process.ProcArgs -match $RemoteControlPattern) {
+        if ((& $isClaudeProcess $process) -and $process.ProcArgs -match $RemoteControlPattern) {
             $remoteControlPids += $process.ProcessId
             if ($process.Tty -ne '?') {
                 $remoteControlTtys += $process.Tty
@@ -186,7 +203,7 @@ function Test-WslActivity {
     # .DESCRIPTION.
     $idleClaudePids = @()
     $otherClaudeProcesses = @($processes | Where-Object {
-            $_.Comm -eq 'claude' -and $remoteControlPids -notcontains $_.ProcessId
+            (& $isClaudeProcess $_) -and $remoteControlPids -notcontains $_.ProcessId
         })
     foreach ($claudeProcess in $otherClaudeProcesses) {
         $claudeProcessId = $claudeProcess.ProcessId

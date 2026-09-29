@@ -433,6 +433,105 @@ Describe 'Test-WslActivity' {
         }
     }
 
+    Context 'Claude Code run as its versioned binary (comm is the version, argv0 is claude/versions/<v>)' {
+
+        BeforeAll {
+            function Get-VersionedTreeInvokeWslExeMock {
+                param(
+                    [string]$SessionStatusJson = $null,
+                    [int]$SessionStatusExitCode = 0
+                )
+
+                $capturedSessionStatusJson = $SessionStatusJson
+                $capturedSessionStatusExitCode = $SessionStatusExitCode
+
+                $psLines = @(
+                    '  500      1 pts/8  bash            -bash'
+                    '3619331   500 pts/8  2.1.285         /home/u/.local/share/claude/versions/2.1.285 --resume /home/u/.claude/projects/x.jsonl'
+                    '3619400 3619331 pts/8 npm            exec somemcp'
+                    '3619401 3619400 pts/8 node           node index.js'
+                    '3619500      1 pts/7  ps              ps -eo pid=,ppid=,tty=,comm=,args='
+                )
+
+                return {
+                    param($Arguments)
+                    if ($Arguments -contains 'ps') {
+                        return [pscustomobject]@{ ExitCode = 0; Output = $psLines }
+                    }
+                    return [pscustomobject]@{
+                        ExitCode = $capturedSessionStatusExitCode
+                        Output   = if ($null -ne $capturedSessionStatusJson) { @($capturedSessionStatusJson) } else { @() }
+                    }
+                }.GetNewClosure()
+            }
+        }
+
+        It 'reports not active, with IdleClaudePids populated, for an idle versioned-binary session and its MCP descendants' {
+            Mock -ModuleName WslAutomation Invoke-WslExe (
+                Get-VersionedTreeInvokeWslExeMock -SessionStatusJson '{"pid":3619331,"sessionId":"x","status":"idle"}'
+            )
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.IsActive | Should -BeFalse
+            $activity.IdleClaudePids | Should -Be @(3619331)
+        }
+
+        It 'reports active when the versioned-binary session is busy' {
+            Mock -ModuleName WslAutomation Invoke-WslExe (
+                Get-VersionedTreeInvokeWslExeMock -SessionStatusJson '{"pid":3619331,"sessionId":"x","status":"busy"}'
+            )
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.IsActive | Should -BeTrue
+            $activity.ActiveCommands | Should -Contain '2.1.285'
+            $activity.IdleClaudePids | Should -BeNullOrEmpty
+        }
+
+        It 'reports active when the versioned-binary session file is missing' {
+            Mock -ModuleName WslAutomation Invoke-WslExe (
+                Get-VersionedTreeInvokeWslExeMock -SessionStatusExitCode 1
+            )
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.IsActive | Should -BeTrue
+            $activity.IdleClaudePids | Should -BeNullOrEmpty
+        }
+
+        It 'identifies a versioned-binary process running the rc subcommand as Remote Control, not activity' {
+            Mock -ModuleName WslAutomation Invoke-WslExe {
+                [pscustomobject]@{
+                    ExitCode = 0
+                    Output   = @('12345      1 pts/3    2.1.285         /home/u/.local/share/claude/versions/2.1.285 rc')
+                }
+            }
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.RemoteControlPids | Should -Be @(12345)
+            $activity.IsActive | Should -BeFalse
+        }
+
+        It 'does not treat a version-like comm as Claude when argv0 is not under claude/versions (<Argv0>)' -ForEach @(
+            @{ Argv0 = '/usr/bin/2.1.285' }
+            @{ Argv0 = '/opt/app/versions/2.1.285' }
+        ) {
+            $psLine = "12345    500 pts/3    2.1.285         $Argv0 --resume x"
+            Mock -ModuleName WslAutomation Invoke-WslExe {
+                [pscustomobject]@{ ExitCode = 0; Output = @($psLine) }
+            }.GetNewClosure()
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.IsActive | Should -BeTrue
+            $activity.ActiveCommands | Should -Contain '2.1.285'
+            $activity.IdleClaudePids | Should -BeNullOrEmpty
+            Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly
+        }
+    }
+
     Context 'default RemoteControlPattern' {
         # Same shared regex as Test-ClaudeSession, matched here against ProcArgs only (args
         # without comm).
