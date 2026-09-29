@@ -3,11 +3,12 @@ function Grant-ClaudeProjectTrust {
     .SYNOPSIS
         Sets projects[<key>].hasTrustDialogAccepted = true in a Claude Code ~/.claude.json.
     .DESCRIPTION
-        Parses the file with ConvertFrom-Json -AsHashtable, adds or updates the entry for each
-        forward-slash key, and writes the file back (ConvertTo-Json -Depth 100) only when
-        something changed. All other fields of the file and of each entry are preserved. An entry
-        stored under the backslash spelling of a path is not touched. A missing or unparseable
-        file is skipped. Returns the keys that were changed.
+        Parses the file with ConvertFrom-Json -AsHashtable -DateKind String, adds or updates the
+        entry for each forward-slash key, and writes the file back (ConvertTo-Json -Depth 100)
+        only when something changed. Date strings are kept as strings, because the default
+        conversion would rewrite them in local time. All other fields of the file and of each
+        entry are preserved. An entry stored under the backslash spelling of a path is not
+        touched. A missing or unparseable file is skipped. Returns the keys that were changed.
     .PARAMETER ConfigPath
         Path of the .claude.json file. It is never created.
     .PARAMETER Key
@@ -33,7 +34,7 @@ function Grant-ClaudeProjectTrust {
     }
 
     try {
-        $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+        $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100 -DateKind String
     }
     catch {
         Write-Warning "Claude config is not valid JSON, skipping: $ConfigPath"
