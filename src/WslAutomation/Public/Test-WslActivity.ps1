@@ -91,7 +91,8 @@ function Test-WslActivity {
         Name of the WSL distro to inspect. Defaults to 'Ubuntu'.
     .PARAMETER RemoteControlPattern
         Regex a process's args must match, alongside a comm of 'claude', to be identified as the
-        Remote Control session. Defaults to '--remote-control'.
+        Remote Control session. Defaults to Get-ClaudeRemoteControlPattern (the 'rc' /
+        'remote-control' subcommand, or the older '--remote-control' flag).
     .EXAMPLE
         Test-WslActivity -DistroName 'Ubuntu'
 
@@ -102,7 +103,7 @@ function Test-WslActivity {
     param(
         [string]$DistroName = 'Ubuntu',
 
-        [string]$RemoteControlPattern = '--remote-control'
+        [string]$RemoteControlPattern = (Get-ClaudeRemoteControlPattern)
     )
 
     if ((Get-WslDistroState -DistroName $DistroName) -ne 'Running') {

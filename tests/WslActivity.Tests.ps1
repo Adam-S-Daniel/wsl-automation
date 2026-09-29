@@ -432,4 +432,45 @@ Describe 'Test-WslActivity' {
             $activity.IdleClaudePids | Should -Be @(31073)
         }
     }
+
+    Context 'default RemoteControlPattern' {
+        # Same shared regex as Test-ClaudeSession, matched here against ProcArgs only (args
+        # without comm).
+
+        It 'identifies "claude <ProcArgs>" as the Remote Control session, not as activity' -ForEach @(
+            @{ ProcArgs = 'rc' }
+            @{ ProcArgs = 'rc --name x' }
+            @{ ProcArgs = 'remote-control' }
+            @{ ProcArgs = 'remote-control --continue' }
+            @{ ProcArgs = '--remote-control' }
+        ) {
+            $psLine = "   12345      1 pts/3    claude          claude $ProcArgs"
+            Mock -ModuleName WslAutomation Invoke-WslExe {
+                [pscustomobject]@{ ExitCode = 0; Output = @($psLine) }
+            }.GetNewClosure()
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.RemoteControlPids | Should -Be @(12345)
+            $activity.IsActive | Should -BeFalse
+            $activity.ActiveProcessCount | Should -Be 0
+        }
+
+        It 'does not identify "claude <ProcArgs>" as the Remote Control session' -ForEach @(
+            @{ ProcArgs = '--remote-control-session-name-prefix foo' }
+            @{ ProcArgs = '/tmp/rcfile' }
+            @{ ProcArgs = 'src' }
+            @{ ProcArgs = '--resume abc' }
+            @{ ProcArgs = 'Read the file docs/rc.md' }
+        ) {
+            $psLine = "   12345      1 pts/3    claude          claude $ProcArgs"
+            Mock -ModuleName WslAutomation Invoke-WslExe {
+                [pscustomobject]@{ ExitCode = 0; Output = @($psLine) }
+            }.GetNewClosure()
+
+            $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+            $activity.RemoteControlPids | Should -BeNullOrEmpty
+        }
+    }
 }
