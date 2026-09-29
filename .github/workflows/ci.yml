@@ -52,3 +52,17 @@ jobs:
           $cfg.Run.Exit = $true
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Pester (agent workspace trust, Linux)
+        shell: pwsh
+        run: |
+          $PSVersionTable.PSVersion
+          (Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1).Version
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = './tests/AgentWorkspaceTrust.Tests.ps1'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $cfg

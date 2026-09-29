@@ -11,7 +11,8 @@ function Set-AgentWorkspaceTrust {
             ~/.claude.json (undocumented file format). The file is never created.
           - Codex: a [projects.'<path>'] table with trust_level = "trusted" in
             ~/.codex/config.toml, once for the Windows path and once for the WSL /mnt/<drive>/
-            path. The file is created when its directory exists.
+            path. The file is created when its directory exists. When run by pwsh on Linux only
+            the Linux path is written (no /mnt key), for example [projects."/home/u/repos/x"].
 
         Without -Path (scan mode) each owner root itself and every direct child directory that
         has a .git entry (directory or file, so worktrees count) is trusted. With -Path only
@@ -27,9 +28,10 @@ function Set-AgentWorkspaceTrust {
         Specific directories to trust. When omitted, the owner roots are scanned.
     .PARAMETER OwnerRoot
         Directories whose git children may be trusted. Defaults to D:\repos\adam-s-daniel and
-        D:\repos\jodidaniel.
+        D:\repos\jodidaniel on Windows, and to ~/repos on WSL/Linux (see
+        Get-AgentTrustDefaultOwnerRoot).
     .PARAMETER ClaudeConfigPath
-        Claude Code's user config. Defaults to ~/.claude.json.
+        Claude Code's user config. Defaults to ~/.claude.json (on Linux, /home/<user>/.claude.json).
     .PARAMETER CodexConfigPath
         Codex's user config. Defaults to ~/.codex/config.toml.
     .EXAMPLE
@@ -46,18 +48,25 @@ function Set-AgentWorkspaceTrust {
     param(
         [string[]]$Path,
 
-        [string[]]$OwnerRoot = @('D:\repos\adam-s-daniel', 'D:\repos\jodidaniel'),
+        [string[]]$OwnerRoot,
 
         [string]$ClaudeConfigPath = (Join-Path $HOME '.claude.json'),
 
         [string]$CodexConfigPath = (Join-Path $HOME '.codex/config.toml')
     )
 
+    if (-not $PSBoundParameters.ContainsKey('OwnerRoot')) {
+        $OwnerRoot = Get-AgentTrustDefaultOwnerRoot
+    }
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $trimChars = if ($IsWindows) { [char[]]('\', '/') } else { [char[]]('/') }
+
     $normalize = {
         param([string]$Value)
         $full = [System.IO.Path]::GetFullPath($Value)
         $root = [System.IO.Path]::GetPathRoot($full)
-        if ($full.Length -gt $root.Length) { $full = $full.TrimEnd('\', '/') }
+        if ($full.Length -gt $root.Length) { $full = $full.TrimEnd($trimChars) }
         $full
     }
 
@@ -69,8 +78,8 @@ function Set-AgentWorkspaceTrust {
             $full = & $normalize $candidate
             $inside = $false
             foreach ($root in $roots) {
-                if ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
-                    $full.StartsWith($root.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                if ($full.Equals($root, $comparison) -or
+                    $full.StartsWith($root.TrimEnd($sep) + $sep, $comparison)) {
                     $inside = $true
                     break
                 }
@@ -98,7 +107,7 @@ function Set-AgentWorkspaceTrust {
         }
     }
 
-    $uniqueTargets = @($targets | Sort-Object -Unique)
+    $uniqueTargets = @($targets | Sort-Object -Unique -CaseSensitive:(-not $IsWindows))
     if ($uniqueTargets.Count -eq 0) {
         return
     }
