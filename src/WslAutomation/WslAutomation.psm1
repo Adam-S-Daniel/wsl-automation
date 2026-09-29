@@ -26,6 +26,7 @@ Export-ModuleMember -Function @(
     'Invoke-ClaudeSessionKeeper',
     'Set-WslAutomationScheduledTasks',
     'Update-CcstatuslineConfig',
+    'Set-CcstatuslineStatusLine',
     'Invoke-CodexCloudEnvironmentSync',
     'Update-WslAutomationRepo'
 )
