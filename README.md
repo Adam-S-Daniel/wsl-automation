@@ -8,6 +8,7 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   file so the two never collide.
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
+- A daily usage census publish (see "Usage census task" below).
 
 ## What this is
 
@@ -330,6 +331,41 @@ up the new PATH.
   changes the environment or repository-discovery endpoints.
 - Logs outcomes, without response data, to
   `%LOCALAPPDATA%\wsl-automation\codex-cloud-sync.log`.
+
+### Usage census task (default name: `Usage Census Publish`)
+
+- Runs `scripts/publish-usage-census.sh` inside the distro once a day at
+  12:37 (`-UsageCensusTime`). The wrapper shallow-clones skills-evals `main`
+  and runs that copy's `scripts/publish_usage_census.sh`, which reads
+  `~/.claude/projects` and pushes `usage/latest.json` to skills-evals'
+  `eval-results` branch. It clones `main` rather than using a local checkout
+  because the local checkout may be on any feature branch. See
+  [CENSUS.md](https://github.com/Adam-S-Daniel/skills-evals/blob/main/evals/usage/CENSUS.md)
+  for what the census records.
+- The action is `wsl.exe` directly, with no pwsh in between:
+
+  ```
+  C:\Windows\System32\wsl.exe --distribution Ubuntu --cd "<scripts dir>" --exec /bin/bash ./publish-usage-census.sh
+  ```
+
+- Runs as a background S4U task for the current Windows user (session 0), so
+  no console window ever appears. The WSL git authenticates through
+  `gh auth git-credential` with a file-stored token, which works in an S4U
+  logon.
+- Allowed on battery, 15 minute execution limit, ignores a second overlapping
+  instance. There is no `-StartWhenAvailable`: a missed day stays missed (the
+  census's 14-day freshness window and 6-day re-publish absorb it), and a
+  catch-up at wake would land in WSL's post-wake transition window. 12:37 keeps
+  it well clear of the backup's `:00` hourly retries.
+- Appends one line per run (UTC time, exit code, totals-only summary) to
+  `~/.cache/usage-census.log` inside the distro.
+- Run it now: `Start-ScheduledTask -TaskName 'Usage Census Publish'`.
+- Check it:
+  - `(Get-ScheduledTaskInfo -TaskName 'Usage Census Publish').LastTaskResult`
+    is `0`.
+  - In WSL, `tail ~/.cache/usage-census.log`.
+  - `git ls-remote https://github.com/Adam-S-Daniel/skills-evals eval-results`
+    shows the branch head moving after a publish.
 
 ### Legacy scripts
 

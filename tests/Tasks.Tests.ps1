@@ -168,12 +168,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all three background tasks as S4U in session 0, where no desktop window can flash' {
+        It 'runs all four background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The keeper, ccstatusline sync, and Codex Cloud sync are windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 3 -Exactly -ParameterFilter {
+            # The keeper, ccstatusline sync, Codex Cloud sync, and usage census are windowless
+            # background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 4 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -256,10 +257,74 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Trigger.Count -eq 2 -and $Trigger[0].IsDaily -and $Trigger[0].At -eq '00:00' -and
                 $Trigger[1].IsDaily -and $Trigger[1].At -eq '12:00'
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
+            # The Codex Cloud sync and usage census tasks share these settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 2 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
             }
+        }
+
+        It 'registers the usage census task as a direct wsl.exe action with one daily trigger, S4U, and no catch-up setting' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Usage Census Publish' -and
+                $Action.Execute -like '*wsl.exe' -and
+                @($Trigger).Count -eq 1 -and $Trigger.IsDaily -and $Trigger.At -eq '12:37' -and
+                $Principal.FakePrincipal
+            }
+            # The Codex Cloud sync and usage census tasks share these settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 2 -Exactly -ParameterFilter {
+                $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
+            }
+
+            $censusAction = @($script:capturedActions | Where-Object { $_.Argument -match 'publish-usage-census\.sh' })
+            $censusAction.Count | Should -Be 1
+            $censusAction[0].Argument | Should -Match '--distribution Ubuntu'
+            $censusAction[0].Argument.Contains('--cd "' + $script:scriptsDir + '"') | Should -BeTrue
+            $censusAction[0].Argument | Should -Match '--exec /bin/bash \./publish-usage-census\.sh$'
+            $censusAction[0].Argument | Should -Not -Match 'pwsh'
+        }
+
+        It 'builds the usage census principal for the current user, never SYSTEM, as S4U' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            }
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 4 -Exactly -ParameterFilter {
+                $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            }
+        }
+
+        It 'honors -UsageCensusTime, -UsageCensusTaskName, -WslExePath and -DistroName for the usage census task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -UsageCensusTime '03:15' `
+                -UsageCensusTaskName 'Custom Census' -WslExePath 'C:\fake\wsl.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Census' -and
+                $Action.Execute -eq 'C:\fake\wsl.exe' -and
+                $Action.Argument -match '--distribution Debian' -and
+                $Trigger.At -eq '03:15'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Usage Census Publish'
+            }
+        }
+
+        It 'sanitizes a trailing backslash in ScriptsDir so the usage census --cd argument stays well-formed' {
+            Set-WslAutomationScheduledTasks -ScriptsDir ($script:scriptsDir + '\') -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $censusAction = $script:capturedActions | Where-Object { $_.Argument -match 'publish-usage-census\.sh' }
+
+            # A raw trailing backslash before the closing quote would escape it and swallow --exec.
+            $censusAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
+            $censusAction.Argument | Should -Not -Match '\\"'
         }
 
         It 'registers the backup task without -WakeToRun by default (no scheduled wake on Modern Standby)' {
@@ -511,6 +576,44 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
                 $TaskName -eq 'Codex Cloud Environment Sync'
+            }
+        }
+    }
+
+    Context 'when the usage census task already exists' {
+
+        BeforeEach {
+            $script:existingUsageCensusTask = [pscustomobject]@{
+                TaskName  = 'Usage Census Publish'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Usage Census Publish') {
+                    return $script:existingUsageCensusTask
+                }
+                return $null
+            }
+        }
+
+        It 'rebuilds settings and principal while replacing the action and trigger in place' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Usage Census Publish' -and
+                $Action.Argument -match 'publish-usage-census\.sh' -and
+                $Trigger.IsDaily -and $Settings.FakeSettings -and $Principal.FakePrincipal
+            }
+        }
+
+        It 'does not create a second usage census task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Usage Census Publish'
             }
         }
     }
