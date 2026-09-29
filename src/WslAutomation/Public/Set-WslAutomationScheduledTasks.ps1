@@ -369,8 +369,8 @@ function Set-WslAutomationScheduledTasks {
     # Terminal window is actually visible. Its action is wt.exe DIRECTLY (not pwsh) so even opening
     # a session never flashes a pwsh console. It has no trigger of its own - it only ever runs on
     # demand (Trigger = $null; Register-/Set-WslScheduledTask omit -Trigger entirely for it). The
-    # session it opens carries --remote-control, which is what makes it reachable from claude.ai
-    # and the phone, and what Test-ClaudeSession looks for - see Get-ClaudeSessionWtArgumentList.
+    # session it opens runs 'claude rc' (Remote Control server mode), which is what makes sessions
+    # reachable from claude.ai and the phone, and what Test-ClaudeSession looks for - see Get-ClaudeSessionWtArgumentList.
     $launcherArguments = (Get-ClaudeSessionWtArgumentList -DistroName $DistroName) -join ' '
     $launcherAction = New-ScheduledTaskAction -Execute $WtPath -Argument $launcherArguments
     $launcherSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

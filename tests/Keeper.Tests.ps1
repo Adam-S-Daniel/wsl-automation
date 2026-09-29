@@ -210,4 +210,45 @@ Describe 'Test-ClaudeSession' {
 
         Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeFalse
     }
+
+    Context 'default RemoteControlPattern' {
+        # The default is one shared regex (Get-ClaudeRemoteControlPattern) that accepts the
+        # 'claude rc' server the launcher now runs AND the old '--remote-control' flag, so a
+        # session started before the switch does not trigger a duplicate launch.
+
+        It 'recognizes "<Line>" as a Remote Control session' -ForEach @(
+            @{ Line = '1589100 claude rc' }
+            @{ Line = '1589100 claude rc --name x' }
+            @{ Line = '1589100 claude remote-control' }
+            @{ Line = '1589100 claude remote-control --continue' }
+            @{ Line = '1589100 /home/u/.local/bin/claude remote-control' }
+            @{ Line = '1589100 /home/u/.local/bin/claude rc' }
+            @{ Line = '12345 claude --remote-control' }
+        ) {
+            $pgrepLine = $Line
+            Mock -ModuleName WslAutomation Invoke-WslExe {
+                [pscustomobject]@{ ExitCode = 0; Output = @($pgrepLine) }
+            }.GetNewClosure()
+
+            Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeTrue
+        }
+
+        It 'rejects "<Line>"' -ForEach @(
+            @{ Line = '1589100 claude --remote-control-session-name-prefix foo' }
+            @{ Line = '1589100 claude /tmp/rcfile' }
+            @{ Line = '1589100 claude src' }
+            @{ Line = '1589100 claude --resume abc' }
+            @{ Line = '1589100 claude Read the file docs/rc.md' }
+            @{ Line = '1589100 claude daemon run' }
+            @{ Line = '1589100 claude bg-pty-host' }
+            @{ Line = '1589100 claude bg-spare' }
+        ) {
+            $pgrepLine = $Line
+            Mock -ModuleName WslAutomation Invoke-WslExe {
+                [pscustomobject]@{ ExitCode = 0; Output = @($pgrepLine) }
+            }.GetNewClosure()
+
+            Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeFalse
+        }
+    }
 }

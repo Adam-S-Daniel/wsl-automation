@@ -12,14 +12,16 @@ function Test-ClaudeSession {
         something a human is actually using, so they are excluded before counting.
 
         A surviving line must additionally carry Remote Control (-RemoteControlPattern, matching
-        the '--remote-control' the launcher passes). A plain 'claude' session - one opened by
-        hand at the terminal - therefore does NOT count: it cannot be driven from claude.ai or
-        the phone, which is the only reason the keeper runs at all, so the keeper is expected to
-        open a Remote Control session alongside it rather than treat it as satisfied.
+        the 'claude rc' server the launcher starts, and the older '--remote-control' flag so a
+        session started before the switch is still recognized). A plain 'claude' session - one
+        opened by hand at the terminal - therefore does NOT count: it cannot be driven from
+        claude.ai or the phone, which is the only reason the keeper runs at all, so the keeper
+        is expected to open a Remote Control session alongside it rather than treat it as
+        satisfied.
 
         The check is on the process command line, so a session that had Remote Control turned on
-        from inside it (the /remote-control command, rather than the flag) is not detected. That
-        costs an extra session, never a missing one.
+        from inside it (the /remote-control command, rather than the subcommand or flag) is not
+        detected. That costs an extra session, never a missing one.
     .PARAMETER DistroName
         Name of the WSL distro to check. Defaults to 'Ubuntu'.
     .PARAMETER IncludePattern
@@ -27,8 +29,9 @@ function Test-ClaudeSession {
         Defaults to '(^|/| )claude( |$)'.
     .PARAMETER RemoteControlPattern
         Regex a process command line must also match for the session to count as remotely
-        drivable. Defaults to '--remote-control', the flag Get-ClaudeSessionWtArgumentList
-        launches with.
+        drivable. Defaults to Get-ClaudeRemoteControlPattern: the 'rc' /
+        'remote-control' subcommand Get-ClaudeSessionWtArgumentList launches with, or the older
+        '--remote-control' flag.
     .PARAMETER ExcludePattern
         Regex that excludes known Claude Code background/helper processes from counting as a
         session. Defaults to 'daemon|bg-pty-host|bg-spare'.
@@ -43,7 +46,7 @@ function Test-ClaudeSession {
 
         [string]$IncludePattern = '(^|/| )claude( |$)',
 
-        [string]$RemoteControlPattern = '--remote-control',
+        [string]$RemoteControlPattern = (Get-ClaudeRemoteControlPattern),
 
         [string]$ExcludePattern = 'daemon|bg-pty-host|bg-spare'
     )

@@ -246,9 +246,9 @@ window.
   it opens is visible on the desktop. Its action is `wt.exe` directly (not
   pwsh), selecting the distro's Windows Terminal profile (`-p <DistroName>`,
   for the correct icon/colours) and running
-  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude --remote-control"`.
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude rc"`.
   The command is quoted so it reaches `bash -c` as one argument - unquoted,
-  `--remote-control` becomes bash's `$0` and you get a plain local session the
+  `rc` becomes bash's `$0` and you get a plain local session the
   keeper never recognizes, so it relaunches every interval.
   Because it is a separate GUI process, opening a session never flashes a pwsh
   console either. It only produces a usable session when a user is logged on
@@ -481,7 +481,9 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
 ## Keeper semantics
 
 - A "Claude session" is a running `claude` process **whose command line
-  carries `--remote-control`**, checked with `pgrep -af claude` inside the
+  carries the `rc` (or `remote-control`) subcommand** - or the older
+  `--remote-control` flag, so a session started before the switch is still
+  recognized - checked with `pgrep -af claude` inside the
   distro. Infrastructure helper processes - `claude daemon run`,
   `claude bg-pty-host`, `claude bg-spare` - are explicitly excluded from the
   count, since their presence does not mean an interactive session exists.
@@ -491,7 +493,7 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
   in that case; that is the intended behavior, not a duplicate-launch bug.
 - The check reads the process command line, so a session where Remote Control
   was turned on from *inside* it (the `/remote-control` command rather than the
-  flag) is not detected. That costs an extra session, never a missing one.
+  subcommand or flag) is not detected. That costs an extra session, never a missing one.
 - The keeper **never boots a stopped distro** just to check or launch a
   session - if the distro isn't already `Running`, it does nothing.
 - The launch is performed by the interactive launcher task (see above),
