@@ -194,6 +194,19 @@ Describe 'Grant-ClaudeProjectTrust' {
         ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
         $bytes[0] | Should -Be ([byte][char]'{')
     }
+
+    It 'preserves date strings exactly, including a +00:00 offset' {
+        $original = '{"metadata":{"lastRun":"2026-09-08T17:59:59.898877+00:00","updated":"2026-09-08T17:59:59Z","scheduled":"2026-09-08T12:00:00-05:00"},"projects":{}}'
+        Write-Utf8 $script:cfg $original
+        InModuleScope WslAutomation -Parameters @{ Cfg = $script:cfg } {
+            $result = @(Grant-ClaudeProjectTrust -ConfigPath $Cfg -Key 'D:/repos/x')
+            $result | Should -Be @('D:/repos/x')
+        }
+        $fileContent = Read-Utf8 $script:cfg
+        $fileContent.Contains('2026-09-08T17:59:59.898877+00:00') | Should -BeTrue
+        $fileContent.Contains('2026-09-08T17:59:59Z') | Should -BeTrue
+        $fileContent.Contains('2026-09-08T12:00:00-05:00') | Should -BeTrue
+    }
 }
 
 Describe 'Grant-CodexProjectTrust' {
