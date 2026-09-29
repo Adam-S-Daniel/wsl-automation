@@ -4,30 +4,34 @@ function Set-WslAutomationScheduledTasks {
     <#
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
-        session keeper, ccstatusline config sync, and Codex Cloud environment sync.
+        session keeper, ccstatusline config sync, Codex Cloud environment sync, and the daily
+        usage census publish.
 
     .DESCRIPTION
-        Creates five Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates six Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
         launcher task the keeper triggers to actually open a Remote Control Claude Code session
         in Windows Terminal; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
         on its own short repeating interval; and a Codex Cloud environment sync task that runs
-        scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running.
+        scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
+        and a usage census publish task that runs scripts/publish-usage-census.sh inside the
+        distro once a day, calling wsl.exe directly so no pwsh is involved.
 
         The keeper and ccstatusline tasks run as background S4U tasks (session 0), so their
         frequent checks never flash a console window on the desktop; the launcher is interactive
         (it must show a terminal) and on-demand (no trigger); the backup is interactive. Both S4U
         tasks require an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath
-        and scripts/grant-keeper-batch-logon.ps1.
+        and scripts/grant-keeper-batch-logon.ps1. The usage census task is S4U too, but its
+        action is wsl.exe itself, so it needs no pwsh at all.
 
         When the backup task already exists, its Action and Triggers are replaced but its
         existing Settings and Principal objects are otherwise kept as-is - except that
         StartWhenAvailable is always reset to $false on the carried-through Settings object (see
-        -BackupRetryIntervalMinutes for why). The keeper, launcher, and ccstatusline and Codex
-        Cloud sync tasks' Settings and Principal are always (re)built fresh from this function's
+        -BackupRetryIntervalMinutes for why). The keeper, launcher, and ccstatusline, Codex
+        Cloud sync, and usage census tasks' Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
-        in sync. Re-running this function is idempotent for all five tasks.
+        in sync. Re-running this function is idempotent for all six tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -44,7 +48,8 @@ function Set-WslAutomationScheduledTasks {
 
     .PARAMETER ScriptsDir
         Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
-        sync-ccstatusline-config.ps1, and sync-codex-cloud-environments.ps1.
+        sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and
+        publish-usage-census.sh.
 
     .PARAMETER BackupDir
         Directory the backup task writes exported WSL archives to.
@@ -108,6 +113,19 @@ function Set-WslAutomationScheduledTasks {
         Name of the scheduled task that reconciles Codex Cloud environments. Defaults to
         'Codex Cloud Environment Sync'.
 
+    .PARAMETER UsageCensusTaskName
+        Name of the scheduled task that publishes the daily usage census from WSL. Defaults to
+        'Usage Census Publish'.
+
+    .PARAMETER UsageCensusTime
+        Time of day (HH:mm) the usage census task's daily trigger fires. Defaults to '12:37':
+        the laptop is usually awake at midday, and :37 is well clear of the backup's :00 hourly
+        retries (an export takes about five minutes and stops the distro).
+
+    .PARAMETER WslExePath
+        Path to wsl.exe used as the usage census task's action. Defaults to
+        %SystemRoot%\System32\wsl.exe.
+
     .PARAMETER PwshPath
         Path to pwsh.exe used as the action executable for the pwsh-based tasks. Defaults to an
         MSI install of PowerShell 7 (C:\Program Files\PowerShell\7) when present - required for
@@ -138,8 +156,9 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
 
-        Registers (or updates) all five scheduled tasks using default names, backup time, and
-        keeper/ccstatusline intervals, and the twice-daily Codex Cloud environment sync.
+        Registers (or updates) all six scheduled tasks using default names, backup time, and
+        keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
+        daily usage census publish.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -WhatIf
@@ -149,7 +168,7 @@ function Set-WslAutomationScheduledTasks {
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         'PSUseSingularNouns',
         '',
-        Justification = 'This function manages five related scheduled tasks by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
+        Justification = 'This function manages six related scheduled tasks by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
@@ -182,6 +201,12 @@ function Set-WslAutomationScheduledTasks {
         [int]$CcstatuslineIntervalMinutes = 5,
 
         [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
+
+        [string]$UsageCensusTaskName = 'Usage Census Publish',
+
+        [string]$UsageCensusTime = '12:37',
+
+        [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
 
         [string]$PwshPath = (Get-WslAutomationDefaultPwshPath),
 
@@ -432,6 +457,36 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Usage census publish: one daily trigger, wsl.exe as the action -----
+    # Background-only like the Codex Cloud sync, but the action is wsl.exe DIRECTLY (no pwsh in
+    # between) with --cd into the scripts directory and bash running the wrapper. As an S4U task
+    # it runs in session 0, so no console window can ever appear. The owner's WSL git
+    # authenticates through `gh auth git-credential` with a file-stored token, which works in an
+    # S4U logon. There is deliberately no StartWhenAvailable: a missed day stays missed (the
+    # census's 14-day freshness window and 6-day re-publish absorb it), and a catch-up at wake
+    # would land in WSL's post-wake transition window (see AGENTS.md). $ScriptsDir was trimmed of
+    # any trailing backslash above, which would otherwise escape the closing quote.
+    $usageCensusArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-usage-census.sh"
+    $usageCensusAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $usageCensusArguments
+    $usageCensusTrigger = New-ScheduledTaskTrigger -Daily -At $UsageCensusTime
+    $usageCensusSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
+    $usageCensusPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingUsageCensusTask = Get-ScheduledTask -TaskName $UsageCensusTaskName -ErrorAction SilentlyContinue
+    if ($existingUsageCensusTask) {
+        if ($PSCmdlet.ShouldProcess($UsageCensusTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $UsageCensusTaskName -Action $usageCensusAction -Trigger $usageCensusTrigger `
+                -Settings $usageCensusSettings -Principal $usageCensusPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($UsageCensusTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $UsageCensusTaskName -Action $usageCensusAction -Trigger $usageCensusTrigger `
+                -Settings $usageCensusSettings -Principal $usageCensusPrincipal
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -523,5 +578,6 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
+    Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue
     Write-Information -MessageData "Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $taskHistoryResult" -InformationAction Continue
 }

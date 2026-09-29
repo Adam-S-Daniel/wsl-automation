@@ -3,7 +3,8 @@
 <#
 .SYNOPSIS
     Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
-    Claude Code session keeper, ccstatusline config sync, and Codex Cloud environment sync scheduled tasks.
+    Claude Code session keeper, ccstatusline config sync, Codex Cloud environment sync, and usage
+    census publish scheduled tasks.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -14,8 +15,8 @@
 
 .PARAMETER ScriptsDir
     Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1, and sync-codex-cloud-environments.ps1. Defaults to the
-    directory this script lives in.
+    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and publish-usage-census.sh.
+    Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
     Directory the backup task writes exported WSL archives to.
@@ -62,6 +63,17 @@
 .PARAMETER CodexCloudEnvironmentSyncTaskName
     Name of the scheduled task that reconciles Codex Cloud environments at midnight and noon.
     Defaults to 'Codex Cloud Environment Sync'.
+
+.PARAMETER UsageCensusTaskName
+    Name of the scheduled task that publishes the daily usage census from WSL. Defaults to
+    'Usage Census Publish'.
+
+.PARAMETER UsageCensusTime
+    Time of day (HH:mm) the usage census task's daily trigger fires. Defaults to '12:37'.
+
+.PARAMETER WslExePath
+    Path to wsl.exe used as the usage census task's action. Defaults to
+    %SystemRoot%\System32\wsl.exe.
 
 .PARAMETER PwshPath
     Path to pwsh.exe used as the action executable for all the tasks. Defaults to an MSI install
@@ -125,6 +137,12 @@ param(
 
     [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
 
+    [string]$UsageCensusTaskName = 'Usage Census Publish',
+
+    [string]$UsageCensusTime = '12:37',
+
+    [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
+
     # This script runs before Import-Module (the module isn't loaded until the body below), so
     # it cannot call the module's private Get-WslAutomationDefaultPwshPath helper and instead
     # inlines the same MSI-preferring logic. An MSI PowerShell 7 (C:\Program Files\PowerShell\7)
@@ -171,6 +189,7 @@ try {
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
+        -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime -WslExePath $WslExePath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -SkipTaskHistory:$SkipTaskHistory -WhatIf:$WhatIfPreference
 
     exit 0
