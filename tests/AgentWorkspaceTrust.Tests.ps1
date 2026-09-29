@@ -245,6 +245,23 @@ Describe 'Grant-CodexProjectTrust' {
     }
 }
 
+Describe 'Get-AgentTrustDefaultOwnerRoot' {
+
+    It 'returns the two D:\repos owner roots for a Windows host' {
+        InModuleScope WslAutomation {
+            $result = @(Get-AgentTrustDefaultOwnerRoot -IsWindowsHost $true)
+            $result | Should -Be @('D:\repos\adam-s-daniel', 'D:\repos\jodidaniel')
+        }
+    }
+
+    It 'returns ~/repos for a non-Windows host' {
+        InModuleScope WslAutomation {
+            $result = @(Get-AgentTrustDefaultOwnerRoot -IsWindowsHost $false)
+            $result | Should -Be @(Join-Path $HOME 'repos')
+        }
+    }
+}
+
 Describe 'Set-AgentWorkspaceTrust' {
 
     BeforeEach {
@@ -278,7 +295,7 @@ Describe 'Set-AgentWorkspaceTrust' {
         $claudeKeys | ForEach-Object { $_ | Should -Not -Match '\\' }
     }
 
-    It 'writes both the Windows key and the /mnt key for Codex' {
+    It 'writes both the Windows key and the /mnt key for Codex' -Skip:(-not $IsWindows) {
         $repo = New-Dir (Join-Path $script:root 'repo')
         New-Dir (Join-Path $repo '.git') | Out-Null
 
@@ -292,6 +309,44 @@ Describe 'Set-AgentWorkspaceTrust' {
         $toml = Read-Utf8 $script:codex
         $toml.Contains("[projects.'$(ConvertTo-WslKey $repo)']") | Should -BeTrue
         $toml.Contains("[projects.'$([System.IO.Path]::GetFullPath($repo))']") | Should -BeTrue
+    }
+
+    It 'writes only the Linux key for Codex, with no /mnt key' -Skip:$IsWindows {
+        $repo = New-Dir (Join-Path $script:root 'repo')
+        New-Dir (Join-Path $repo '.git') | Out-Null
+
+        $common = $script:common
+        $result = @(Set-AgentWorkspaceTrust @common)
+
+        $codexKeys = @($result | Where-Object Agent -EQ 'Codex' | ForEach-Object Key)
+        $codexKeys | Should -Contain ([System.IO.Path]::GetFullPath($repo))
+        @($codexKeys | Where-Object { $_.StartsWith('/mnt/') }).Count | Should -Be 0
+        $toml = Read-Utf8 $script:codex
+        $toml.Contains("[projects.'$([System.IO.Path]::GetFullPath($repo))']") | Should -BeTrue
+        $toml.Contains('/mnt/') | Should -BeFalse
+    }
+
+    It 'treats a path differing only in case as outside the root on Linux' -Skip:$IsWindows {
+        $wrongCase = Join-Path ($script:root + '').ToUpperInvariant() 'x'
+        $common = $script:common
+        @(Set-AgentWorkspaceTrust @common -Path $wrongCase).Count | Should -Be 0
+    }
+
+    It 'treats a path differing only in case as inside the root on Windows' -Skip:(-not $IsWindows) {
+        $wrongCase = Join-Path ($script:root + '').ToUpperInvariant() 'x'
+        $common = $script:common
+        @(Set-AgentWorkspaceTrust @common -Path $wrongCase).Count | Should -BeGreaterThan 0
+    }
+
+    It 'uses the platform default owner roots when -OwnerRoot is not given' {
+        $repo = New-Dir (Join-Path $script:root 'repo')
+        New-Dir (Join-Path $repo '.git') | Out-Null
+        Mock -ModuleName WslAutomation Get-AgentTrustDefaultOwnerRoot -MockWith { $script:root }
+
+        $result = @(Set-AgentWorkspaceTrust -ClaudeConfigPath $script:claude -CodexConfigPath $script:codex)
+
+        Should -Invoke -ModuleName WslAutomation Get-AgentTrustDefaultOwnerRoot -Times 1 -Exactly
+        @($result | Where-Object Agent -EQ 'Claude').Key | Should -Contain ([System.IO.Path]::GetFullPath($repo).Replace('\', '/'))
     }
 
     It 'skips a -Path outside the owner roots' {
@@ -342,14 +397,19 @@ Describe 'Install-AgentTrustGitHook' {
         $script:hook = Join-Path $script:tpl 'hooks' 'post-checkout'
         $script:pwshPath = Join-Path $TestDrive 'bin' 'pwsh.exe'
         $script:trustPath = Join-Path $TestDrive 'scripts' 'trust-agent-workspaces.ps1'
-        $script:gitState = @{ Template = $null; HooksPath = $null }
+        $script:gitState = @{ Template = $null; HooksPath = $null; LocalHooksPath = @{} }
 
-        Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { $Arguments -contains '--get' -and $Arguments -contains 'init.templateDir' } -MockWith {
+        Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { $Arguments -contains '--global' -and $Arguments -contains '--get' -and $Arguments -contains 'init.templateDir' } -MockWith {
             if ($script:gitState.Template) { [pscustomobject]@{ ExitCode = 0; Output = @($script:gitState.Template) } }
             else { [pscustomobject]@{ ExitCode = 1; Output = @() } }
         }
-        Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { $Arguments -contains '--get' -and $Arguments -contains 'core.hooksPath' } -MockWith {
+        Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { $Arguments -contains '--global' -and $Arguments -contains '--get' -and $Arguments -contains 'core.hooksPath' } -MockWith {
             if ($script:gitState.HooksPath) { [pscustomobject]@{ ExitCode = 0; Output = @($script:gitState.HooksPath) } }
+            else { [pscustomobject]@{ ExitCode = 1; Output = @() } }
+        }
+        Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { $Arguments[0] -eq '-C' -and $Arguments -contains '--local' -and $Arguments -contains 'core.hooksPath' } -MockWith {
+            $value = $script:gitState.LocalHooksPath[$Arguments[1]]
+            if ($value) { [pscustomobject]@{ ExitCode = 0; Output = @($value) } }
             else { [pscustomobject]@{ ExitCode = 1; Output = @() } }
         }
         Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { $Arguments -notcontains '--get' } -MockWith {
@@ -418,5 +478,160 @@ Describe 'Install-AgentTrustGitHook' {
         Install-AgentTrustGitHook -TemplateDir $script:tpl -PwshPath $script:pwshPath -TrustScriptPath $script:trustPath -WhatIf | Out-Null
         Test-Path -LiteralPath $script:hook | Should -BeFalse
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments -notcontains '--get' }
+    }
+
+    It 'defaults -PwshPath to the pwsh on PATH off Windows' -Skip:$IsWindows {
+        $expected = [System.IO.Path]::GetFullPath((Get-Command pwsh).Source).Replace('\', '/')
+        Install-AgentTrustGitHook -TemplateDir $script:tpl -TrustScriptPath $script:trustPath | Out-Null
+        (Read-Utf8 $script:hook).Contains($expected) | Should -BeTrue
+    }
+
+    It 'makes the template hook executable (0755) on Linux' -Skip:$IsWindows {
+        Install-AgentTrustGitHook -TemplateDir $script:tpl -PwshPath $script:pwshPath -TrustScriptPath $script:trustPath | Out-Null
+        [int][System.IO.File]::GetUnixFileMode($script:hook) | Should -Be 493
+    }
+
+    It 'fixes a current but non-executable template hook and reports Installed' -Skip:$IsWindows {
+        Install-AgentTrustGitHook -TemplateDir $script:tpl -PwshPath $script:pwshPath -TrustScriptPath $script:trustPath | Out-Null
+        $script:gitState.Template = $script:tplKey
+        [System.IO.File]::SetUnixFileMode($script:hook, [System.IO.UnixFileMode]0x1A4)
+
+        $result = Install-AgentTrustGitHook -TemplateDir $script:tpl -PwshPath $script:pwshPath -TrustScriptPath $script:trustPath
+
+        $result.Status | Should -Be 'Installed'
+        [int][System.IO.File]::GetUnixFileMode($script:hook) | Should -Be 493
+        $again = Install-AgentTrustGitHook -TemplateDir $script:tpl -PwshPath $script:pwshPath -TrustScriptPath $script:trustPath
+        $again.Status | Should -Be 'AlreadyInstalled'
+    }
+
+    Context '-IncludeExistingClones' {
+
+        BeforeEach {
+            $script:owner = New-Dir (Join-Path $TestDrive ('own-' + [guid]::NewGuid().ToString('N')))
+            $script:repoA = New-Dir (Join-Path $script:owner 'repo-a')
+            New-Dir (Join-Path $script:repoA '.git') | Out-Null
+            $script:worktree = New-Dir (Join-Path $script:owner 'wt')
+            Write-Utf8 (Join-Path $script:worktree '.git') 'gitdir: elsewhere'
+            $script:plain = New-Dir (Join-Path $script:owner 'plain')
+            $script:install = @{
+                TemplateDir           = $script:tpl
+                PwshPath              = $script:pwshPath
+                TrustScriptPath       = $script:trustPath
+                IncludeExistingClones = $true
+                OwnerRoot             = @($script:owner)
+            }
+            $script:cloneHook = Join-Path $script:repoA '.git' 'hooks' 'post-checkout'
+        }
+
+        It 'writes the template hook bytes into a child with a .git directory' {
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install
+
+            @($result.ExistingClones) | Should -Be @($script:repoA)
+            Read-Utf8 $script:cloneHook | Should -BeExactly (Read-Utf8 $script:hook)
+            ([System.IO.File]::ReadAllBytes($script:cloneHook)) -contains 13 | Should -BeFalse
+        }
+
+        It 'skips a linked worktree (.git file) and non-git children' {
+            $install = $script:install
+            Install-AgentTrustGitHook @install | Out-Null
+
+            Test-Path -LiteralPath (Join-Path $script:worktree '.git' 'hooks') | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $script:plain '.git') | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $script:plain 'hooks') | Should -BeFalse
+        }
+
+        It 'does not descend past direct children' {
+            $nested = New-Dir (Join-Path $script:owner 'group' 'deep')
+            New-Dir (Join-Path $nested '.git') | Out-Null
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install
+
+            @($result.ExistingClones) | Should -Be @($script:repoA)
+            Test-Path -LiteralPath (Join-Path $nested '.git' 'hooks') | Should -BeFalse
+        }
+
+        It 'warns and skips a repo with a foreign post-checkout hook, even with -Force' {
+            New-Dir (Split-Path $script:cloneHook -Parent) | Out-Null
+            Write-Utf8 $script:cloneHook "#!/bin/sh`necho mine`n"
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install -Force -WarningVariable warn -WarningAction SilentlyContinue
+
+            @($result.ExistingClones).Count | Should -Be 0
+            Read-Utf8 $script:cloneHook | Should -BeExactly "#!/bin/sh`necho mine`n"
+            @($warn).Count | Should -Be 1
+            "$($warn[0])" | Should -BeLike '*repo-a*not written by this installer*'
+        }
+
+        It 'warns and skips a repo whose local core.hooksPath is set' {
+            $script:gitState.LocalHooksPath[$script:repoA] = '.githooks'
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install -WarningVariable warn -WarningAction SilentlyContinue
+
+            @($result.ExistingClones).Count | Should -Be 0
+            Test-Path -LiteralPath $script:cloneHook | Should -BeFalse
+            @($warn).Count | Should -Be 1
+            "$($warn[0])" | Should -BeLike '*repo-a*core.hooksPath*.githooks*'
+            Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 1 -Exactly -ParameterFilter {
+                $Arguments[0] -eq '-C' -and $Arguments[1] -eq $script:repoA -and $Arguments -contains '--local' -and $Arguments -contains 'core.hooksPath'
+            }
+        }
+
+        It 'overwrites an older hook that carries the installer marker' {
+            New-Dir (Split-Path $script:cloneHook -Parent) | Out-Null
+            Write-Utf8 $script:cloneHook "#!/bin/sh`n# Installed by wsl-automation scripts/install-agent-trust-hook.ps1.`necho old`n"
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install
+
+            @($result.ExistingClones) | Should -Be @($script:repoA)
+            Read-Utf8 $script:cloneHook | Should -BeExactly (Read-Utf8 $script:hook)
+        }
+
+        It 'is idempotent: a second run reports no existing clones' {
+            $install = $script:install
+            Install-AgentTrustGitHook @install | Out-Null
+            $script:gitState.Template = $script:tplKey
+
+            $result = Install-AgentTrustGitHook @install
+
+            @($result.ExistingClones).Count | Should -Be 0
+            $result.Status | Should -Be 'AlreadyInstalled'
+        }
+
+        It 'writes nothing into clones under -WhatIf' {
+            $install = $script:install
+            $result = Install-AgentTrustGitHook @install -WhatIf
+
+            @($result.ExistingClones).Count | Should -Be 0
+            Test-Path -LiteralPath $script:cloneHook | Should -BeFalse
+        }
+
+        It 'returns an empty ExistingClones and touches no clone without the switch' {
+            $install = $script:install
+            $install.Remove('IncludeExistingClones')
+            $result = Install-AgentTrustGitHook @install
+
+            @($result.ExistingClones).Count | Should -Be 0
+            $result.PSObject.Properties.Name | Should -Contain 'ExistingClones'
+            Test-Path -LiteralPath $script:cloneHook | Should -BeFalse
+        }
+
+        It 'makes the clone hook executable (0755) on Linux' -Skip:$IsWindows {
+            $install = $script:install
+            Install-AgentTrustGitHook @install | Out-Null
+            [int][System.IO.File]::GetUnixFileMode($script:cloneHook) | Should -Be 493
+        }
+
+        It 'fixes a current but non-executable clone hook on Linux' -Skip:$IsWindows {
+            $install = $script:install
+            Install-AgentTrustGitHook @install | Out-Null
+            $script:gitState.Template = $script:tplKey
+            [System.IO.File]::SetUnixFileMode($script:cloneHook, [System.IO.UnixFileMode]0x1A4)
+
+            $result = Install-AgentTrustGitHook @install
+
+            @($result.ExistingClones) | Should -Be @($script:repoA)
+            [int][System.IO.File]::GetUnixFileMode($script:cloneHook) | Should -Be 493
+        }
     }
 }

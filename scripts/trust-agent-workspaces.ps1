@@ -13,7 +13,8 @@
     omitted, the owner roots and their direct git children are trusted.
 
 .PARAMETER OwnerRoot
-    Owner roots. Defaults to D:\repos\adam-s-daniel and D:\repos\jodidaniel.
+    Owner roots. Defaults to D:\repos\adam-s-daniel and D:\repos\jodidaniel on Windows, and to
+    ~/repos when run by pwsh on WSL/Linux.
 
 .EXAMPLE
     ./trust-agent-workspaces.ps1

@@ -406,6 +406,33 @@ the prompts for the repos under your owner roots (default
   `git worktree add`, and it needs no global `core.hooksPath` (if one is set,
   git ignores template hooks and the installer warns). It refuses to replace a
   different `init.templateDir` or a foreign hook unless you pass `-Force`.
+- **On Linux / inside WSL** both scripts also run under the Linux pwsh
+  (`pwsh` on `PATH`). The default owner root there is `~/repos` (clones live
+  flat under it), the config files are `/home/<user>/.claude.json` and
+  `/home/<user>/.codex/config.toml`, and Codex keys are the plain Linux path,
+  for example `[projects."/home/<user>/repos/x"]`; no `/mnt/<drive>/` key is
+  written. Path containment is case-sensitive there (case-insensitive on
+  Windows). The hook runs the Linux `pwsh`, and the installer sets the hook
+  file to mode 0755, because git silently ignores a non-executable hook; a
+  current hook that lost its executable bit is fixed on the next run.
+- Git copies template hooks only at `git init` or `git clone`, so clones that
+  existed before you installed the template never get the hook. Pass
+  `-IncludeExistingClones` (with `-OwnerRoot` to override the roots) to
+  install it into them too:
+
+  ```powershell
+  .\scripts\install-agent-trust-hook.ps1 -IncludeExistingClones
+  ```
+
+  It touches each direct child of an owner root whose `.git` is a directory
+  and writes `.git/hooks/post-checkout` (same bytes as the template hook, 0755
+  on Linux). It skips, without error: a `.git` file (a linked worktree, which
+  shares its main repo's hooks), a child that is not a git repo, a repo with a
+  local `core.hooksPath` (git would ignore the hook; a warning names it), and
+  a repo whose existing `post-checkout` was not written by this installer (a
+  warning names it; never overwritten, not even with `-Force`). `-WhatIf`
+  writes nothing. The returned object lists the repos it changed in
+  `ExistingClones`.
 
 ## Task history
 
