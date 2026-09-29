@@ -22,7 +22,9 @@
         'Update-CcstatuslineConfig',
         'Set-CcstatuslineStatusLine',
         'Invoke-CodexCloudEnvironmentSync',
-        'Update-WslAutomationRepo'
+        'Update-WslAutomationRepo',
+        'Set-AgentWorkspaceTrust',
+        'Install-AgentTrustGitHook'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

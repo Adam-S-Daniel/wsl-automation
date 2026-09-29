@@ -338,6 +338,39 @@ Any paths passed via `-LegacyScriptsToArchive` are renamed in place to
 this module replaces are preserved for reference but no longer picked up
 by anything.
 
+## Pre-trusting workspaces for Claude Code and Codex
+
+Both agents ask for trust once per git working tree, and trusting a parent
+folder does not extend to nested repositories. Two optional scripts remove
+the prompts for the repos under your owner roots (default
+`D:\repos\adam-s-daniel` and `D:\repos\jodidaniel`):
+
+```powershell
+.\scripts\trust-agent-workspaces.ps1                  # each owner root + its direct git children
+.\scripts\trust-agent-workspaces.ps1 -Path D:\repos\jodidaniel\new-repo
+.\scripts\install-agent-trust-hook.ps1                # trust every future clone and worktree
+```
+
+- `trust-agent-workspaces.ps1` marks each owner root and every direct child
+  with a `.git` directory or file (worktrees included) as trusted. With
+  `-Path`, only those directories are trusted, and any path outside the owner
+  roots is skipped. It writes `projects[<path>].hasTrustDialogAccepted` in
+  `~/.claude.json` (forward-slash keys; that file is never created) and a
+  `[projects.'<path>']` `trust_level = "trusted"` table in
+  `~/.codex/config.toml` for both the Windows path and the WSL `/mnt/<drive>/`
+  path. The `projects` format in `~/.claude.json` is undocumented and
+  internal to Claude Code, so it may change without notice.
+- Before a config file is changed it is copied to `<file>.bak-agent-trust`
+  (one backup, overwritten each time). Nothing is written when everything is
+  already trusted. Neither script prompts; the installer supports `-WhatIf`
+  (for a dry run of the trust step, call `Set-AgentWorkspaceTrust -WhatIf`).
+- `install-agent-trust-hook.ps1` writes a `post-checkout` hook into a git
+  template directory (default `~/.git-templates/agent-trust`) and sets the
+  global `init.templateDir` to it. The hook fires only on a fresh clone or
+  `git worktree add`, and it needs no global `core.hooksPath` (if one is set,
+  git ignores template hooks and the installer warns). It refuses to replace a
+  different `init.templateDir` or a foreign hook unless you pass `-Force`.
+
 ## Task history
 
 Windows ships with the Task Scheduler operational log
