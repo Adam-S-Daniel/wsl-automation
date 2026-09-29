@@ -218,6 +218,12 @@ this existed. `Invoke-WslBackup` also `SIGTERM`s the idle sessions it finds,
 immediately before the export, the same way it already did for the Remote
 Control session — they're resumable afterwards with `claude --resume`.
 
+A session run as its versioned binary is identified too: its `comm` is the
+binary's file name (e.g. `2.1.285`) and its argv0 is a path ending in
+`claude/versions/<version>`. Observed 2026-09-29 with sessions spawned by
+`claude rc` and with resumed sessions; a version-like `comm` with any other
+argv0 is not treated as Claude.
+
 ### Never leave an interactive prompt in a scheduled-task code path
 
 `Read-Host`, `pause`, and any `-Confirm` prompt must be unreachable when a
