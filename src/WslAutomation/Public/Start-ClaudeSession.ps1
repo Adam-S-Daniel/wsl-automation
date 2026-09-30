@@ -16,7 +16,7 @@ function Start-ClaudeSession {
     .PARAMETER ArgumentList
         Arguments passed to -Executable. Defaults to opening a new Windows Terminal tab titled
         'Claude Code', using the <DistroName> profile, that runs
-        'wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude rc"'.
+        'wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude rc --spawn same-dir"'.
         See Get-ClaudeSessionWtArgumentList for why the title and the bash command are
         pre-quoted, why bash does the cd rather than wsl.exe, and why the profile is
         selected.

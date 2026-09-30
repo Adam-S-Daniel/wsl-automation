@@ -19,6 +19,12 @@ function Get-ClaudeSessionWtArgumentList {
         producing a plain local session the keeper never recognizes and therefore relaunches
         every interval.
 
+        '--spawn same-dir' pins Remote Control's spawn mode instead of inheriting whatever mode
+        was last saved for the directory in ~/.claude.json (remoteControlSpawnMode). ~/repos is
+        a folder of clones, not a git repository, so a saved 'worktree' mode makes every
+        on-demand session fail with 'Failed to resolve base branch "HEAD": git rev-parse failed'.
+        same-dir needs no git.
+
         The 'cd ~/repos' is bash's job, not wsl.exe's. 'wsl.exe --cd' accepts exactly three
         shapes - the bare '~', an absolute Linux path starting with '/', or an absolute Windows
         path - so '--cd ~/repos' is read as a Windows path and does not land where it looks
@@ -37,7 +43,7 @@ function Get-ClaudeSessionWtArgumentList {
         that profile's icon and colours. Without it, passing a raw command line to 'new-tab'
         launches with the generic console icon (a plain 'C:\'-style glyph), which reads as a
         Windows shell rather than the WSL session it actually is. The explicit
-        'wsl.exe ... bash -l -c "cd ~/repos || cd ~ && exec claude rc"' command
+        'wsl.exe ... bash -l -c "cd ~/repos || cd ~ && exec claude rc --spawn same-dir"' command
         line still overrides what the profile runs.
     .PARAMETER DistroName
         Name of the WSL distro (and, by convention, its Windows Terminal profile). Defaults to
@@ -51,6 +57,6 @@ function Get-ClaudeSessionWtArgumentList {
     return @(
         '-w', '0', 'new-tab', '-p', $DistroName, '--title', '"Claude Code"',
         'wsl.exe', '-d', $DistroName, '--cd', '~', '--', 'bash', '-l', '-c',
-        '"cd ~/repos || cd ~ && exec claude rc"'
+        '"cd ~/repos || cd ~ && exec claude rc --spawn same-dir"'
     )
 }

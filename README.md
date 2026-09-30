@@ -246,10 +246,13 @@ window.
   it opens is visible on the desktop. Its action is `wt.exe` directly (not
   pwsh), selecting the distro's Windows Terminal profile (`-p <DistroName>`,
   for the correct icon/colours) and running
-  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude rc"`.
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec claude rc --spawn same-dir"`.
   The command is quoted so it reaches `bash -c` as one argument - unquoted,
   `rc` becomes bash's `$0` and you get a plain local session the
   keeper never recognizes, so it relaunches every interval.
+  `--spawn same-dir` pins Remote Control's spawn mode, so a `worktree` mode
+  saved for `~/repos` in `~/.claude.json` (`~/repos` is not itself a git
+  repo) cannot break every spawned session.
   Because it is a separate GUI process, opening a session never flashes a pwsh
   console either. It only produces a usable session when a user is logged on
   interactively at the console; it is not meant to work headlessly.
