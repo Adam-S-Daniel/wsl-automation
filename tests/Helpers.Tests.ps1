@@ -309,7 +309,7 @@ Describe 'WslAutomation helpers' {
         It 'ends with a single pre-quoted bash -c command that starts in ~/repos with Remote Control' {
             $argumentList = InModuleScope WslAutomation { Get-ClaudeSessionWtArgumentList -DistroName 'Ubuntu' }
 
-            ($argumentList -join ' ') | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec claude rc"'
+            ($argumentList -join ' ') | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec claude rc --spawn same-dir"'
         }
 
         It 'does the ~/repos cd in bash, leaving wsl.exe --cd on the bare home shorthand' {

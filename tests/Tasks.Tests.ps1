@@ -200,7 +200,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Action.Argument -match '-p Ubuntu' -and
                 # Quoted, so wt.exe hands bash -c one argument. See the Get-ClaudeSessionWtArgumentList
                 # tests for why losing these quotes is the failure that matters here.
-                $Action.Argument -match 'bash -l -c "cd ~/repos \|\| cd ~ && exec claude rc"' -and
+                $Action.Argument -match 'bash -l -c "cd ~/repos \|\| cd ~ && exec claude rc --spawn same-dir"' -and
                 $null -eq $Trigger
             }
         }

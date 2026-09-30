@@ -219,6 +219,7 @@ Describe 'Test-ClaudeSession' {
         It 'recognizes "<Line>" as a Remote Control session' -ForEach @(
             @{ Line = '1589100 claude rc' }
             @{ Line = '1589100 claude rc --name x' }
+            @{ Line = '1589100 claude rc --spawn same-dir' }
             @{ Line = '1589100 claude remote-control' }
             @{ Line = '1589100 claude remote-control --continue' }
             @{ Line = '1589100 /home/u/.local/bin/claude remote-control' }
