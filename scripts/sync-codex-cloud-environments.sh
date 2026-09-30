@@ -7,7 +7,8 @@ readonly api_base='https://chatgpt.com/backend-api'
 readonly connector_search_limit=10
 readonly inventory_page_size=100
 readonly max_inventory_pages=100
-readonly desired_script=$'set -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="${CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
+readonly bootstrap_revision='1ecea2593bcbca6b6073eedf50bb4ffa90ee77e8'
+readonly bootstrap_sha256='e1c79a80a00bad2ade61c959115bf366366c34f5f7f616dcc236ad6e95dc5d19'
 
 dry_run=false
 connector_override="${CODEX_CLOUD_GITHUB_CONNECTOR_ID:-}"
@@ -15,6 +16,44 @@ guidance_repository="${CODEX_CLOUD_GUIDANCE_REPOSITORY:-Adam-S-Daniel/_agent-gui
 
 usage() {
     printf '%s\n' 'usage: sync-codex-cloud-environments.sh [--dry-run] [--connector-id ID]'
+}
+
+build_desired_script() {
+    local repository_name=$1
+    local result
+    result=$(cat <<EOF
+set -euo pipefail
+cd /workspace/$repository_name
+if [[ -f package-lock.json ]]; then
+  npm ci
+fi
+CODEX_HOME="\${CODEX_HOME:-/opt/codex}" bash .claude/hooks/fleet-memory.sh --codex-cloud
+if [[ ! -e skills.lock && ! -L skills.lock ]]; then
+  printf '%s\n' 'skills: skipped (no skills.lock in selected repository)'
+else
+  if [[ ! -f skills.lock || -L skills.lock ]]; then
+    printf '%s\n' 'skills: DEGRADED (selected repository has an invalid skills.lock)' >&2
+    exit 1
+  fi
+  if [[ ! -f .claude/hooks/skills-bootstrap.sh || -L .claude/hooks/skills-bootstrap.sh ]]; then
+    printf '%s\n' 'skills: DEGRADED (enrolled repository is missing its delivered bootstrap hook)' >&2
+    exit 1
+  fi
+  bootstrap_file=\$(mktemp)
+  trap 'rm -f -- "\$bootstrap_file"' EXIT
+  if ! curl --fail --silent --show-error --location --output "\$bootstrap_file" 'https://raw.githubusercontent.com/Adam-S-Daniel/adam-agentskills/$bootstrap_revision/.claude/hooks/skills-bootstrap.sh' 2>/dev/null; then
+    printf '%s\n' 'skills: DEGRADED (could not download reviewed bootstrap)' >&2
+    exit 1
+  fi
+  if ! printf '%s  %s\n' '$bootstrap_sha256' "\$bootstrap_file" | sha256sum --check --status; then
+    printf '%s\n' 'skills: DEGRADED (reviewed bootstrap digest mismatch)' >&2
+    exit 1
+  fi
+  CLAUDE_PROJECT_DIR="\$PWD" CODEX_HOME="\${CODEX_HOME:-/opt/codex}" bash "\$bootstrap_file" --codex-cloud
+fi
+EOF
+)
+    printf '%s\n' "$result"
 }
 
 while (($#)); do
@@ -227,7 +266,12 @@ while IFS= read -r inventory_repository; do
     repository_id=$(jq -er '.id' <<<"$inventory_repository")
     repository_name=$(jq -er '.name' <<<"$inventory_repository")
     repository_full_name=$(jq -er '.full_name' <<<"$inventory_repository")
-    if [[ ! $repository_full_name =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    repository_owner=${repository_full_name%%/*}
+    if [[ ! $repository_full_name =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ||
+        ! $repository_name =~ ^[A-Za-z0-9_.-]+$ ||
+        $repository_owner == . || $repository_owner == .. ||
+        $repository_name == . || $repository_name == .. ||
+        $repository_name != "${repository_full_name#*/}" ]]; then
         printf '%s\n' 'repository inventory item has an invalid GitHub repository path' >&2
         exit 1
     fi
@@ -295,6 +339,8 @@ dry_run_changes=0
 while IFS= read -r repository; do
     repository_id=$(jq -er '.id' <<<"$repository")
     repository_name=$(jq -er '.name' <<<"$repository")
+    desired_script=$(build_desired_script "$repository_name")
+    desired_script+=$'\n'
     connector_id=$(jq -er '.connector_id' <<<"$repository")
     expected_repos=$(jq -nc --arg target "$repository_id" '[$target]')
     matches_file="$temporary_dir/matches.json"
@@ -353,7 +399,9 @@ while IFS= read -r repository; do
     fi
     if jq -e --arg desired "$desired_script" --argjson expected "$expected_repos" '
         def script: if type == "array" then join("\n") else . end;
-        (.setup | script) == $desired and (.maintenance_setup | script) == $desired and .repos == $expected
+        (.setup | script) == $desired and (.maintenance_setup | script) == $desired and
+        .repos == $expected and
+        (.auto_setup_settings | if type == "object" then .use_auto_setup == false else false end)
     ' <<<"$environment" >/dev/null; then
         ((unchanged+=1))
         continue
@@ -365,7 +413,12 @@ while IFS= read -r repository; do
     fi
     jq -n --argjson environment "$environment" --argjson expected "$expected_repos" --arg setup "$desired_script" '
         {etag: $environment.etag, setup: $setup, maintenance_setup: $setup} +
-        (if $environment.repos == $expected then {} else {repos: $expected} end)
+        (if $environment.repos == $expected then {} else {repos: $expected} end) +
+        (if ($environment.auto_setup_settings | if type == "object" then .use_auto_setup == false else false end)
+         then {}
+         else {auto_setup_settings:
+             (($environment.auto_setup_settings | if type == "object" then . else {} end) + {use_auto_setup: false})}
+         end)
     ' >"$payload_file"
     environment_id=$(jq -er '.id' <<<"$environment")
     if $dry_run; then

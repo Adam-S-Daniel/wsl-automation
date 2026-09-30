@@ -58,10 +58,19 @@ while (($#)); do
             if [[ $2 == query=* ]]; then query=${2#query=}; fi
             shift 2
             ;;
-        --silent|--show-error|--get) shift ;;
+        --silent|--show-error|--get|--fail|--location) shift ;;
         *) url=$1; shift ;;
     esac
 done
+if [[ $url == https://raw.githubusercontent.com/Adam-S-Daniel/adam-agentskills/*/.claude/hooks/skills-bootstrap.sh ]]; then
+    printf '%s\n' 'download' >>"$FAKE_DOWNLOAD_LOG"
+    if [[ ${FAKE_BOOTSTRAP_TAMPER:-0} == 1 ]]; then
+        printf '%s\n' 'tampered download' >"$output"
+    else
+        cp "$FAKE_BOOTSTRAP_FILE" "$output"
+    fi
+    exit 0
+fi
 if [[ $FAKE_PATCH_HTTP_FAIL == 1 && $url == *'/wham/environments/'* ]]; then
     printf '%s' '{"private":"response body must not leak"}' >"$output"
     printf '500'
@@ -101,7 +110,21 @@ else
     printf '200'
 fi
 EOF
+    cat >"$test_root/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'npm:%s:%s\n' "$PWD" "$*" >>"$FAKE_RUN_LOG"
+EOF
+    cat >"$test_root/bin/sha256sum" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == '--check --status' ]] || exit 2
+IFS=' ' read -r digest file
+[[ $digest =~ ^[a-f0-9]{64}$ ]] || exit 3
+cmp -s -- "$FAKE_BOOTSTRAP_FILE" "$file"
+EOF
     chmod 755 "$test_root/bin/codex" "$test_root/bin/gh" "$test_root/bin/curl"
+    chmod 755 "$test_root/bin/npm" "$test_root/bin/sha256sum"
 }
 
 run_sync() {
@@ -124,9 +147,6 @@ export FAKE_INVENTORY_PAGE1='{"repo_review_settings":[{"repository":{"id":"guida
 export FAKE_INVENTORY_PAGE2='{"repo_review_settings":[],"next_token":null}'
 export FAKE_SEARCH_RESPONSE='{"repositories":[{"id":"guidance-1","name":"_agent-guidance"},{"id":"repo-1","name":"example-repo"}]}'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID='connector-1'
-expected_script=$'set -euo pipefail\ncd /workspace/_agent-guidance\nnpm ci\nCODEX_HOME="'
-expected_script+='$'
-expected_script+=$'{CODEX_HOME:-/opt/codex}" \\\n  bash .claude/hooks/fleet-memory.sh --codex-cloud\n'
 
 export FAKE_ENVIRONMENTS='[{"id":"unrelated-environment","repos":[]}]'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID=$'connector\nmalicious'
@@ -137,18 +157,88 @@ grep -qxF 'candidate connector ID is invalid' "$test_root/malicious-connector.ou
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID='connector-1'
 
 run_sync "$test_root/create.out"
+expected_script=$(jq -er 'select(.repos == ["repo-1"]) | .setup' "$test_root/requests/create.jsonl")
+expected_guidance_script=$(jq -er 'select(.repos == ["guidance-1"]) | .setup' "$test_root/requests/create.jsonl")
+expected_script+=$'\n'
+expected_guidance_script+=$'\n'
+[[ $expected_script == *'cd /workspace/example-repo'* ]] || fail 'target setup does not use its own checkout'
+[[ $expected_guidance_script == *'cd /workspace/_agent-guidance'* ]] || fail 'guidance setup does not use its own checkout'
+[[ $expected_script != "$expected_guidance_script" ]] || fail 'different repositories received the same setup'
 [[ -f $test_root/requests/create.jsonl ]] || fail 'expected create requests'
-jq -s -e --arg expected "$expected_script" '
+jq -s -e --arg expected "$expected_script" --arg guidance "$expected_guidance_script" '
     length == 2 and
     any(.[]; .repos == ["repo-1"] and .setup == $expected and .maintenance_setup == $expected) and
-    any(.[]; .repos == ["guidance-1"] and .setup == $expected and .maintenance_setup == $expected)
+    any(.[]; .repos == ["guidance-1"] and .setup == $guidance and .maintenance_setup == $guidance)
 ' "$test_root/requests/create.jsonl" >/dev/null || fail 'create payloads do not include the guidance repository correctly'
+
+mkdir -p "$test_root/workspace/example-repo/.claude/hooks"
+printf '%s\n' '{"version":1}' >"$test_root/workspace/example-repo/skills.lock"
+printf '%s\n' 'lockfileVersion: 3' >"$test_root/workspace/example-repo/package-lock.json"
+printf '%s\n' '# delivered hook marker' >"$test_root/workspace/example-repo/.claude/hooks/skills-bootstrap.sh"
+cat >"$test_root/workspace/example-repo/.claude/hooks/fleet-memory.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'memory:%s:%s:%s\n' "$PWD" "$CODEX_HOME" "$*" >>"$FAKE_RUN_LOG"
+EOF
+cat >"$test_root/bootstrap-fixture.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'skills:%s:%s:%s\n' "$CLAUDE_PROJECT_DIR" "$CODEX_HOME" "$*" >>"$FAKE_RUN_LOG"
+EOF
+printf '%s\n' "$expected_script" |
+    sed "s#^cd /workspace/example-repo\$#cd $test_root/workspace/example-repo#" >"$test_root/target-setup.sh"
+run_setup() {
+    local result_file=$1
+    : >"$test_root/setup-events"
+    rm -f "$test_root/download-events"
+    PATH="$test_root/bin:$PATH" FAKE_RUN_LOG="$test_root/setup-events" \
+        FAKE_DOWNLOAD_LOG="$test_root/download-events" FAKE_BOOTSTRAP_FILE="$test_root/bootstrap-fixture.sh" \
+        bash "$test_root/target-setup.sh" >"$result_file" 2>&1
+}
+run_setup "$test_root/opted-in.out"
+grep -qxF "npm:$test_root/workspace/example-repo:ci" "$test_root/setup-events" || fail 'npm ci was not conditional on a lockfile'
+grep -qxF "memory:$test_root/workspace/example-repo:/opt/codex:--codex-cloud" "$test_root/setup-events" || fail 'memory hook did not run in selected checkout'
+grep -qxF "skills:$test_root/workspace/example-repo:/opt/codex:--codex-cloud" "$test_root/setup-events" || fail 'reviewed bootstrap did not run for enrolled repository'
+[[ $(wc -l <"$test_root/download-events") -eq 1 ]] || fail 'enrolled repository did not download once'
+
+rm "$test_root/workspace/example-repo/skills.lock" "$test_root/workspace/example-repo/package-lock.json" \
+    "$test_root/workspace/example-repo/.claude/hooks/skills-bootstrap.sh"
+run_setup "$test_root/lockless.out"
+grep -qxF 'skills: skipped (no skills.lock in selected repository)' "$test_root/lockless.out" || fail 'lockless skip was not explicit'
+[[ ! -e $test_root/download-events ]] || fail 'lockless repository downloaded a bootstrap'
+[[ $(wc -l <"$test_root/setup-events") -eq 1 ]] || fail 'lockless repository ran npm or bootstrap'
+[[ ! -e $test_root/workspace/example-repo/skills.lock ]] || fail 'lockless repository was enrolled'
+
+ln -s "$test_root/bootstrap-fixture.sh" "$test_root/workspace/example-repo/skills.lock"
+if run_setup "$test_root/symlink-lock.out"; then
+    fail 'symlink skills lock was accepted'
+fi
+grep -qxF 'skills: DEGRADED (selected repository has an invalid skills.lock)' "$test_root/symlink-lock.out" || fail 'invalid lock failure was unclear'
+[[ ! -e $test_root/download-events ]] || fail 'invalid lock downloaded a bootstrap'
+rm "$test_root/workspace/example-repo/skills.lock"
+
+printf '%s\n' '{"version":1}' >"$test_root/workspace/example-repo/skills.lock"
+if run_setup "$test_root/missing-hook.out"; then
+    fail 'missing delivered hook was accepted'
+fi
+grep -qxF 'skills: DEGRADED (enrolled repository is missing its delivered bootstrap hook)' "$test_root/missing-hook.out" || fail 'missing hook failure was unclear'
+[[ ! -e $test_root/download-events ]] || fail 'missing hook downloaded a bootstrap'
+
+printf '%s\n' '# delivered hook marker' >"$test_root/workspace/example-repo/.claude/hooks/skills-bootstrap.sh"
+FAKE_BOOTSTRAP_TAMPER=1
+export FAKE_BOOTSTRAP_TAMPER
+if run_setup "$test_root/tampered.out"; then
+    fail 'tampered bootstrap was executed'
+fi
+unset FAKE_BOOTSTRAP_TAMPER
+grep -qxF 'skills: DEGRADED (reviewed bootstrap digest mismatch)' "$test_root/tampered.out" || fail 'digest mismatch was unclear'
+[[ $(wc -l <"$test_root/setup-events") -eq 1 ]] || fail 'tampered bootstrap ran'
 
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
 export FAKE_FORK_REPOSITORY='Example/example-repo'
 export FAKE_ENVIRONMENTS='[{"id":"unrelated-environment","repos":[]}]'
 run_sync "$test_root/fork.out"
-jq -s -e --arg expected "$expected_script" 'length == 1 and .[0].repos == ["guidance-1"] and .[0].setup == $expected and .[0].maintenance_setup == $expected' "$test_root/requests/create.jsonl" >/dev/null || fail 'fork received a Codex Cloud environment'
+jq -s -e --arg expected "$expected_guidance_script" 'length == 1 and .[0].repos == ["guidance-1"] and .[0].setup == $expected and .[0].maintenance_setup == $expected' "$test_root/requests/create.jsonl" >/dev/null || fail 'fork received a Codex Cloud environment'
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
 export FAKE_FORK_REPOSITORY=''
 
@@ -169,25 +259,40 @@ fi
 grep -qxF 'GitHub repository metadata response has an unexpected schema' "$test_root/github-schema-failure.out" || fail 'GitHub metadata schema failure was not sanitized'
 export FAKE_GH_INVALID_RESPONSE=0
 
-idempotent_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1"],setup:[$setup],maintenance_setup:[$setup]},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$setup],maintenance_setup:[$setup]}]')
+idempotent_environment=$(jq -nc --arg setup "$expected_script" --arg guidance "$expected_guidance_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1"],setup:[$setup],maintenance_setup:[$setup],auto_setup_settings:{use_auto_setup:false}},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$guidance],maintenance_setup:[$guidance],auto_setup_settings:{use_auto_setup:false}}]')
 export FAKE_ENVIRONMENTS="$idempotent_environment"
 run_sync "$test_root/idempotent.out"
 [[ ! -e $test_root/requests/create.jsonl && ! -e $test_root/requests/update.json ]] || fail 'idempotent sync wrote an environment'
 
-legacy_dual_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["guidance-1","repo-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
+auto_setup_drift=$(jq --arg target 'repo-1' '
+    map(if .repos == [$target] then
+        .auto_setup_settings = {use_auto_setup:true, cache_hint:"keep"} |
+        .agent_network_access = {mode:"off"}
+    else . end)
+' <<<"$idempotent_environment")
+export FAKE_ENVIRONMENTS="$auto_setup_drift"
+run_sync "$test_root/auto-setup-drift.out"
+jq -e --arg expected "$expected_script" '
+    keys == ["auto_setup_settings", "etag", "maintenance_setup", "setup"] and
+    .etag == "etag-1" and .setup == $expected and .maintenance_setup == $expected and
+    .auto_setup_settings == {use_auto_setup:false, cache_hint:"keep"}
+' "$test_root/requests/update.json" >/dev/null || fail 'automatic setup drift was not corrected narrowly'
+rm -f "$test_root/requests/update.json"
+
+legacy_dual_environment=$(jq -nc --arg setup "$expected_script" --arg guidance "$expected_guidance_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["guidance-1","repo-1"],setup:$setup,maintenance_setup:$setup,auto_setup_settings:{use_auto_setup:false}},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$guidance,maintenance_setup:$guidance,auto_setup_settings:{use_auto_setup:false}}]')
 export FAKE_ENVIRONMENTS="$legacy_dual_environment"
 run_sync "$test_root/legacy-dual.out"
 jq -e --arg expected "$expected_script" 'keys == ["etag", "maintenance_setup", "repos", "setup"] and .etag == "etag-1" and .repos == ["repo-1"] and .setup == $expected and .maintenance_setup == $expected' "$test_root/requests/update.json" >/dev/null || fail 'dual-repository environment was not migrated to its target singleton'
 rm -f "$test_root/requests/update.json"
 
-invalid_matching_id_environment=$(jq -nc --arg setup "$expected_script" '[{id:"invalid/environment-id",github_connector_id:"connector-1",repos:["repo-1"],setup:$setup,maintenance_setup:$setup},{id:"environment-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$setup,maintenance_setup:$setup}]')
+invalid_matching_id_environment=$(jq -nc --arg setup "$expected_script" --arg guidance "$expected_guidance_script" '[{id:"invalid/environment-id",github_connector_id:"connector-1",repos:["repo-1"],setup:$setup,maintenance_setup:$setup,auto_setup_settings:{use_auto_setup:false}},{id:"environment-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:$guidance,maintenance_setup:$guidance,auto_setup_settings:{use_auto_setup:false}}]')
 export FAKE_ENVIRONMENTS="$invalid_matching_id_environment"
 if run_sync "$test_root/invalid-matching-id.out" --dry-run; then
     fail 'invalid matching environment ID was accepted as unchanged'
 fi
 grep -qxF 'matched environment has an invalid ID' "$test_root/invalid-matching-id.out" || fail 'invalid matching environment ID failure was not safe'
 
-legacy_environment=$(jq -nc --arg setup "$expected_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1"],setup:["old"],maintenance_setup:"old"},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$setup],maintenance_setup:[$setup]}]')
+legacy_environment=$(jq -nc --arg setup "$expected_script" --arg guidance "$expected_guidance_script" '[{id:"environment-1",etag:"etag-1",github_connector_id:"connector-1",repos:["repo-1"],setup:["old"],maintenance_setup:"old",auto_setup_settings:{use_auto_setup:false}},{id:"environment-2",etag:"etag-2",github_connector_id:"connector-1",repos:["guidance-1"],setup:[$guidance],maintenance_setup:[$guidance],auto_setup_settings:{use_auto_setup:false}}]')
 export FAKE_ENVIRONMENTS="$legacy_environment"
 run_sync "$test_root/update.out"
 if [[ ! -f $test_root/requests/update.json ]]; then
@@ -256,4 +361,10 @@ if run_sync "$test_root/newline-token.out" --dry-run; then
 fi
 grep -qxF 'repository inventory response has an unexpected schema' "$test_root/newline-token.out" || fail 'pagination token failure was not sanitized'
 
-printf '%s\n' 'PASS: 17 Codex Cloud environment sync behaviors'
+export FAKE_INVENTORY_PAGE1='{"repo_review_settings":[{"repository":{"id":"guidance-1","name":"_agent-guidance","repository_full_name":"Adam-S-Daniel/_agent-guidance"}},{"repository":{"id":"repo-1","name":"different-name","repository_full_name":"Example/example-repo"}}],"next_token":null}'
+if run_sync "$test_root/mismatched-name.out" --dry-run; then
+    fail 'mismatched repository name and full path were accepted'
+fi
+grep -qxF 'repository inventory item has an invalid GitHub repository path' "$test_root/mismatched-name.out" || fail 'mismatched path failure was not sanitized'
+
+printf '%s\n' 'PASS: 25 Codex Cloud environment sync behaviors'

@@ -315,16 +315,26 @@ up the new PATH.
   connector by an exact repository-name lookup. It uses authenticated GitHub CLI
   metadata to skip forks, so only connected non-forks receive environments. Each
   environment has only its target repository selected, including the guidance
-  repository's own environment. The enrolled repository setup provides
-  `/workspace/_agent-guidance`. Setup and maintenance both run:
+  repository's own environment. Automatic setup is disabled. Setup and
+  maintenance use the same generated script, starting in the selected
+  repository's checkout:
 
   ```bash
   set -euo pipefail
-  cd /workspace/_agent-guidance
-  npm ci
-  CODEX_HOME="${CODEX_HOME:-/opt/codex}" \
-    bash .claude/hooks/fleet-memory.sh --codex-cloud
+  cd /workspace/<target-repository>
+  if [[ -f package-lock.json ]]; then npm ci; fi
+  CODEX_HOME="${CODEX_HOME:-/opt/codex}" bash .claude/hooks/fleet-memory.sh --codex-cloud
   ```
+
+  A repository without `skills.lock` reports a healthy skills skip. An enrolled repository
+  must also contain its delivered `.claude/hooks/skills-bootstrap.sh`; a missing
+  or invalid lock or hook fails setup. For an enrolled repository, the script
+  downloads a reviewed [immutable bootstrap revision](https://github.com/Adam-S-Daniel/adam-agentskills/blob/1ecea2593bcbca6b6073eedf50bb4ffa90ee77e8/.claude/hooks/skills-bootstrap.sh), checks its SHA-256
+  digest, and runs it with `CLAUDE_PROJECT_DIR` set to that repository and
+  `--codex-cloud`. The repository's own lock controls which skills install.
+  The reconciler updates only setup, maintenance, the selected repository,
+  and automatic setup when those fields drift; unrelated environment settings
+  remain in place.
 
   The reconciler requires `codex`, `curl`, `jq`, `flock`, and `mktemp` inside
   the distro. Its status output is aggregate-only and excludes account,
