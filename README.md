@@ -331,7 +331,8 @@ up the new PATH.
   or invalid lock or hook fails setup. For an enrolled repository, the script
   downloads a reviewed [immutable bootstrap revision](https://github.com/Adam-S-Daniel/adam-agentskills/blob/1ecea2593bcbca6b6073eedf50bb4ffa90ee77e8/.claude/hooks/skills-bootstrap.sh), checks its SHA-256
   digest, and runs it with `CLAUDE_PROJECT_DIR` set to that repository and
-  `--codex-cloud`. The repository's own lock controls which skills install.
+  `--codex-cloud`. The bootstrap reads from `/dev/null` because Cloud keeps
+  setup stdin open. The repository's own lock controls which skills install.
   The reconciler updates only setup, maintenance, the selected repository,
   and automatic setup when those fields drift; unrelated environment settings
   remain in place.

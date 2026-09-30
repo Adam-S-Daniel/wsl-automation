@@ -234,6 +234,91 @@ unset FAKE_BOOTSTRAP_TAMPER
 grep -qxF 'skills: DEGRADED (reviewed bootstrap digest mismatch)' "$test_root/tampered.out" || fail 'digest mismatch was unclear'
 [[ $(wc -l <"$test_root/setup-events") -eq 1 ]] || fail 'tampered bootstrap ran'
 
+cat >"$test_root/draining-bootstrap.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+python3 -c '
+import os
+import stat
+import sys
+
+actual = os.fstat(0)
+null_device = os.stat(os.devnull)
+if not stat.S_ISCHR(actual.st_mode) or actual.st_rdev != null_device.st_rdev:
+    print("bootstrap stdin was not /dev/null", file=sys.stderr)
+    sys.exit(83)
+'
+cat >/dev/null
+printf 'skills:%s:%s:%s\n' "$CLAUDE_PROJECT_DIR" "$CODEX_HOME" "$*" >>"$FAKE_RUN_LOG"
+EOF
+PATH="$test_root/bin:$PATH" FAKE_BOOTSTRAP_FILE="$test_root/draining-bootstrap.sh" \
+    FAKE_DOWNLOAD_LOG="$test_root/download-events" FAKE_RUN_LOG="$test_root/open-stdin-events" \
+    python3 - "$test_root" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+if subprocess.run(
+    ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+).returncode == 0:
+    raise SystemExit("negative-control directory unexpectedly inherited Git reach")
+
+setup = root / "target-setup.sh"
+text = setup.read_text()
+invocation = 'bash "$bootstrap_file" --codex-cloud </dev/null'
+if text.count(invocation) != 1:
+    raise SystemExit("generated setup lacks the single expected stdin redirect")
+negative = root / "without-stdin-redirect.sh"
+negative.write_text(text.replace(invocation, 'bash "$bootstrap_file" --codex-cloud'))
+
+def run_with_open_stdin(path: Path, events: Path, expect_null: bool) -> None:
+    read_fd, write_fd = os.pipe()
+    env = os.environ.copy()
+    env["FAKE_RUN_LOG"] = str(events)
+    process = subprocess.Popen(
+        ["bash", str(path)], stdin=read_fd, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=env, start_new_session=True,
+    )
+    os.close(read_fd)
+    try:
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise SystemExit("setup hung while bootstrap drained open stdin")
+        if not expect_null:
+            if process.returncode != 83 or b"bootstrap stdin was not /dev/null" not in stderr:
+                raise SystemExit(f"negative control did not fail its stdin assertion: {process.returncode}: {stderr!r}")
+            if events.exists() and "skills:" in events.read_text():
+                raise SystemExit("negative-control bootstrap continued after its stdin assertion")
+            return
+        if process.returncode != 0:
+            raise SystemExit(f"setup failed with /dev/null stdin: {process.returncode}: {stderr!r}")
+        if b"skills: skipped" in stdout:
+            raise SystemExit("enrolled setup skipped skills")
+        if "skills:" not in events.read_text():
+            raise SystemExit("bootstrap did not finish after closed stdin")
+    finally:
+        os.close(write_fd)
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+
+run_with_open_stdin(negative, root / "negative-stdin-events", expect_null=False)
+run_with_open_stdin(setup, root / "open-stdin-events", expect_null=True)
+PY
+
 rm -f "$test_root/requests/create.jsonl" "$test_root/requests/update.json"
 export FAKE_FORK_REPOSITORY='Example/example-repo'
 export FAKE_ENVIRONMENTS='[{"id":"unrelated-environment","repos":[]}]'
@@ -367,4 +452,4 @@ if run_sync "$test_root/mismatched-name.out" --dry-run; then
 fi
 grep -qxF 'repository inventory item has an invalid GitHub repository path' "$test_root/mismatched-name.out" || fail 'mismatched path failure was not sanitized'
 
-printf '%s\n' 'PASS: 25 Codex Cloud environment sync behaviors'
+printf '%s\n' 'PASS: 26 Codex Cloud environment sync behaviors'

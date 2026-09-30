@@ -49,7 +49,7 @@ else
     printf '%s\n' 'skills: DEGRADED (reviewed bootstrap digest mismatch)' >&2
     exit 1
   fi
-  CLAUDE_PROJECT_DIR="\$PWD" CODEX_HOME="\${CODEX_HOME:-/opt/codex}" bash "\$bootstrap_file" --codex-cloud
+  CLAUDE_PROJECT_DIR="\$PWD" CODEX_HOME="\${CODEX_HOME:-/opt/codex}" bash "\$bootstrap_file" --codex-cloud </dev/null
 fi
 EOF
 )
