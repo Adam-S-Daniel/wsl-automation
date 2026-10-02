@@ -6,9 +6,10 @@
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
     Invoke-ClaudeSessionKeeper with the given parameters, keeping a Claude Code
-    session with Remote Control enabled alive in the distro. Exits 0 whether a
-    session was already present, one was launched, or -DryRun was used;
-    exits 1 on any error. Intended to run frequently (for example every 5
+    session with Remote Control enabled alive in the distro, resuming the
+    sessions that died with it, and keeping a 'codex agents' tab open. Exits 0
+    whether a session was already present, one was launched, or -DryRun was
+    used; exits 1 on any error. Intended to run frequently (for example every 5
     minutes) from a scheduled task.
 
 .PARAMETER DistroName
@@ -35,8 +36,26 @@
     Path to the keeper's log file. Passed through to
     Invoke-ClaudeSessionKeeper only when supplied.
 
+.PARAMETER SessionSnapshotPath
+    Path to the snapshot of active Claude Code sessions used to resume them
+    after the Remote Control server dies. Passed through to
+    Invoke-ClaudeSessionKeeper only when supplied.
+
+.PARAMETER NoSessionRestore
+    Never resume snapshotted Claude Code sessions. Passed through to
+    Invoke-ClaudeSessionKeeper only when set.
+
+.PARAMETER CodexLauncherTaskName
+    Name of the interactive scheduled task that opens the 'codex agents' tab.
+    Passed through to Invoke-ClaudeSessionKeeper only when supplied.
+
+.PARAMETER NoCodexAgents
+    Do not check for, or launch, the 'codex agents' tab. Passed through to
+    Invoke-ClaudeSessionKeeper only when set.
+
 .PARAMETER DryRun
-    Only log what would happen; never actually launch a Claude Code session.
+    Only log what would happen; never actually launch a Claude Code session,
+    resume one, or open the 'codex agents' tab.
 
 .EXAMPLE
     ./ensure-claude-session.ps1
@@ -57,6 +76,14 @@ param(
     [int]$LockStaleMinutes,
 
     [string]$LogFile,
+
+    [string]$SessionSnapshotPath,
+
+    [switch]$NoSessionRestore,
+
+    [string]$CodexLauncherTaskName,
+
+    [switch]$NoCodexAgents,
 
     [switch]$DryRun
 )
@@ -84,10 +111,15 @@ try {
     if ($PSBoundParameters.ContainsKey('LockPath')) { $keeperParams['LockPath'] = $LockPath }
     if ($PSBoundParameters.ContainsKey('LockStaleMinutes')) { $keeperParams['LockStaleMinutes'] = $LockStaleMinutes }
     if ($PSBoundParameters.ContainsKey('LogFile')) { $keeperParams['LogFile'] = $LogFile }
+    if ($PSBoundParameters.ContainsKey('SessionSnapshotPath')) { $keeperParams['SessionSnapshotPath'] = $SessionSnapshotPath }
+    if ($NoSessionRestore) { $keeperParams['NoSessionRestore'] = $true }
+    if ($PSBoundParameters.ContainsKey('CodexLauncherTaskName')) { $keeperParams['CodexLauncherTaskName'] = $CodexLauncherTaskName }
+    if ($NoCodexAgents) { $keeperParams['NoCodexAgents'] = $true }
     if ($DryRun) { $keeperParams['DryRun'] = $true }
 
     $result = Invoke-ClaudeSessionKeeper @keeperParams
-    Write-Information -MessageData "Keeper result: $($result.Status) (waited $($result.WaitedSeconds)s)" -InformationAction Continue
+    Write-Information -MessageData ("Keeper result: $($result.Status) (waited $($result.WaitedSeconds)s, " +
+        "resumed $($result.ResumedSessionCount) session(s), codex agents tab launched: $($result.CodexAgentsLaunched))") -InformationAction Continue
 
     exit 0
 }

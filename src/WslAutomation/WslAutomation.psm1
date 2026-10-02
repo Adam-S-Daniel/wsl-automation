@@ -22,6 +22,7 @@ Export-ModuleMember -Function @(
     'Invoke-WslBackup',
     'Test-WslActivity',
     'Test-ClaudeSession',
+    'Test-CodexAgentsSession',
     'Start-ClaudeSession',
     'Invoke-ClaudeSessionKeeper',
     'Set-WslAutomationScheduledTasks',

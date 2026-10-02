@@ -226,6 +226,40 @@ binary's file name (e.g. `2.1.285`) and its argv0 is a path ending in
 `claude rc` and with resumed sessions; a version-like `comm` with any other
 argv0 is not treated as Claude.
 
+### The keeper restores lost Claude sessions from a snapshot
+
+When `claude rc` dies - quit by hand, or stopped with the whole distro by a
+backup's `wsl --export` - the sessions running under it stop too and vanish
+from `claude agents`. They are restorable: from each one's cwd,
+`claude --bg --resume <full-session-uuid>` exits 0 and the session reappears,
+idle, history intact. `Invoke-ClaudeSessionKeeper` automates exactly that:
+
+- **Snapshot on every live run.** While the Remote Control server is alive,
+  each run stores `claude agents --json` (via `wsl --exec bash -l -c`; both
+  `claude` and `codex` live in `~/.local/bin`) as id/cwd/kind in
+  `%LOCALAPPDATA%\wsl-automation\agents-snapshot.json`, atomically. A list
+  that could not be read (`$null`) never overwrites it; an empty list does.
+- **Restore on a dead run.** After launching a new server it resumes each
+  snapshotted id that is not currently listed. The cwd and id reach bash as
+  positional arguments (`bash -c 'cd -- "$1" && exec claude --bg --resume "$2"'
+  bash <cwd> <id>`), never spliced into the command, and an id that is not a
+  UUID is skipped.
+- **The `restorePending` mark is load-bearing - don't remove it.** In the
+  backup case the distro is still stopped on the dead run, so the live list
+  can't be read and nothing is resumed. The next run then finds the new
+  server alive, and without the mark it would refresh the snapshot from the
+  post-crash list and forget every lost session. With it, that run restores
+  first and only then clears the mark.
+- **Known limitation:** a session deliberately ended within the last keeper
+  interval before `claude rc` died is brought back.
+- Only session ids and counts go to the keeper log (LOCALAPPDATA, not the
+  shared OneDrive backup log) - never a cwd or a session name.
+
+The same keeper also keeps a `codex agents` tab open through a second
+interactive launcher task (`Codex Agents Launcher`). `Test-WslActivity` still
+counts that tab as activity on purpose: it can host live Codex work, and the
+backup's overnight force window is what gets an overdue backup past it.
+
 ### Never leave an interactive prompt in a scheduled-task code path
 
 `Read-Host`, `pause`, and any `-Confirm` prompt must be unreachable when a
@@ -279,7 +313,7 @@ em dashes.)
 
 ### Task principal is the owning user — never SYSTEM
 
-All four tasks build their principal from `$env:USERDOMAIN\$env:USERNAME`. Do
+Every task builds its principal from `$env:USERDOMAIN\$env:USERNAME`. Do
 not switch one to `NT AUTHORITY\SYSTEM` to dodge an elevation or
 stored-password problem — the S4U tasks in particular make it look tempting.
 
@@ -326,7 +360,7 @@ section keeps only what is specific to this repo:
   needs the elevated prompt. `scripts\grant-keeper-batch-logon.ps1` is an LSA
   rights grant (`SeBatchLogonRight`), the other denied shape.
 - **Reads are the WSL-side tool.** `Get-ScheduledTask`, `Get-ScheduledTaskInfo`
-  and `Export-ScheduledTask` against the four tasks work from WSL; use them to
+  and `Export-ScheduledTask` against the tasks work from WSL; use them to
   investigate and to export what a re-registration will replace.
 - **The line to hand over is the installer, as the README's step 3 gives it:**
   from an elevated PowerShell 7.6+ prompt in the Windows checkout

@@ -5,7 +5,9 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
 - A staged, atomic-ish backup of the distro (`tar` or `vhdx`) with retention.
 - A "keeper" that makes sure a Claude Code session with Remote Control
   enabled is running in the distro, coordinating with the backup via a lock
-  file so the two never collide.
+  file so the two never collide. It also resumes the Claude Code sessions
+  that died with a Remote Control server, and keeps a `codex agents` tab
+  open.
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
 - A daily usage census publish (see "Usage census task" below).
@@ -203,6 +205,9 @@ window.
   commonly has no tty at all) always counts. The Remote Control session
   itself - the keeper's always-on session, kept alive so it can be driven
   from claude.ai or the phone - does **not** count as activity by itself.
+  The `codex agents` tab the keeper keeps open is **not** excluded: it can
+  host live Codex work, so it counts like any other pty process, and the
+  overdue backup's overnight force window is what gets a backup past it.
   **Known limitation:** this only sees processes with a real pty; VS Code
   Remote - WSL and other tty-less work (for example a `nohup`'d dev server)
   are not detected as activity and will not defer a backup.
@@ -244,6 +249,29 @@ window.
   second instance while one is already running.
 - Because it runs in session 0 it cannot open a terminal itself; when no
   Remote Control session is running it triggers the launcher task below.
+- **Session snapshot and restore.** Every run that finds the Remote Control
+  server alive records the active Claude Code sessions (`claude agents
+  --json`, run through `bash -l -c` so `~/.local/bin` is on PATH: session id,
+  cwd and kind only) in `%LOCALAPPDATA%\wsl-automation\agents-snapshot.json`
+  (`-SessionSnapshotPath`), written atomically and never overwritten when the
+  list could not be read. A run that finds the server dead - you quit it, or a
+  backup's `wsl --export` stopped the distro - launches a new one and then
+  resumes every snapshotted session that is no longer listed, from its own
+  cwd, with `claude --bg --resume <session-id>`, the same command that
+  restores one by hand. Sessions still listed are skipped, so a repeated
+  restore is harmless. If the list can't be read in that run (typically the
+  distro is still stopped while the launcher boots it), the snapshot is marked
+  `restorePending` and the next run restores before it refreshes anything.
+  The keeper log records session ids and counts, never a cwd or session name.
+  `-NoSessionRestore` turns the restore off; `-DryRun` only logs the ids it
+  would resume.
+- **Known limitation:** the snapshot is up to one keeper interval old, so a
+  session you deliberately ended within the last interval before `claude rc`
+  died is brought back.
+- **Codex agents tab.** After the Claude handling, if no `codex agents`
+  process is running (`Test-CodexAgentsSession`, via `pgrep -af codex`), it
+  triggers the Codex agents launcher task below. `-NoCodexAgents` turns this
+  off.
 
 ### Launcher task (default name: `Claude Code Session Launcher`)
 
@@ -272,6 +300,18 @@ window.
   session: without it the failed `cd` would short-circuit the `&&`, the tab
   would close before `claude` started, and the keeper would reopen it every
   interval forever.
+
+### Codex agents launcher task (default name: `Codex Agents Launcher`)
+
+- Built exactly like the Claude Code launcher above - interactive, on demand,
+  no trigger of its own, `wt.exe` as the action - but the tab is titled
+  "Codex Agents" and runs
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec codex agents"`:
+  Codex's agents TUI, kept open by the keeper the same way it keeps the
+  Remote Control session open. The same quoting, `~/repos`, and
+  `|| cd ~` reasoning applies.
+- Only `codex agents` itself counts as the tab; Codex's `codex app-server`
+  and `codex-code-mode-host` processes, and a bare `codex` session, do not.
 
 ### ccstatusline config sync task (default name: `ccstatusline Config Sync`)
 
@@ -526,6 +566,13 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
   freshly-launched `claude` process never competes with an in-progress
   `wsl --export` for distro resources. After the configured maximum wait
   it proceeds anyway rather than waiting forever.
+- When the Remote Control server is found dead, the sessions it was running
+  are resumed from the snapshot (see the keeper task above). A session you
+  ended on purpose within one keeper interval before the server died comes
+  back too; end it again and it stays gone, since the next live run refreshes
+  the snapshot.
+- The `codex agents` tab is checked and relaunched on every run, after the
+  Claude handling, through its own launcher task.
 
 ## Testing
 
