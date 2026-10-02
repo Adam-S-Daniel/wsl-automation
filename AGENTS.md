@@ -158,9 +158,11 @@ InitTerminateInstanceInternal ... systemctl poweroff
 **No flag or config avoids this** — `wsl --export` always stops the distro it
 exports, tar or vhdx, in use or not. This is why `Invoke-WslBackup` gates on
 `Test-WslActivity` before exporting (deferring while the distro looks
-actively used, forcing through anyway once the newest backup is more than
-`-ForceAfterDays` days old) rather than trying to export around a live
-session.
+actively used, forcing through anyway once the newest backup is at least
+`-ForceAfterDays` whole days old, default 3, and only inside the overnight
+`-ForceWindowStartHour`/`-ForceWindowEndHour` window, default 02:00-06:00 local,
+so a forced stop lands when nobody is working) rather than trying to export
+around a live session.
 
 `--vhd` needs the vhdx detached from the WSL utility VM to export, which does
 not happen while any *other* distro is still attached to that same shared VM
@@ -201,11 +203,11 @@ owes the same delay.
 Observed live 2026-09-27: a second interactive Claude Code session
 (`claude --resume <id>`, left open in a terminal alongside its npm/node MCP
 child processes) deferred the backup 13 consecutive daily runs with
-`Deferred: WSL in use (... claude, npm, node)`. Only the 9-day
-`-ForceAfterDays` override would ever have let a backup through — people
-routinely leave Claude sessions open, so this defeated the activity gate's
-whole point. Don't re-treat a `claude` process as activity on sight; it isn't
-one any more.
+`Deferred: WSL in use (... claude, npm, node)`. Only the `-ForceAfterDays`
+override (then 9 days; now 3, in-window only) would ever have let a backup
+through — people routinely leave Claude sessions open, so this defeated the
+activity gate's whole point. Don't re-treat a `claude` process as activity on
+sight; it isn't one any more.
 
 `Test-WslActivity` now reads each non-Remote-Control `claude` process's own
 `~/.claude/sessions/<pid>.json` (one `wsl --exec` call per pid, `status`

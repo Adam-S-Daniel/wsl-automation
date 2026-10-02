@@ -170,11 +170,18 @@ window.
      explaining why - `wsl --export` can otherwise fail outright while WSL is
      still transitioning (see AGENTS.md).
   2. **Force check.** Once the newest existing backup (any tag/format) is
-     more than `-ForceAfterDays` (default 9; 0 disables this) days old, or
-     none exists yet, the export is forced through regardless of activity -
+     at least `-ForceAfterDays` (default 3; 0 disables this) whole days old,
+     or none exists yet, the export is forced through regardless of activity -
      a persistently busy distro must not be allowed to postpone every backup
-     forever.
-  3. **Activity gate**, unless forced or `-IgnoreActivity` is passed: if the
+     forever. A forced export stops the distro and ends running agent
+     sessions, so it only happens inside the quiet overnight force window,
+     `-ForceWindowStartHour` (default 2, inclusive) to `-ForceWindowEndHour`
+     (default 6, exclusive), local time; a start hour greater than the end
+     hour wraps midnight, and equal hours mean no restriction. Overdue but
+     outside the window, the run falls through to the activity gate: an idle
+     distro still backs up at any hour, a busy one is deferred (the log line
+     says it is overdue and waiting for the window).
+  3. **Activity gate**, unless forced (overdue and inside the force window) or `-IgnoreActivity` is passed: if the
      distro looks actively used (`Test-WslActivity` - see below), the run is
      deferred (`DeferredBusy`) rather than kill live work, and logs one line
      naming how many interactive processes and which command names (never

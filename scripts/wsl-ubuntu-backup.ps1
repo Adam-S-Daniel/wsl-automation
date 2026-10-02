@@ -34,8 +34,18 @@
     Invoke-WslBackup only when supplied.
 
 .PARAMETER ForceAfterDays
-    Once the newest existing backup (any tag/format) is more than this many days old, or none
-    exists, force the export through regardless of WSL activity. Passed through to
+    Once the newest existing backup (any tag/format) is at least this many whole days old, or none
+    exists, force the export through regardless of WSL activity, but only inside the force
+    window (-ForceWindowStartHour to -ForceWindowEndHour). 0 disables forcing. Invoke-WslBackup
+    defaults to 3. Passed through to Invoke-WslBackup only when supplied.
+
+.PARAMETER ForceWindowStartHour
+    Local hour (0-23) at which the force window opens, inclusive. Invoke-WslBackup defaults to 2.
+    Passed through to Invoke-WslBackup only when supplied.
+
+.PARAMETER ForceWindowEndHour
+    Local hour (0-23) at which the force window closes, exclusive. Invoke-WslBackup defaults to 6.
+    Equal start and end hours mean no restriction (force at any hour). Passed through to
     Invoke-WslBackup only when supplied.
 
 .PARAMETER MinMinutesSinceWake
@@ -74,6 +84,12 @@ param(
 
     [int]$ForceAfterDays,
 
+    [ValidateRange(0, 23)]
+    [int]$ForceWindowStartHour,
+
+    [ValidateRange(0, 23)]
+    [int]$ForceWindowEndHour,
+
     [int]$MinMinutesSinceWake,
 
     [switch]$IgnoreActivity,
@@ -105,6 +121,8 @@ try {
     if ($PSBoundParameters.ContainsKey('LogFile')) { $backupParams['LogFile'] = $LogFile }
     if ($PSBoundParameters.ContainsKey('RetentionCount')) { $backupParams['RetentionCount'] = $RetentionCount }
     if ($PSBoundParameters.ContainsKey('ForceAfterDays')) { $backupParams['ForceAfterDays'] = $ForceAfterDays }
+    if ($PSBoundParameters.ContainsKey('ForceWindowStartHour')) { $backupParams['ForceWindowStartHour'] = $ForceWindowStartHour }
+    if ($PSBoundParameters.ContainsKey('ForceWindowEndHour')) { $backupParams['ForceWindowEndHour'] = $ForceWindowEndHour }
     if ($PSBoundParameters.ContainsKey('MinMinutesSinceWake')) { $backupParams['MinMinutesSinceWake'] = $MinMinutesSinceWake }
     if ($PSBoundParameters.ContainsKey('IgnoreActivity')) { $backupParams['IgnoreActivity'] = $IgnoreActivity }
 
