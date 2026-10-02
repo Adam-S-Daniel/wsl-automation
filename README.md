@@ -352,7 +352,7 @@ up the new PATH.
   12:37 (`-UsageCensusTime`). The wrapper shallow-clones skills-evals `main`
   and runs that copy's `scripts/publish_usage_census.sh`, which reads
   `~/.claude/projects` and pushes `usage/latest.json` to skills-evals'
-  `eval-results` branch. It clones `main` rather than using a local checkout
+  `persistent/eval-results` branch. It clones `main` rather than using a local checkout
   because the local checkout may be on any feature branch. See
   [CENSUS.md](https://github.com/Adam-S-Daniel/skills-evals/blob/main/evals/usage/CENSUS.md)
   for what the census records.
@@ -378,7 +378,7 @@ up the new PATH.
   - `(Get-ScheduledTaskInfo -TaskName 'Usage Census Publish').LastTaskResult`
     is `0`.
   - In WSL, `tail ~/.cache/usage-census.log`.
-  - `git ls-remote https://github.com/Adam-S-Daniel/skills-evals eval-results`
+  - `git ls-remote https://github.com/Adam-S-Daniel/skills-evals persistent/eval-results`
     shows the branch head moving after a publish.
 
 ### Legacy scripts
