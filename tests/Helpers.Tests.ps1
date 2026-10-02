@@ -330,6 +330,29 @@ Describe 'WslAutomation helpers' {
             $joined | Should -BeLike '*wsl.exe -d Debian *'
         }
     }
+
+    Describe 'Get-CodexAgentsWtArgumentList' {
+        # Same quoting rules as Get-ClaudeSessionWtArgumentList above: the launcher task joins
+        # the array on spaces, so the title and the bash command must carry their own quotes.
+
+        It 'builds exactly the expected wt.exe argument list' {
+            $argumentList = InModuleScope WslAutomation { Get-CodexAgentsWtArgumentList -DistroName 'Ubuntu' }
+
+            $argumentList | Should -Be @(
+                '-w', '0', 'new-tab', '-p', 'Ubuntu', '--title', '"Codex Agents"',
+                'wsl.exe', '-d', 'Ubuntu', '--cd', '~', '--', 'bash', '-l', '-c',
+                '"cd ~/repos || cd ~ && exec codex agents"'
+            )
+        }
+
+        It 'passes the distro name through to both the terminal profile and wsl.exe' {
+            $joined = InModuleScope WslAutomation { (Get-CodexAgentsWtArgumentList -DistroName 'Debian') -join ' ' }
+
+            $joined | Should -BeLike '*-p Debian *'
+            $joined | Should -BeLike '*wsl.exe -d Debian --cd ~ -- *'
+            $joined | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec codex agents"'
+        }
+    }
 }
 
 Describe 'Invoke-WslExe' {

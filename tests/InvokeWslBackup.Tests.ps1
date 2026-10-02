@@ -6,6 +6,15 @@ BeforeAll {
     function Get-ExpectedTag {
         if ((Get-Date).DayOfWeek -eq 'Sunday') { 'weekly' } else { 'daily' }
     }
+
+    # Writes a fixture backup whose real LastWriteTime (which the force check reads, not the date
+    # in the file name) is the given instant.
+    function Write-AgedBackup {
+        param([string]$Directory, [datetime]$LastWriteTime)
+        $path = Join-Path -Path $Directory -ChildPath "wsl-ubuntu-daily-$($LastWriteTime.ToString('yyyy-MM-dd')).tar"
+        Set-Content -Path $path -Value 'aged' -NoNewline
+        (Get-Item -Path $path).LastWriteTime = $LastWriteTime
+    }
 }
 
 Describe 'Invoke-WslBackup' {
@@ -247,14 +256,28 @@ Describe 'Invoke-WslBackup' {
     }
 
     Context 'activity gate' {
+        BeforeEach {
+            # The force window reads the local hour, so pin Get-Date inside the module (this also
+            # drives the log timestamp, hence the -Format branch). A Friday, so the tag is daily.
+            $script:clock = @{ Now = [datetime]'2026-10-02T03:30:00' }
+            $clock = $script:clock
+            Mock -CommandName Get-Date -ModuleName WslAutomation -MockWith ({
+                    param([string]$Format)
+                    if ($Format) { $clock.Now.ToString($Format) } else { $clock.Now }
+                }.GetNewClosure())
+            # The outer BeforeEach's wake time is relative to the real clock; keep it an hour back
+            # on the pinned one so the wake guard stays clear.
+            Mock -CommandName Get-LastWakeTime -ModuleName WslAutomation -MockWith ({ $clock.Now.AddHours(-1) }.GetNewClosure())
+        }
+
         It 'defers with DeferredBusy, never exports, and never logs process arguments when busy with a fresh backup' {
             # The force check reads real LastWriteTime (per spec), not the date embedded in the
             # filename, so the fixture file's timestamp has to be backdated explicitly.
             $tag = Get-ExpectedTag
-            $freshDate = (Get-Date).AddDays(-1).ToString('yyyy-MM-dd')
+            $freshDate = $script:clock.Now.AddDays(-1).ToString('yyyy-MM-dd')
             $freshBackupPath = Join-Path -Path $script:backupDir -ChildPath "wsl-ubuntu-$tag-$freshDate.tar"
             Set-Content -Path $freshBackupPath -Value 'fresh' -NoNewline
-            (Get-Item -Path $freshBackupPath).LastWriteTime = (Get-Date).AddDays(-1)
+            (Get-Item -Path $freshBackupPath).LastWriteTime = $script:clock.Now.AddDays(-1)
 
             Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
                 [pscustomobject]@{
@@ -283,12 +306,12 @@ Describe 'Invoke-WslBackup' {
             $logContent | Should -Not -Match '--'
         }
 
-        It 'exports and logs "Forcing" when busy but the newest backup is older than ForceAfterDays' {
+        It 'exports and logs "Forcing" when busy, inside the force window, and the newest backup is older than ForceAfterDays' {
             $tag = Get-ExpectedTag
-            $oldDate = (Get-Date).AddDays(-10).ToString('yyyy-MM-dd')
+            $oldDate = $script:clock.Now.AddDays(-10).ToString('yyyy-MM-dd')
             $oldBackupPath = Join-Path -Path $script:backupDir -ChildPath "wsl-ubuntu-$tag-$oldDate.tar"
             Set-Content -Path $oldBackupPath -Value 'old' -NoNewline
-            (Get-Item -Path $oldBackupPath).LastWriteTime = (Get-Date).AddDays(-10)
+            (Get-Item -Path $oldBackupPath).LastWriteTime = $script:clock.Now.AddDays(-10)
 
             Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
                 [pscustomobject]@{
@@ -312,10 +335,10 @@ Describe 'Invoke-WslBackup' {
 
             $result.Status | Should -Be 'Completed'
             $logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
-            (Get-Content -Path $logFile -Raw) | Should -Match 'Forcing export: newest backup is 10 day\(s\) old \(limit 9\)'
+            (Get-Content -Path $logFile -Raw) | Should -Match 'Forcing export: newest backup is 10 day\(s\) old \(limit 3; force window 02:00-06:00\)'
         }
 
-        It 'exports when busy and no backups exist at all' {
+        It 'exports when busy, inside the force window, and no backups exist at all' {
             Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
                 [pscustomobject]@{
                     IsActive           = $true
@@ -364,6 +387,192 @@ Describe 'Invoke-WslBackup' {
             Should -Invoke -CommandName Invoke-WslExe -ModuleName WslAutomation -Times 1 -Exactly -ParameterFilter {
                 $Arguments[0] -eq '--export'
             }
+        }
+    }
+
+    Context 'force window' {
+        BeforeEach {
+            # The force window reads the local hour, so pin Get-Date inside the module (this also
+            # drives the log timestamp, hence the -Format branch). A Friday, so the tag is daily.
+            $script:clock = @{ Now = [datetime]'2026-10-02T03:30:00' }
+            $clock = $script:clock
+            Mock -CommandName Get-Date -ModuleName WslAutomation -MockWith ({
+                    param([string]$Format)
+                    if ($Format) { $clock.Now.ToString($Format) } else { $clock.Now }
+                }.GetNewClosure())
+            # The outer BeforeEach's wake time is relative to the real clock; keep it an hour back
+            # on the pinned one so the wake guard stays clear.
+            Mock -CommandName Get-LastWakeTime -ModuleName WslAutomation -MockWith ({ $clock.Now.AddHours(-1) }.GetNewClosure())
+
+            Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{
+                    IsActive           = $true
+                    Reason             = 'Active'
+                    ActiveProcessCount = 1
+                    ActiveCommands     = @('bash')
+                    RemoteControlPids  = @()
+                    IdleClaudePids     = @()
+                }
+            }
+            Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
+                param($Arguments)
+                if ($Arguments[0] -eq '--export') {
+                    Set-Content -Path $Arguments[2] -Value 'fake tar payload' -NoNewline
+                }
+                [pscustomobject]@{ ExitCode = 0; Output = @() }
+            }
+            $script:logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
+        }
+
+        It 'forces an overdue backup through a busy distro when the hour is inside the window' {
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-10)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            # Busy distro, yet exported: the force path skipped the activity gate's deferral.
+            $result.Status | Should -Be 'Completed'
+            (Get-Content -Path $script:logFile -Raw) | Should -Match 'Forcing export: .*force window 02:00-06:00'
+            (Get-Content -Path $script:logFile -Raw) | Should -Not -Match 'Deferred'
+        }
+
+        It 'defers a busy distro when overdue but outside the window, and says it is waiting for the window' {
+            $script:clock.Now = [datetime]'2026-10-02T12:00:00'
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-10)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'DeferredBusy'
+            Should -Not -Invoke -CommandName Invoke-WslExe -ModuleName WslAutomation
+            $logContent = Get-Content -Path $script:logFile -Raw
+            $logContent | Should -Match ([regex]::Escape('Deferred: WSL in use (1 interactive process(es): bash); newest backup is 10 day(s) old; overdue - forcing only between 02:00 and 06:00'))
+            $logContent | Should -Not -Match 'Forcing export'
+        }
+
+        It 'does not mention the window when deferring a backup that is not overdue' {
+            $script:clock.Now = [datetime]'2026-10-02T12:00:00'
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-1)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'DeferredBusy'
+            (Get-Content -Path $script:logFile -Raw) | Should -Not -Match 'overdue'
+        }
+
+        It 'defers a busy distro outside the window when no backup exists at all' {
+            $script:clock.Now = [datetime]'2026-10-02T12:00:00'
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'DeferredBusy'
+            (Get-Content -Path $script:logFile -Raw) | Should -Match 'overdue - forcing only between 02:00 and 06:00'
+        }
+
+        It 'exports an overdue backup outside the window when the distro is idle, without logging "Forcing"' {
+            $script:clock.Now = [datetime]'2026-10-02T12:00:00'
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-10)
+            Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{
+                    IsActive           = $false
+                    Reason             = 'Idle'
+                    ActiveProcessCount = 0
+                    ActiveCommands     = @()
+                    RemoteControlPids  = @()
+                    IdleClaudePids     = @()
+                }
+            }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            (Get-Content -Path $script:logFile -Raw) | Should -Not -Match 'Forcing export'
+        }
+
+        It 'treats the window as start-inclusive, end-exclusive: <Time> -> <Expected>' -ForEach @(
+            @{ Time = '2026-10-02T01:59:59'; Expected = 'DeferredBusy' }
+            @{ Time = '2026-10-02T02:00:00'; Expected = 'Completed' }
+            @{ Time = '2026-10-02T05:59:59'; Expected = 'Completed' }
+            @{ Time = '2026-10-02T06:00:00'; Expected = 'DeferredBusy' }
+        ) {
+            $script:clock.Now = [datetime]$Time
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-10)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be $Expected
+        }
+
+        It 'supports a window that wraps midnight (22 -> 4): <Time> -> <Expected>' -ForEach @(
+            @{ Time = '2026-10-02T21:59:59'; Expected = 'DeferredBusy' }
+            @{ Time = '2026-10-02T22:00:00'; Expected = 'Completed' }
+            @{ Time = '2026-10-02T23:30:00'; Expected = 'Completed' }
+            @{ Time = '2026-10-03T00:00:00'; Expected = 'Completed' }
+            @{ Time = '2026-10-03T03:59:59'; Expected = 'Completed' }
+            @{ Time = '2026-10-03T04:00:00'; Expected = 'DeferredBusy' }
+            @{ Time = '2026-10-03T12:00:00'; Expected = 'DeferredBusy' }
+        ) {
+            $script:clock.Now = [datetime]$Time
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-10)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath `
+                -ForceWindowStartHour 22 -ForceWindowEndHour 4
+
+            $result.Status | Should -Be $Expected
+        }
+
+        It 'forces at any hour when start equals end: <Time> with window <Hour>-<Hour>' -ForEach @(
+            @{ Time = '2026-10-02T12:00:00'; Hour = 0 }
+            @{ Time = '2026-10-02T12:00:00'; Hour = 12 }
+            @{ Time = '2026-10-02T03:00:00'; Hour = 7 }
+        ) {
+            $script:clock.Now = [datetime]$Time
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-10)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath `
+                -ForceWindowStartHour $Hour -ForceWindowEndHour $Hour
+
+            $result.Status | Should -Be 'Completed'
+            (Get-Content -Path $script:logFile -Raw) | Should -Match 'Forcing export: .*force window any hour'
+        }
+
+        It 'defaults ForceAfterDays to 3: a 3-day-old backup is forced inside the window' {
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-3)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            (Get-Content -Path $script:logFile -Raw) | Should -Match 'Forcing export: newest backup is 3 day\(s\) old \(limit 3;'
+        }
+
+        It 'defaults ForceAfterDays to 3: a 2-day-old backup is not forced, even inside the window' {
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-2)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'DeferredBusy'
+            $logContent = Get-Content -Path $script:logFile -Raw
+            $logContent | Should -Not -Match 'Forcing export'
+            $logContent | Should -Not -Match 'overdue'
+        }
+
+        It 'never forces when ForceAfterDays is 0, even inside the window' {
+            Write-AgedBackup -Directory $script:backupDir -LastWriteTime $script:clock.Now.AddDays(-30)
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath -ForceAfterDays 0
+
+            $result.Status | Should -Be 'DeferredBusy'
+            (Get-Content -Path $script:logFile -Raw) | Should -Not -Match 'overdue'
+        }
+
+        It 'rejects a window hour outside 0-23: <Parameter> <Value>' -ForEach @(
+            @{ Parameter = 'ForceWindowStartHour'; Value = 24 }
+            @{ Parameter = 'ForceWindowStartHour'; Value = -1 }
+            @{ Parameter = 'ForceWindowEndHour'; Value = 24 }
+            @{ Parameter = 'ForceWindowEndHour'; Value = -1 }
+        ) {
+            $extra = @{ $Parameter = $Value }
+
+            { Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath @extra } |
+                Should -Throw
         }
     }
 

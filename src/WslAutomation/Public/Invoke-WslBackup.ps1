@@ -17,9 +17,14 @@ function Invoke-WslBackup {
 
         1. A wake guard: too soon after a boot or a resume from sleep, 'wsl --export' can fail
            outright while WSL is still transitioning (Get-LastWakeTime, -MinMinutesSinceWake).
-        2. A force check: once the newest existing backup (any tag/format) is more than
-           -ForceAfterDays days old (or none exists), the export is forced through regardless of
+        2. A force check: once the newest existing backup (any tag/format) is at least
+           -ForceAfterDays whole days old (or none exists), the export is forced through regardless of
            activity, rather than let a persistently busy distro postpone every backup forever.
+           A forced export stops the distro and ends any running agent sessions, so it only
+           happens inside the quiet overnight window (-ForceWindowStartHour to
+           -ForceWindowEndHour, local time). Overdue but outside that window, the check falls
+           through to the activity gate: an idle distro still backs up at any hour, a busy one
+           is deferred until the window opens.
         3. Unless forced or -IgnoreActivity is set, an activity gate (Test-WslActivity): a distro
            that looks actively in use is left alone rather than stopped out from under the user.
 
@@ -73,9 +78,22 @@ function Invoke-WslBackup {
         path under $env:LOCALAPPDATA.
 
     .PARAMETER ForceAfterDays
-        Once the newest existing backup (any tag/format) is more than this many days old, or none
-        exists, force the export through regardless of WSL activity. 0 disables forcing entirely.
-        Defaults to 9.
+        Once the newest existing backup (any tag/format) is at least this many whole days old, or none
+        exists, force the export through regardless of WSL activity - but only inside the force
+        window (-ForceWindowStartHour to -ForceWindowEndHour). 0 disables forcing entirely.
+        Defaults to 3.
+
+    .PARAMETER ForceWindowStartHour
+        Local hour of day (0-23) at which the force window opens, inclusive. A forced export only
+        proceeds when the current local hour is inside the window; outside it, an overdue backup
+        falls through to the activity gate instead. Defaults to 2 (with the default end hour of 6,
+        the window is 02:00:00 through 05:59:59). A start hour greater than the end hour wraps
+        midnight (22 to 4 is 22:00 through 03:59). Equal start and end hours mean no window
+        restriction: force at any hour.
+
+    .PARAMETER ForceWindowEndHour
+        Local hour of day (0-23) at which the force window closes, exclusive. Defaults to 6. See
+        -ForceWindowStartHour.
 
     .PARAMETER MinMinutesSinceWake
         Minimum number of minutes that must have passed since this machine last booted or resumed
@@ -116,7 +134,13 @@ function Invoke-WslBackup {
 
         [string]$LockPath = (Get-WslBackupLockPath),
 
-        [int]$ForceAfterDays = 9,
+        [int]$ForceAfterDays = 3,
+
+        [ValidateRange(0, 23)]
+        [int]$ForceWindowStartHour = 2,
+
+        [ValidateRange(0, 23)]
+        [int]$ForceWindowEndHour = 6,
 
         [int]$MinMinutesSinceWake = 10,
 
@@ -159,31 +183,45 @@ function Invoke-WslBackup {
         }
     }
 
-    # Step 4: force check - once the newest existing backup (any tag/format) is more than
-    # -ForceAfterDays days old, or none exists, the export proceeds regardless of activity rather
-    # than let a persistently busy distro postpone every backup forever.
+    # Step 4: force check - once the newest existing backup (any tag/format) is at least
+    # -ForceAfterDays whole days old, or none exists, the export proceeds regardless of activity rather
+    # than let a persistently busy distro postpone every backup forever. A forced export stops the
+    # distro and kills running agent sessions, so it is only allowed inside the quiet overnight
+    # window; overdue but outside it, the activity gate below still applies.
     $existingBackups = @(Get-ChildItem -Path $BackupDir -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like "$prefix-*" -and ($_.Extension -eq '.tar' -or $_.Extension -eq '.vhdx') })
     $newestExistingBackup = $existingBackups | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
     $backupAgeDays = if ($newestExistingBackup) { [math]::Floor(((Get-Date) - $newestExistingBackup.LastWriteTime).TotalDays) } else { $null }
     $backupAgeDisplay = if ($null -ne $backupAgeDays) { "$backupAgeDays day(s) old" } else { 'unknown (no prior backup exists)' }
-    $force = $ForceAfterDays -gt 0 -and (-not $newestExistingBackup -or $backupAgeDays -gt $ForceAfterDays)
+    $overdue = $ForceAfterDays -gt 0 -and (-not $newestExistingBackup -or $backupAgeDays -ge $ForceAfterDays)
+    # Start inclusive, end exclusive, local time. Start > end wraps midnight; start == end means
+    # no restriction (force at any hour).
+    $inForceWindow = if ($ForceWindowStartHour -eq $ForceWindowEndHour) { $true }
+    elseif ($ForceWindowStartHour -lt $ForceWindowEndHour) { $now.Hour -ge $ForceWindowStartHour -and $now.Hour -lt $ForceWindowEndHour }
+    else { $now.Hour -ge $ForceWindowStartHour -or $now.Hour -lt $ForceWindowEndHour }
+    $force = $overdue -and $inForceWindow
+    $forceWindowStart = '{0:00}:00' -f $ForceWindowStartHour
+    $forceWindowEnd = '{0:00}:00' -f $ForceWindowEndHour
 
     # Step 5: activity gate. Deferring while WSL looks actively used is what keeps 'wsl --export'
     # - which stops the whole distro - from silently killing the user's work. -IgnoreActivity and
-    # a forced export both skip the check outright; only a forced export also logs why.
+    # a forced export both skip the check outright; only a forced export also logs why. An overdue
+    # backup outside the force window is NOT forced: it goes through the gate and, if deferred,
+    # the log line says it is waiting for the window.
     $activity = $null
     if ($IgnoreActivity) {
         # Skip the gate entirely and silently - the operator asked for this explicitly.
     }
     elseif ($force) {
-        Write-WslAutomationLog -Message "Forcing export: newest backup is $backupAgeDisplay (limit $ForceAfterDays)" -LogFile $LogFile
+        $forceWindowDisplay = if ($ForceWindowStartHour -eq $ForceWindowEndHour) { 'any hour' } else { "$forceWindowStart-$forceWindowEnd" }
+        Write-WslAutomationLog -Message "Forcing export: newest backup is $backupAgeDisplay (limit $ForceAfterDays; force window $forceWindowDisplay)" -LogFile $LogFile
     }
     else {
         $activity = Test-WslActivity -DistroName $DistroName
         if ($activity.IsActive) {
             $activeCommandsJoined = $activity.ActiveCommands -join ', '
-            Write-WslAutomationLog -Message "Deferred: WSL in use ($($activity.ActiveProcessCount) interactive process(es): $activeCommandsJoined); newest backup is $backupAgeDisplay" -LogFile $LogFile
+            $overdueNote = if ($overdue) { "; overdue - forcing only between $forceWindowStart and $forceWindowEnd" } else { '' }
+            Write-WslAutomationLog -Message "Deferred: WSL in use ($($activity.ActiveProcessCount) interactive process(es): $activeCommandsJoined); newest backup is $backupAgeDisplay$overdueNote" -LogFile $LogFile
             return [pscustomobject]@{
                 Status   = 'DeferredBusy'
                 FilePath = $null

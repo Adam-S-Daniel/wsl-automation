@@ -16,8 +16,15 @@ Describe 'Invoke-ClaudeSessionKeeper' {
 
         $script:lockPath = Join-Path $TestDrive 'backup.lock'
         $script:logFile = Join-Path $TestDrive 'keeper.log'
+        $script:snapshotPath = Join-Path $TestDrive 'agents-snapshot.json'
 
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
+        # Session restore and the codex agents tab are covered by their own Describe blocks
+        # below; here they are neutralized (no sessions, codex tab present) so these tests keep
+        # asserting only the Remote Control launch.
+        Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+        Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
+        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $true }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Start-Sleep { }
     }
@@ -28,7 +35,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
 
-        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath
 
         $result.Status | Should -Be 'SessionPresent'
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
@@ -41,7 +48,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
 
-        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath
 
         $result.Status | Should -Be 'Launched'
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
@@ -54,7 +61,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
 
-        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -DryRun
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath -DryRun
 
         $result.Status | Should -Be 'DryRun'
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
@@ -73,7 +80,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
 
-        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile `
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath `
             -MaxWaitMinutes 60 -PollSeconds 30
 
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 2 -Exactly
@@ -91,7 +98,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
 
-        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath
 
         Should -Invoke -ModuleName WslAutomation Remove-WslBackupLock -Times 1 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
@@ -108,7 +115,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
 
-        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile `
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath `
             -MaxWaitMinutes 1 -PollSeconds 30
 
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 2 -Exactly

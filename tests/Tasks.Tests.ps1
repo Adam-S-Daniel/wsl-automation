@@ -205,12 +205,42 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs the launcher and backup tasks interactively (the keeper and ccstatusline tasks are the S4U ones)' {
+        It 'registers the interactive Codex agents launcher task with a wt.exe action running codex agents, and no trigger of its own' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -DistroName 'Debian' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Agents Launcher' -and
+                $Action.Execute -eq 'C:\fake\wt.exe' -and
+                $Action.Argument -match 'new-tab' -and
+                $Action.Argument -match '-p Debian' -and
+                $Action.Argument -match '--title "Codex Agents"' -and
+                $Action.Argument -match 'bash -l -c "cd ~/repos \|\| cd ~ && exec codex agents"' -and
+                $Settings.FakeSettings -eq $true -and
+                $null -eq $Trigger
+            }
+            # Same settings as the Claude Code launcher: on battery, never stopped, one instance.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 2 -Exactly -ParameterFilter {
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $MultipleInstances -eq 'IgnoreNew' -and
+                $null -eq $ExecutionTimeLimit
+            }
+        }
+
+        It 'honors -CodexLauncherTaskName' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -CodexLauncherTaskName 'My Codex Tab' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'My Codex Tab' -and $Action.Argument -match 'exec codex agents'
+            }
+        }
+
+        It 'runs both launchers and the backup task interactively (the keeper and ccstatusline tasks are the S4U ones)' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # Backup + launcher are Interactive; keeper + ccstatusline are S4U/background.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
+            # Backup + both launchers are Interactive; keeper + ccstatusline are S4U/background.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 3 -Exactly -ParameterFilter {
                 $LogonType -eq 'Interactive'
             }
         }
@@ -538,6 +568,47 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
                 $TaskName -eq 'ccstatusline Config Sync'
+            }
+        }
+    }
+
+    Context 'when the Codex agents launcher task already exists' {
+
+        BeforeEach {
+            $script:existingCodexLauncherTask = [pscustomobject]@{
+                TaskName  = 'Codex Agents Launcher'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Codex Agents Launcher') {
+                    return $script:existingCodexLauncherTask
+                }
+                return $null
+            }
+        }
+
+        It 'updates it in place with a rebuilt action, settings and principal, and no trigger' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Agents Launcher' -and
+                $Action.Execute -eq 'C:\fake\wt.exe' -and
+                $Action.Argument -match 'exec codex agents' -and
+                $Settings.FakeSettings -eq $true -and
+                $Principal.FakePrincipal -eq $true -and
+                $null -eq $Trigger
+            }
+        }
+
+        It 'does not create a second Codex agents launcher task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Agents Launcher'
             }
         }
     }
