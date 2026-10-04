@@ -19,12 +19,12 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $script:snapshotPath = Join-Path $TestDrive 'agents-snapshot.json'
 
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
-        # Session restore and the codex agents tab are covered by their own Describe blocks
-        # below; here they are neutralized (no sessions, codex tab present) so these tests keep
+        # Session restore and Codex remote control are covered by their own Describe blocks
+        # below; here they are neutralized (no sessions, codex daemon present) so these tests keep
         # asserting only the Remote Control launch.
         Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $true }
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Start-Sleep { }
     }

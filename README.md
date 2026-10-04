@@ -6,8 +6,9 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
 - A "keeper" that makes sure a Claude Code session with Remote Control
   enabled is running in the distro, coordinating with the backup via a lock
   file so the two never collide. It also resumes the Claude Code sessions
-  that died with a Remote Control server, and keeps a `codex agents` tab
-  open.
+  that died with a Remote Control server, and keeps
+  `codex remote-control start` (Codex's app-server daemon with remote
+  control enabled) running.
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
 - A daily usage census publish (see "Usage census task" below).
@@ -205,9 +206,9 @@ window.
   commonly has no tty at all) always counts. The Remote Control session
   itself - the keeper's always-on session, kept alive so it can be driven
   from claude.ai or the phone - does **not** count as activity by itself.
-  The `codex agents` tab the keeper keeps open is **not** excluded: it can
-  host live Codex work, so it counts like any other pty process, and the
-  overdue backup's overnight force window is what gets a backup past it.
+  The Codex remote-control daemon the keeper keeps running has no pty, so
+  it does not count as activity by itself; any terminal tab still open on
+  it counts like any other pty process.
   **Known limitation:** this only sees processes with a real pty; VS Code
   Remote - WSL and other tty-less work (for example a `nohup`'d dev server)
   are not detected as activity and will not defer a backup.
@@ -268,10 +269,10 @@ window.
 - **Known limitation:** the snapshot is up to one keeper interval old, so a
   session you deliberately ended within the last interval before `claude rc`
   died is brought back.
-- **Codex agents tab.** After the Claude handling, if no `codex agents`
-  process is running (`Test-CodexAgentsSession`, via `pgrep -af codex`), it
-  triggers the Codex agents launcher task below. `-NoCodexAgents` turns this
-  off.
+- **Codex remote control.** After the Claude handling, if Codex's
+  remote-control daemon is not running (`Test-CodexRemoteControl`, via
+  `pgrep -af codex`), it triggers the Codex remote control launcher task
+  below. `-NoCodexRemoteControl` turns this off.
 
 ### Launcher task (default name: `Claude Code Session Launcher`)
 
@@ -301,17 +302,29 @@ window.
   would close before `claude` started, and the keeper would reopen it every
   interval forever.
 
-### Codex agents launcher task (default name: `Codex Agents Launcher`)
+### Codex remote control launcher task (default name: `Codex Remote Control Launcher`)
 
 - Built exactly like the Claude Code launcher above - interactive, on demand,
   no trigger of its own, `wt.exe` as the action - but the tab is titled
-  "Codex Agents" and runs
-  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec codex agents"`:
-  Codex's agents TUI, kept open by the keeper the same way it keeps the
-  Remote Control session open. The same quoting, `~/repos`, and
-  `|| cd ~` reasoning applies.
-- Only `codex agents` itself counts as the tab; Codex's `codex app-server`
-  and `codex-code-mode-host` processes, and a bare `codex` session, do not.
+  "Codex Remote Control" and runs
+  `wsl.exe -d <DistroName> --cd ~ -- bash -l -c "cd ~/repos || cd ~ && exec codex remote-control start"`.
+  The same quoting, `~/repos`, and `|| cd ~` reasoning applies.
+- `codex remote-control start` (experimental in codex-cli 0.160.0) starts
+  Codex's app-server daemon with remote control enabled. The daemon runs in
+  its own session with no terminal, so the command may return and the tab
+  close; that is fine. The keeper checks for the **daemon**, not the tab:
+  a `codex app-server` process with both `--remote-control` and
+  `--managed-daemon`, or a still-running `codex remote-control start`.
+  So a closed tab is not relaunched while the daemon lives, and a daemon
+  that some other Codex process already started counts too.
+- `codex remote-control pair`/`stop`, `codex exec`, `codex agents`, the
+  `codex app-server daemon pid-update-loop` helper, a `codex app-server`
+  without remote control, and an editor with those words in a file name do
+  not count.
+- Earlier versions registered this task as `Codex Agents Launcher`, running
+  `codex agents`. Re-running `scripts\register-tasks.ps1` registers the new
+  task but does not remove the old one; delete it with
+  `Unregister-ScheduledTask -TaskName 'Codex Agents Launcher'`.
 
 ### ccstatusline config sync task (default name: `ccstatusline Config Sync`)
 
@@ -571,8 +584,8 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
   ended on purpose within one keeper interval before the server died comes
   back too; end it again and it stays gone, since the next live run refreshes
   the snapshot.
-- The `codex agents` tab is checked and relaunched on every run, after the
-  Claude handling, through its own launcher task.
+- Codex's remote-control daemon is checked, and started if missing, on every
+  run, after the Claude handling, through its own launcher task.
 
 ## Testing
 

@@ -12,8 +12,8 @@ function Set-WslAutomationScheduledTasks {
         a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
         launcher task the keeper triggers to actually open a Remote Control Claude Code session
-        in Windows Terminal; a second on-demand launcher task the keeper triggers to open a
-        'codex agents' tab; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
+        in Windows Terminal; a second on-demand launcher task the keeper triggers to run
+        'codex remote-control start'; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
         on its own short repeating interval; and a Codex Cloud environment sync task that runs
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
@@ -33,7 +33,7 @@ function Set-WslAutomationScheduledTasks {
         -BackupRetryIntervalMinutes for why). The keeper, launcher, and ccstatusline, Codex
         Cloud sync, and usage census tasks' Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
-        in sync; the Codex agents launcher is built exactly like the Claude Code one. Re-running
+        in sync; the Codex remote control launcher is built exactly like the Claude Code one. Re-running
         this function is idempotent for all seven tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
@@ -93,8 +93,8 @@ function Set-WslAutomationScheduledTasks {
         Claude Code session. Defaults to 'Claude Code Session Launcher'.
 
     .PARAMETER CodexLauncherTaskName
-        Name of the interactive, on-demand task the keeper triggers to open the 'codex agents'
-        tab. Defaults to 'Codex Agents Launcher'. The keeper looks the task up by its own
+        Name of the interactive, on-demand task the keeper triggers to run
+        'codex remote-control start'. Defaults to 'Codex Remote Control Launcher'. The keeper looks the task up by its own
         -CodexLauncherTaskName default, so a different name here also has to be passed to the
         keeper.
 
@@ -199,7 +199,7 @@ function Set-WslAutomationScheduledTasks {
 
         [string]$LauncherTaskName = 'Claude Code Session Launcher',
 
-        [string]$CodexLauncherTaskName = 'Codex Agents Launcher',
+        [string]$CodexLauncherTaskName = 'Codex Remote Control Launcher',
 
         [string]$BackupTime = '02:00',
 
@@ -402,12 +402,12 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
-    # --- Codex agents launcher task: interactive, on-demand terminal opener ---
+    # --- Codex remote control launcher task: interactive, on-demand terminal opener ---
     # Built exactly like the Claude Code launcher above - same wt.exe action shape, settings and
-    # interactive principal, no trigger of its own - but the tab runs 'codex agents' (see
-    # Get-CodexAgentsWtArgumentList). The keeper triggers it by name when Test-CodexAgentsSession
-    # finds no such tab.
-    $codexLauncherArguments = (Get-CodexAgentsWtArgumentList -DistroName $DistroName) -join ' '
+    # interactive principal, no trigger of its own - but the tab runs 'codex remote-control start'
+    # (see Get-CodexRemoteControlWtArgumentList). The keeper triggers it by name when
+    # Test-CodexRemoteControl finds no remote-control daemon.
+    $codexLauncherArguments = (Get-CodexRemoteControlWtArgumentList -DistroName $DistroName) -join ' '
     $codexLauncherAction = New-ScheduledTaskAction -Execute $WtPath -Argument $codexLauncherArguments
     $codexLauncherSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -MultipleInstances IgnoreNew
@@ -612,7 +612,7 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime, retrying every $BackupRetryIntervalMinutes min for up to 1 day)" -InformationAction Continue
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
-    Write-Information -MessageData "Codex agents launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
+    Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue

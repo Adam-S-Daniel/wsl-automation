@@ -7,7 +7,7 @@
     Thin wrapper that imports the WslAutomation module and calls
     Invoke-ClaudeSessionKeeper with the given parameters, keeping a Claude Code
     session with Remote Control enabled alive in the distro, resuming the
-    sessions that died with it, and keeping a 'codex agents' tab open. Exits 0
+    sessions that died with it, and keeping 'codex remote-control start' running. Exits 0
     whether a session was already present, one was launched, or -DryRun was
     used; exits 1 on any error. Intended to run frequently (for example every 5
     minutes) from a scheduled task.
@@ -46,16 +46,16 @@
     Invoke-ClaudeSessionKeeper only when set.
 
 .PARAMETER CodexLauncherTaskName
-    Name of the interactive scheduled task that opens the 'codex agents' tab.
+    Name of the interactive scheduled task that runs 'codex remote-control start'.
     Passed through to Invoke-ClaudeSessionKeeper only when supplied.
 
-.PARAMETER NoCodexAgents
-    Do not check for, or launch, the 'codex agents' tab. Passed through to
+.PARAMETER NoCodexRemoteControl
+    Do not check for, or start, Codex's remote-control daemon. Passed through to
     Invoke-ClaudeSessionKeeper only when set.
 
 .PARAMETER DryRun
     Only log what would happen; never actually launch a Claude Code session,
-    resume one, or open the 'codex agents' tab.
+    resume one, or run 'codex remote-control start'.
 
 .EXAMPLE
     ./ensure-claude-session.ps1
@@ -83,7 +83,7 @@ param(
 
     [string]$CodexLauncherTaskName,
 
-    [switch]$NoCodexAgents,
+    [switch]$NoCodexRemoteControl,
 
     [switch]$DryRun
 )
@@ -114,12 +114,12 @@ try {
     if ($PSBoundParameters.ContainsKey('SessionSnapshotPath')) { $keeperParams['SessionSnapshotPath'] = $SessionSnapshotPath }
     if ($NoSessionRestore) { $keeperParams['NoSessionRestore'] = $true }
     if ($PSBoundParameters.ContainsKey('CodexLauncherTaskName')) { $keeperParams['CodexLauncherTaskName'] = $CodexLauncherTaskName }
-    if ($NoCodexAgents) { $keeperParams['NoCodexAgents'] = $true }
+    if ($NoCodexRemoteControl) { $keeperParams['NoCodexRemoteControl'] = $true }
     if ($DryRun) { $keeperParams['DryRun'] = $true }
 
     $result = Invoke-ClaudeSessionKeeper @keeperParams
     Write-Information -MessageData ("Keeper result: $($result.Status) (waited $($result.WaitedSeconds)s, " +
-        "resumed $($result.ResumedSessionCount) session(s), codex agents tab launched: $($result.CodexAgentsLaunched))") -InformationAction Continue
+        "resumed $($result.ResumedSessionCount) session(s), codex remote-control started: $($result.CodexRemoteControlLaunched))") -InformationAction Continue
 
     exit 0
 }

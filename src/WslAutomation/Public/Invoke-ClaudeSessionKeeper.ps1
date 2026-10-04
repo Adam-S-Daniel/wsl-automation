@@ -43,10 +43,12 @@ function Invoke-ClaudeSessionKeeper {
         Known limitation: the snapshot is up to one keeper interval old, so a session the user
         deliberately ended within that interval before 'claude rc' died is brought back.
 
-        Codex agents tab. After the Claude handling, the keeper also keeps one Windows Terminal
-        tab running 'codex agents' (Codex's agents TUI): if Test-CodexAgentsSession finds none,
-        it starts the Codex launcher task (-CodexLauncherTaskName, registered by
-        Set-WslAutomationScheduledTasks) through the same Start-ClaudeLauncherTask seam.
+        Codex remote control. After the Claude handling, the keeper also keeps
+        'codex remote-control start' (Codex's app-server daemon with remote control enabled)
+        running: if Test-CodexRemoteControl finds no such daemon, it starts the Codex launcher
+        task (-CodexLauncherTaskName, registered by Set-WslAutomationScheduledTasks) through the
+        same Start-ClaudeLauncherTask seam. The check looks for the daemon process, not the
+        launcher's terminal tab, so a daemon that detaches is not relaunched every run.
     .PARAMETER DistroName
         Name of the WSL distro to check/launch into. Defaults to 'Ubuntu'.
     .PARAMETER LauncherTaskName
@@ -72,17 +74,17 @@ function Invoke-ClaudeSessionKeeper {
         Never resume snapshotted sessions after the Remote Control server is found dead. The
         snapshot is still refreshed while it is alive.
     .PARAMETER CodexLauncherTaskName
-        Name of the interactive scheduled task that opens the 'codex agents' tab. Defaults to
-        'Codex Agents Launcher'.
-    .PARAMETER NoCodexAgents
-        Do not check for, or launch, the 'codex agents' tab.
+        Name of the interactive scheduled task that runs 'codex remote-control start'. Defaults
+        to 'Codex Remote Control Launcher'.
+    .PARAMETER NoCodexRemoteControl
+        Do not check for, or start, Codex's remote-control daemon.
     .PARAMETER DryRun
         When a session would be launched, only log the intent and return 'DryRun' instead of
-        actually starting one. Also logs the session ids a restore would resume, and the codex
-        agents tab it would open, without doing either, and never writes the snapshot.
+        actually starting one. Also logs the session ids a restore would resume, and the Codex
+        remote-control start it would trigger, without doing either, and never writes the snapshot.
     .OUTPUTS
         An object with Status ('SessionPresent', 'Launched' or 'DryRun'), WaitedSeconds,
-        ResumedSessionCount and CodexAgentsLaunched.
+        ResumedSessionCount and CodexRemoteControlLaunched.
     .EXAMPLE
         Invoke-ClaudeSessionKeeper
 
@@ -113,9 +115,9 @@ function Invoke-ClaudeSessionKeeper {
 
         [switch]$NoSessionRestore,
 
-        [string]$CodexLauncherTaskName = 'Codex Agents Launcher',
+        [string]$CodexLauncherTaskName = 'Codex Remote Control Launcher',
 
-        [switch]$NoCodexAgents,
+        [switch]$NoCodexRemoteControl,
 
         [switch]$DryRun
     )
@@ -218,21 +220,21 @@ function Invoke-ClaudeSessionKeeper {
     }
 
     $codexLaunched = $false
-    if (-not $NoCodexAgents -and -not (Test-CodexAgentsSession -DistroName $DistroName)) {
+    if (-not $NoCodexRemoteControl -and -not (Test-CodexRemoteControl -DistroName $DistroName)) {
         if ($DryRun) {
-            Write-WslAutomationLog -Message 'DryRun: would launch a codex agents tab' -LogFile $LogFile
+            Write-WslAutomationLog -Message 'DryRun: would run codex remote-control start' -LogFile $LogFile
         }
         else {
             Start-ClaudeLauncherTask -LauncherTaskName $CodexLauncherTaskName
-            Write-WslAutomationLog -Message "Launched new codex agents tab (via '$CodexLauncherTaskName')" -LogFile $LogFile
+            Write-WslAutomationLog -Message "Started codex remote-control start (via '$CodexLauncherTaskName')" -LogFile $LogFile
             $codexLaunched = $true
         }
     }
 
     return [pscustomobject]@{
-        Status              = $status
-        WaitedSeconds       = [int]$waited
-        ResumedSessionCount = [int]$resumedCount
-        CodexAgentsLaunched = $codexLaunched
+        Status                     = $status
+        WaitedSeconds              = [int]$waited
+        ResumedSessionCount        = [int]$resumedCount
+        CodexRemoteControlLaunched = $codexLaunched
     }
 }
