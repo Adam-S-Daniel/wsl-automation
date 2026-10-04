@@ -43,6 +43,11 @@ function Invoke-ClaudeSessionKeeper {
         Known limitation: the snapshot is up to one keeper interval old, so a session the user
         deliberately ended within that interval before 'claude rc' died is brought back.
 
+        WSL user manager. Right after the lock wait and before the Claude handling, the keeper
+        restarts the default user's systemd user manager if it has died, which would leave no
+        /run/user/<uid> for 'claude' and snap apps (Repair-WslUserRuntime; best effort, never
+        throws, does nothing to a stopped distro, and only logs under -DryRun).
+
         Codex remote control. After the Claude handling, the keeper also keeps
         'codex remote-control start' (Codex's app-server daemon with remote control enabled)
         running: if Test-CodexRemoteControl finds no such daemon, it starts the Codex launcher
@@ -155,6 +160,11 @@ function Invoke-ClaudeSessionKeeper {
         $iterationsSlept++
         $waited += $PollSeconds
     }
+
+    # Best-effort and never throws: a dead systemd user manager (and the missing /run/user/<uid>
+    # that comes with it) is restarted before the session work, which needs a working runtime dir.
+    # Runs after the lock wait so it never acts while a backup export holds the distro.
+    Repair-WslUserRuntime -DistroName $DistroName -LogFile $LogFile -DryRun:$DryRun | Out-Null
 
     $status = $null
     $resumedCount = 0
