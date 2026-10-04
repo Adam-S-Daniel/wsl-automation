@@ -255,10 +255,14 @@ idle, history intact. `Invoke-ClaudeSessionKeeper` automates exactly that:
 - Only session ids and counts go to the keeper log (LOCALAPPDATA, not the
   shared OneDrive backup log) - never a cwd or a session name.
 
-The same keeper also keeps a `codex agents` tab open through a second
-interactive launcher task (`Codex Agents Launcher`). `Test-WslActivity` still
-counts that tab as activity on purpose: it can host live Codex work, and the
-backup's overnight force window is what gets an overdue backup past it.
+The same keeper also keeps `codex remote-control start` running through a
+second interactive launcher task (`Codex Remote Control Launcher`).
+`Test-CodexRemoteControl` keys liveness to the daemon process
+(`codex app-server ... --remote-control ... --managed-daemon`), never to the
+launcher's tab: the daemon runs in its own session with no terminal and can
+outlive the tab (or the command can return and close it), so a check on the
+tab could relaunch it every interval. Keep it that way. The daemon has no pty, so
+`Test-WslActivity` does not count it as activity.
 
 ### Never leave an interactive prompt in a scheduled-task code path
 

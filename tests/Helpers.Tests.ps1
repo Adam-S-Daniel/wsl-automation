@@ -331,26 +331,26 @@ Describe 'WslAutomation helpers' {
         }
     }
 
-    Describe 'Get-CodexAgentsWtArgumentList' {
+    Describe 'Get-CodexRemoteControlWtArgumentList' {
         # Same quoting rules as Get-ClaudeSessionWtArgumentList above: the launcher task joins
         # the array on spaces, so the title and the bash command must carry their own quotes.
 
         It 'builds exactly the expected wt.exe argument list' {
-            $argumentList = InModuleScope WslAutomation { Get-CodexAgentsWtArgumentList -DistroName 'Ubuntu' }
+            $argumentList = InModuleScope WslAutomation { Get-CodexRemoteControlWtArgumentList -DistroName 'Ubuntu' }
 
             $argumentList | Should -Be @(
-                '-w', '0', 'new-tab', '-p', 'Ubuntu', '--title', '"Codex Agents"',
+                '-w', '0', 'new-tab', '-p', 'Ubuntu', '--title', '"Codex Remote Control"',
                 'wsl.exe', '-d', 'Ubuntu', '--cd', '~', '--', 'bash', '-l', '-c',
-                '"cd ~/repos || cd ~ && exec codex agents"'
+                '"cd ~/repos || cd ~ && exec codex remote-control start"'
             )
         }
 
         It 'passes the distro name through to both the terminal profile and wsl.exe' {
-            $joined = InModuleScope WslAutomation { (Get-CodexAgentsWtArgumentList -DistroName 'Debian') -join ' ' }
+            $joined = InModuleScope WslAutomation { (Get-CodexRemoteControlWtArgumentList -DistroName 'Debian') -join ' ' }
 
             $joined | Should -BeLike '*-p Debian *'
             $joined | Should -BeLike '*wsl.exe -d Debian --cd ~ -- *'
-            $joined | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec codex agents"'
+            $joined | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec codex remote-control start"'
         }
     }
 }

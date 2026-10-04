@@ -40,7 +40,7 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
         Mock -ModuleName WslAutomation Start-Sleep { }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $true }
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume {
             [pscustomobject]@{ ExitCode = 0; Output = @() }
         }
@@ -344,7 +344,7 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
     }
 }
 
-Describe 'Invoke-ClaudeSessionKeeper codex agents tab' {
+Describe 'Invoke-ClaudeSessionKeeper codex remote control' {
 
     BeforeEach {
         Mock -ModuleName WslAutomation Invoke-WslExe {
@@ -367,20 +367,22 @@ Describe 'Invoke-ClaudeSessionKeeper codex agents tab' {
         }
     }
 
-    It 'starts the Codex launcher task when no codex agents tab is running' {
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $false }
+    It 'starts the Codex launcher task when no remote-control daemon is running' {
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $false }
 
         $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
 
-        $result.CodexAgentsLaunched | Should -BeTrue
+        $result.CodexRemoteControlLaunched | Should -BeTrue
         $result.Status | Should -Be 'SessionPresent'
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
-            $LauncherTaskName -eq 'Codex Agents Launcher'
+            $LauncherTaskName -eq 'Codex Remote Control Launcher'
         }
+        Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw |
+            Should -Match "Started codex remote-control start \(via 'Codex Remote Control Launcher'\)"
     }
 
     It 'honors -CodexLauncherTaskName' {
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $false }
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $false }
 
         Invoke-ClaudeSessionKeeper @script:keeperArgs -CodexLauncherTaskName 'My Codex Tab' | Out-Null
 
@@ -389,97 +391,153 @@ Describe 'Invoke-ClaudeSessionKeeper codex agents tab' {
         }
     }
 
-    It 'launches nothing when the codex agents tab is already running' {
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $true }
+    It 'launches nothing when the remote-control daemon is already running' {
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
 
         $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
 
-        $result.CodexAgentsLaunched | Should -BeFalse
+        $result.CodexRemoteControlLaunched | Should -BeFalse
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
     }
 
-    It 'launches both tabs, each through its own task, when neither is running' {
+    It 'starts the daemon once, then leaves it alone on later runs once pgrep shows it (even after its tab closed)' {
+        # Real Test-CodexRemoteControl against a mocked process list: the first run sees only
+        # look-alikes, later runs see the detached daemon - and no 'codex remote-control start'
+        # launcher, as when the command daemonizes and its tab closes.
+        $script:codexProcessLines = @(
+            '100 codex exec --json example',
+            '101 codex remote-control pair',
+            '102 vim /home/example/notes/codex remote-control start.md'
+        )
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = 0; Output = $script:codexProcessLines }
+        } -ParameterFilter { ($Arguments -join '|') -eq '-d|Ubuntu|--|pgrep|-af|codex' }
+
+        $first = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $script:codexProcessLines += '200 /home/example/.local/bin/codex app-server --remote-control --listen unix:// --managed-daemon'
+        $second = Invoke-ClaudeSessionKeeper @script:keeperArgs
+        $third = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $first.CodexRemoteControlLaunched | Should -BeTrue
+        $second.CodexRemoteControlLaunched | Should -BeFalse
+        $third.CodexRemoteControlLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
+            $LauncherTaskName -eq 'Codex Remote Control Launcher'
+        }
+    }
+
+    It 'launches both, each through its own task, when neither is running' {
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $false }
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $false }
 
         $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
 
         $result.Status | Should -Be 'Launched'
-        $result.CodexAgentsLaunched | Should -BeTrue
+        $result.CodexRemoteControlLaunched | Should -BeTrue
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
             $LauncherTaskName -eq 'Claude Code Session Launcher'
         }
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
-            $LauncherTaskName -eq 'Codex Agents Launcher'
+            $LauncherTaskName -eq 'Codex Remote Control Launcher'
         }
     }
 
-    It 'neither checks for nor launches the tab under -NoCodexAgents' {
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $false }
+    It 'neither checks for nor starts the daemon under -NoCodexRemoteControl' {
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $false }
 
-        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs -NoCodexAgents
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs -NoCodexRemoteControl
 
-        $result.CodexAgentsLaunched | Should -BeFalse
-        Should -Invoke -ModuleName WslAutomation Test-CodexAgentsSession -Times 0 -Exactly
+        $result.CodexRemoteControlLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Test-CodexRemoteControl -Times 0 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
     }
 
-    It 'only logs the launch under -DryRun' {
-        Mock -ModuleName WslAutomation Test-CodexAgentsSession { $false }
+    It 'only logs the start under -DryRun' {
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $false }
 
         $result = Invoke-ClaudeSessionKeeper @script:keeperArgs -DryRun
 
-        $result.CodexAgentsLaunched | Should -BeFalse
+        $result.CodexRemoteControlLaunched | Should -BeFalse
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
-        Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw | Should -Match 'DryRun: would launch a codex agents tab'
+        Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw | Should -Match 'DryRun: would run codex remote-control start'
     }
 }
 
-Describe 'Test-CodexAgentsSession' {
+Describe 'Test-CodexRemoteControl' {
 
     BeforeEach {
         Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
     }
 
-    It 'recognizes "<Line>" as the codex agents tab' -ForEach @(
-        @{ Line = 'codex agents' }
-        @{ Line = '4242 codex agents' }
-        @{ Line = '/home/x/.local/bin/codex agents --foo' }
-        @{ Line = '4242 /home/x/.local/bin/codex agents --foo' }
-        @{ Line = '4242 node /home/x/.local/bin/codex agents' }
+    It 'recognizes "<Line>" as the remote-control daemon' -ForEach @(
+        # The managed daemon, as codex-cli 0.160.0 names it (path is a fake example).
+        @{ Line = '4242 /home/x/.codex/packages/standalone/releases/0.0.0/bin/codex app-server --remote-control --listen unix:// --managed-daemon' }
+        @{ Line = '4242 codex app-server --managed-daemon --remote-control' }
+        @{ Line = 'codex app-server --remote-control --managed-daemon --listen unix://' }
+        # The launcher itself, while it is still running in the foreground.
+        @{ Line = 'codex remote-control start' }
+        @{ Line = '4242 codex remote-control start' }
+        @{ Line = '4242 /home/x/.local/bin/codex remote-control start --json' }
+        @{ Line = '4242 node /home/x/.local/bin/codex remote-control start' }
     ) {
         $pgrepLine = $Line
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{ ExitCode = 0; Output = @($pgrepLine) }
         }.GetNewClosure()
 
-        Test-CodexAgentsSession -DistroName 'Ubuntu' | Should -BeTrue
+        Test-CodexRemoteControl -DistroName 'Ubuntu' | Should -BeTrue
     }
 
     It 'rejects "<Line>"' -ForEach @(
-        @{ Line = 'codex app-server --listen stdio' }
-        @{ Line = '4242 /home/x/.local/bin/codex app-server' }
-        @{ Line = '4242 codex-code-mode-host' }
-        @{ Line = '4242 /home/x/.local/bin/codex-code-mode-host agents' }
-        @{ Line = 'codex' }
+        @{ Line = '4242 codex exec --json example' }
+        @{ Line = '4242 codex remote-control pair' }
+        @{ Line = '4242 codex remote-control stop' }
+        @{ Line = '4242 codex remote-control' }
+        @{ Line = '4242 codex agents' }
         @{ Line = '4242 codex' }
-        @{ Line = '4242 codex agentsx' }
-        @{ Line = '4242 mycodex agents' }
+        @{ Line = '4242 vim /home/x/notes/codex remote-control start.md' }
+        @{ Line = '4242 less codex remote-control start' }
+        @{ Line = '4242 codex remote-control start.md' }
+        @{ Line = '4242 mycodex remote-control start' }
+        @{ Line = '4242 /home/x/.local/bin/codex app-server daemon pid-update-loop' }
+        @{ Line = '4242 codex app-server --listen stdio' }
+        @{ Line = '4242 codex app-server --managed-daemon --listen unix://' }
+        @{ Line = '4242 codex app-server --remote-control --listen unix://' }
+        @{ Line = '4242 codex app-server --remote-controlx --managed-daemon' }
+        @{ Line = '4242 /mnt/c/x/codex -c features.example=true app-server --analytics-default-enabled' }
+        @{ Line = '4242 codex-code-mode-host' }
+        @{ Line = '4242 grep codex app-server --remote-control --managed-daemon' }
     ) {
         $pgrepLine = $Line
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{ ExitCode = 0; Output = @($pgrepLine) }
         }.GetNewClosure()
 
-        Test-CodexAgentsSession -DistroName 'Ubuntu' | Should -BeFalse
+        Test-CodexRemoteControl -DistroName 'Ubuntu' | Should -BeFalse
+    }
+
+    It 'finds the daemon among other codex processes' {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = 0; Output = @(
+                    '10 codex agents',
+                    '11 codex app-server --remote-control --listen unix:// --managed-daemon',
+                    '12 codex app-server daemon pid-update-loop'
+                )
+            }
+        }
+
+        Test-CodexRemoteControl -DistroName 'Ubuntu' | Should -BeTrue
     }
 
     It 'runs pgrep -af codex inside the named distro' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 0; Output = @('1 codex agents') }
+            [pscustomobject]@{ ExitCode = 0; Output = @('1 codex remote-control start') }
         }
 
-        Test-CodexAgentsSession -DistroName 'Debian' | Should -BeTrue
+        Test-CodexRemoteControl -DistroName 'Debian' | Should -BeTrue
         Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
             ($Arguments -join '|') -eq '-d|Debian|--|pgrep|-af|codex'
         }
@@ -488,19 +546,19 @@ Describe 'Test-CodexAgentsSession' {
     It 'returns false without ever running pgrep when the distro is not Running' {
         Mock -ModuleName WslAutomation Get-WslDistroState { 'Stopped' }
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 0; Output = @('1 codex agents') }
+            [pscustomobject]@{ ExitCode = 0; Output = @('1 codex remote-control start') }
         }
 
-        Test-CodexAgentsSession -DistroName 'Ubuntu' | Should -BeFalse
+        Test-CodexRemoteControl -DistroName 'Ubuntu' | Should -BeFalse
         Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 0 -Exactly
     }
 
     It 'returns false when pgrep exits nonzero' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 1; Output = @('1 codex agents') }
+            [pscustomobject]@{ ExitCode = 1; Output = @('1 codex remote-control start') }
         }
 
-        Test-CodexAgentsSession -DistroName 'Ubuntu' | Should -BeFalse
+        Test-CodexRemoteControl -DistroName 'Ubuntu' | Should -BeFalse
     }
 }
 

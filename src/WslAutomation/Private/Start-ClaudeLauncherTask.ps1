@@ -2,7 +2,7 @@ function Start-ClaudeLauncherTask {
     <#
     .SYNOPSIS
         Triggers an on-demand interactive launcher task: the one that opens the Remote Control
-        Claude Code session, or the one that opens the 'codex agents' tab.
+        Claude Code session, or the one that runs 'codex remote-control start'.
     .DESCRIPTION
         The session keeper runs as a background (session 0) scheduled task so its frequent
         "is a session already running?" check never flashes a window on the desktop. A
@@ -16,7 +16,7 @@ function Start-ClaudeLauncherTask {
         Register-WslScheduledTask pattern used elsewhere in the module.
     .PARAMETER LauncherTaskName
         Name of the interactive launcher scheduled task to start (the Claude Code session
-        launcher or the Codex agents launcher).
+        launcher or the Codex remote control launcher).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(

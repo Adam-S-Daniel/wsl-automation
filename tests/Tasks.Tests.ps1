@@ -205,17 +205,17 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'registers the interactive Codex agents launcher task with a wt.exe action running codex agents, and no trigger of its own' {
+        It 'registers the interactive Codex remote control launcher task with a wt.exe action running codex remote-control start, and no trigger of its own' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -DistroName 'Debian' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
-                $TaskName -eq 'Codex Agents Launcher' -and
+                $TaskName -eq 'Codex Remote Control Launcher' -and
                 $Action.Execute -eq 'C:\fake\wt.exe' -and
                 $Action.Argument -match 'new-tab' -and
                 $Action.Argument -match '-p Debian' -and
-                $Action.Argument -match '--title "Codex Agents"' -and
-                $Action.Argument -match 'bash -l -c "cd ~/repos \|\| cd ~ && exec codex agents"' -and
+                $Action.Argument -match '--title "Codex Remote Control"' -and
+                $Action.Argument -match 'bash -l -c "cd ~/repos \|\| cd ~ && exec codex remote-control start"' -and
                 $Settings.FakeSettings -eq $true -and
                 $null -eq $Trigger
             }
@@ -231,7 +231,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 -PwshPath 'C:\fake\pwsh.exe' -CodexLauncherTaskName 'My Codex Tab' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
-                $TaskName -eq 'My Codex Tab' -and $Action.Argument -match 'exec codex agents'
+                $TaskName -eq 'My Codex Tab' -and $Action.Argument -match 'exec codex remote-control start"'
             }
         }
 
@@ -572,17 +572,17 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
-    Context 'when the Codex agents launcher task already exists' {
+    Context 'when the Codex remote control launcher task already exists' {
 
         BeforeEach {
             $script:existingCodexLauncherTask = [pscustomobject]@{
-                TaskName  = 'Codex Agents Launcher'
+                TaskName  = 'Codex Remote Control Launcher'
                 Settings  = [pscustomobject]@{ ExistingSettings = $true }
                 Principal = [pscustomobject]@{ ExistingPrincipal = $true }
             }
 
             Mock -ModuleName WslAutomation Get-ScheduledTask {
-                if ($TaskName -eq 'Codex Agents Launcher') {
+                if ($TaskName -eq 'Codex Remote Control Launcher') {
                     return $script:existingCodexLauncherTask
                 }
                 return $null
@@ -594,21 +594,21 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
-                $TaskName -eq 'Codex Agents Launcher' -and
+                $TaskName -eq 'Codex Remote Control Launcher' -and
                 $Action.Execute -eq 'C:\fake\wt.exe' -and
-                $Action.Argument -match 'exec codex agents' -and
+                $Action.Argument -match 'exec codex remote-control start"' -and
                 $Settings.FakeSettings -eq $true -and
                 $Principal.FakePrincipal -eq $true -and
                 $null -eq $Trigger
             }
         }
 
-        It 'does not create a second Codex agents launcher task' {
+        It 'does not create a second Codex remote control launcher task' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
-                $TaskName -eq 'Codex Agents Launcher'
+                $TaskName -eq 'Codex Remote Control Launcher'
             }
         }
     }
