@@ -371,3 +371,25 @@ section keeps only what is specific to this repo:
   (`D:\repos\adam-s-daniel\wsl-automation`),
   `.\scripts\register-tasks.ps1 -BackupDir '<dir>'` — re-running it updates
   the existing tasks in place.
+
+### The keeper restarts a dead WSL user manager, and linger stays on
+
+2026-10-04 13:02 EDT a test ran `kill(-1, SIGKILL)` as the WSL user
+([skills-evals#250](https://github.com/Adam-S-Daniel/skills-evals/pull/250)).
+That killed `user@1000.service`; systemd then removed `/run/user/1000` and does
+not start the manager again by itself. Every new shell warned
+`XDG_RUNTIME_DIR ... is not a directory`, snap apps failed with `cannot create
+XDG_RUNTIME_DIR`, and user timers stopped. `sudo systemctl start user@1000`
+needs a password; `loginctl enable-linger` does not (polkit allows a user to
+change their own linger) and starts the manager.
+
+- **`Repair-WslUserRuntime` does that on every keeper run**, after the backup
+  lock wait and before the session work: manager not running and linger off ->
+  `enable-linger`; linger on -> `disable-linger` then `enable-linger`. It never
+  throws, never boots a stopped distro, and logs one line that carries no uid or
+  user name. The disable-then-enable order is inferred from `loginctl(1)` and
+  was never run against a dead manager with linger already on; verify it the
+  next time that happens before trusting it.
+- **Linger is intentionally enabled on this machine.** Do not turn it off to
+  "clean up"; the keeper's repair and the user's own recovery both rely on it.
+- The manager is addressed by numeric uid, so no user name reaches a log.

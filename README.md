@@ -273,6 +273,16 @@ window.
   remote-control daemon is not running (`Test-CodexRemoteControl`, via
   `pgrep -af codex`), it triggers the Codex remote control launcher task
   below. `-NoCodexRemoteControl` turns this off.
+- **WSL user manager.** After the backup lock wait and before the session
+  work, if the default user's systemd user manager (`user@<uid>.service`) has
+  died - it takes `/run/user/<uid>` with it, which breaks new shells, snap apps
+  and user timers - the keeper restarts it with `loginctl enable-linger`
+  (`disable-linger` first when linger is already on), which needs no password
+  (`Repair-WslUserRuntime`). Best effort: it never fails the run, never boots a
+  stopped distro, and the common path is one cheap probe that logs nothing.
+  Linger is intentionally enabled on this machine. Why it exists: the
+  2026-10-04 `kill(-1, SIGKILL)` from
+  [skills-evals#250](https://github.com/Adam-S-Daniel/skills-evals/pull/250).
 
 ### Launcher task (default name: `Claude Code Session Launcher`)
 
