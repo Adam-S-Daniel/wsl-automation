@@ -115,6 +115,12 @@ Describe 'Update-WslAutomationRepo' {
         $script:fetchExit = 0
         $script:ancestorExit = 0
         $script:mergeExit = 0
+        $script:switchExit = 0
+        $script:switchMoves = $false
+        $script:mergeMoves = $false
+        $script:headReads = 0
+        $script:headReadReleaseCounts = [Collections.Generic.List[int]]::new()
+        $script:finalHeadFailure = ''
         $script:changed = $false
         $script:locked = $true
         $script:released = 0
@@ -131,17 +137,26 @@ Describe 'Update-WslAutomationRepo' {
         Mock -ModuleName WslAutomation Invoke-GitExe {
             $command = $Arguments -join ' '
             $script:gitCalls.Add($command)
+            # Model a command moving HEAD before it returns an error or throws.
+            if ($command -eq 'switch main' -and $script:switchMoves) { $script:mergeMoves = $true }
+            if ($command -eq 'merge --ff-only origin/main' -and $script:changed) { $script:mergeMoves = $true }
             if ($command -eq $script:gitFailure) { throw 'credential-bearing exception' }
             $code = 0
             $output = @()
             switch ($command) {
-                'rev-parse HEAD' { $output = @(if ($script:changed -and $script:gitCalls.Contains('merge --ff-only origin/main')) { 'b' * 40 } else { 'a' * 40 }) }
+                'rev-parse HEAD' {
+                    $script:headReads++
+                    $script:headReadReleaseCounts.Add($script:released)
+                    if ($script:headReads -gt 1 -and $script:finalHeadFailure -eq 'throw') { throw 'HEAD read failed' }
+                    if ($script:headReads -gt 1 -and $script:finalHeadFailure -eq 'exit') { $code = 1 }
+                    $output = @(if ($script:mergeMoves) { 'b' * 40 } else { 'a' * 40 })
+                }
                 'rev-parse --abbrev-ref HEAD' { $output = @($script:branch) }
                 'status --porcelain' { $output = $script:dirty }
                 'fetch origin' { $code = $script:fetchExit }
                 'merge-base --is-ancestor HEAD origin/main' { $code = $script:ancestorExit }
                 'merge --ff-only origin/main' { $code = $script:mergeExit }
-                'switch main' { }
+                'switch main' { $code = $script:switchExit }
                 default { throw "unexpected Git command: $command" }
             }
             [pscustomobject]@{ ExitCode = $code; Output = $output }
@@ -157,6 +172,8 @@ Describe 'Update-WslAutomationRepo' {
         $script:released | Should -Be 1
         $script:disposed | Should -Be 1
         $script:lockWait | Should -Be 5000
+        @($script:headReadReleaseCounts) | Should -Be @(0, 0)
+        Test-Path $script:logFile | Should -BeFalse
     }
 
     It 'detects a behind checkout changing HEAD' {
@@ -164,6 +181,7 @@ Describe 'Update-WslAutomationRepo' {
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile
         $result.Status | Should -Be 'Updated'
         $result.Changed | Should -BeTrue
+        Get-Content $script:logFile -Raw | Should -Match 'updated checkout HEAD'
     }
 
     It 'fetches on every call rather than using the old 12-hour gate' {
@@ -175,7 +193,7 @@ Describe 'Update-WslAutomationRepo' {
         $script:branch = 'feature-example'
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile
         $result.Status | Should -Be 'Updated'
-        $result.Changed | Should -BeTrue
+        $result.Changed | Should -BeFalse
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 1 -Exactly -ParameterFilter { ($Arguments -join ' ') -eq 'switch main' }
         $script:gitCalls.IndexOf('switch main') | Should -BeLessThan $script:gitCalls.IndexOf('merge --ff-only origin/main')
     }
@@ -216,9 +234,70 @@ Describe 'Update-WslAutomationRepo' {
         $script:mergeExit = 1
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningVariable warnings -WarningAction SilentlyContinue
         $result.Status | Should -Be 'Error'
+        $result.Changed | Should -BeFalse
         $warnings | Should -Not -BeNullOrEmpty
+        Get-Content $script:logFile -Raw | Should -Match 'WARNING.*Error'
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 1 -Exactly -ParameterFilter { $Arguments[0] -eq 'merge' -and $Arguments[1] -eq '--ff-only' }
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments[0] -in @('reset', 'stash', 'clean') -or ($Arguments[0] -eq 'merge' -and $Arguments[1] -ne '--ff-only') }
+    }
+
+    It 'does not reload after a failed switch that leaves HEAD unchanged' {
+        $script:branch = 'feature-example'
+        $script:switchExit = 1
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
+        $result.Status | Should -Be 'Error'
+        $result.Changed | Should -BeFalse
+        $script:headReads | Should -Be 2
+        Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments[0] -eq 'merge' }
+    }
+
+    It 'verifies movement after a <Command> that <Failure>' -ForEach @(
+        @{ Command = 'switch main'; Failure = 'exits nonzero' },
+        @{ Command = 'switch main'; Failure = 'throws' },
+        @{ Command = 'merge --ff-only origin/main'; Failure = 'exits nonzero' },
+        @{ Command = 'merge --ff-only origin/main'; Failure = 'throws' }
+    ) {
+        $script:branch = 'feature-example'
+        if ($Command -eq 'switch main') { $script:switchMoves = $true; $script:switchExit = 1 }
+        else { $script:changed = $true; $script:mergeExit = 1 }
+        if ($Failure -eq 'throws') { $script:gitFailure = $Command }
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
+        $result.Status | Should -Be 'Error'
+        $result.Changed | Should -BeTrue
+        $script:headReads | Should -Be 2
+        @($script:headReadReleaseCounts) | Should -Be @(0, 0)
+        $script:gitCalls[$script:gitCalls.Count - 1] | Should -Be 'rev-parse HEAD'
+        $script:released | Should -Be 1
+    }
+
+    It 'does not reload after a thrown <_> that leaves HEAD unchanged' -ForEach @('switch main', 'merge --ff-only origin/main') {
+        $script:branch = 'feature-example'
+        $script:gitFailure = $_
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
+        $result.Status | Should -Be 'Error'
+        $result.Changed | Should -BeFalse
+        $script:headReads | Should -Be 2
+        @($script:headReadReleaseCounts) | Should -Be @(0, 0)
+    }
+
+    It 'preserves verified switch movement when ancestry later fails' {
+        $script:branch = 'feature-example'
+        $script:switchMoves = $true
+        $script:ancestorExit = 1
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
+        $result.Status | Should -Be 'Diverged'
+        $result.Changed | Should -BeTrue
+        $script:headReads | Should -Be 2
+    }
+
+    It 'does not claim unverified movement when the final HEAD read <_>' -ForEach @('exit', 'throw') {
+        $script:changed = $true
+        $script:finalHeadFailure = $_
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningVariable warnings -WarningAction SilentlyContinue
+        $result.Status | Should -Be 'Error'
+        $result.Changed | Should -BeFalse
+        $warnings | Should -Not -BeNullOrEmpty
+        $script:headReads | Should -Be 2
     }
 
     It 'skips Git on lock contention and never releases an unowned lock' {

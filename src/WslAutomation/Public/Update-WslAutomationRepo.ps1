@@ -6,7 +6,7 @@ function Update-WslAutomationRepo {
         Every call fetches origin under a per-checkout mutex. Local changes (including
         untracked files) and local commits are preserved. No regular merge, reset, stash,
         or clean is attempted. Git failures and lock contention warn and fail open.
-        Changed tells entry scripts to reload their code, including after a branch switch.
+        Changed tells entry scripts to reload their code only when HEAD moved.
         The former 12-hour state-file gate is intentionally removed.
     #>
     [CmdletBinding(SupportsShouldProcess)]
@@ -52,28 +52,42 @@ function Update-WslAutomationRepo {
             $result.Status = 'WorkingTreeDirty'
             throw 'working tree is dirty; leaving it untouched'
         }
-        if (($branch.Output | Select-Object -First 1) -ne 'main') {
-            $result.Changed = $true
-            $switch = Invoke-GitExe @gitParams -Arguments @('switch', 'main')
-            if ($switch.ExitCode -ne 0) { throw 'cannot switch to main' }
+        $writeAttempted = $false
+        try {
+            if (($branch.Output | Select-Object -First 1) -ne 'main') {
+                $writeAttempted = $true
+                $switch = Invoke-GitExe @gitParams -Arguments @('switch', 'main')
+                if ($switch.ExitCode -ne 0) { throw 'cannot switch to main' }
+            }
+            $ancestor = Invoke-GitExe @gitParams -Arguments @('merge-base', '--is-ancestor', 'HEAD', 'origin/main')
+            if ($ancestor.ExitCode -eq 1) {
+                $result.Status = 'Diverged'
+                throw 'main has local commits; skipping fast-forward'
+            }
+            if ($ancestor.ExitCode -ne 0) { throw 'cannot check fast-forward ancestry' }
+            $writeAttempted = $true
+            $merge = Invoke-GitExe @gitParams -Arguments @('merge', '--ff-only', 'origin/main')
+            if ($merge.ExitCode -ne 0) { throw 'fast-forward failed or timed out; no regular merge attempted' }
         }
-        $ancestor = Invoke-GitExe @gitParams -Arguments @('merge-base', '--is-ancestor', 'HEAD', 'origin/main')
-        if ($ancestor.ExitCode -eq 1) {
-            $result.Status = 'Diverged'
-            throw 'main has local commits; skipping fast-forward'
+        finally {
+            # A write can move HEAD and then fail. Inspect once, before releasing the lock,
+            # even on a nonzero exit or exception; only verified movement warrants a reload.
+            if ($writeAttempted) {
+                try {
+                    $after = Invoke-GitExe @gitParams -Arguments @('rev-parse', 'HEAD')
+                    if ($after.ExitCode -ne 0) { throw 'cannot read updated HEAD' }
+                    $result.Changed = (($before.Output -join '') -ne ($after.Output -join ''))
+                }
+                catch {
+                    $result.Status = 'Error'
+                    throw 'cannot read updated HEAD'
+                }
+            }
         }
-        if ($ancestor.ExitCode -ne 0) { throw 'cannot check fast-forward ancestry' }
-        $result.Changed = $true
-        $merge = Invoke-GitExe @gitParams -Arguments @('merge', '--ff-only', 'origin/main')
-        if ($merge.ExitCode -ne 0) { throw 'fast-forward failed or timed out; no regular merge attempted' }
-        # Conservatively reload if a later HEAD read fails after a successful merge.
-        $result.Changed = $true
-        $after = Invoke-GitExe @gitParams -Arguments @('rev-parse', 'HEAD')
-        if ($after.ExitCode -ne 0) { throw 'cannot read updated HEAD' }
-        $result.Changed = (($before.Output -join '') -ne ($after.Output -join '')) -or
-            (($branch.Output | Select-Object -First 1) -ne 'main')
         $result.Status = 'Updated'
-        Write-WslAutomationLog -Message 'ensured main current (fast-forward only)' -LogFile $LogFile
+        if ($result.Changed) {
+            Write-WslAutomationLog -Message 'updated checkout HEAD (fast-forward only)' -LogFile $LogFile
+        }
     }
     catch {
         # Git output and exception text can contain credential-bearing URLs. Log only a
