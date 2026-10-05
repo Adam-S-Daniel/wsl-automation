@@ -6,6 +6,24 @@ script="$repository_root/scripts/publish-usage-census.sh"
 test_root=$(mktemp -d)
 trap 'rm -rf -- "$test_root"' EXIT
 
+# Stub only the Windows bootstrap; no real checkout or Windows process is touched.
+mkdir -p "$test_root/bin"
+export BOOTSTRAP_CALLS="$test_root/bootstrap-calls"
+cat >"$test_root/bin/wslpath" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$2"
+EOF_STUB
+cat >"$test_root/bin/pwsh.exe" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$BOOTSTRAP_CALLS"
+if [[ -n ${BOOTSTRAP_REPLACEMENT:-} ]]; then
+    cp -- "$BOOTSTRAP_REPLACEMENT" "$BOOTSTRAP_ENTRY"
+fi
+exit "${BOOTSTRAP_EXIT:-0}"
+EOF_STUB
+chmod +x "$test_root/bin/"*
+export PATH="$test_root/bin:$PATH"
+
 passed=0
 
 fail() {
@@ -79,5 +97,31 @@ assert_match "$(sed -n 4p "$log_file")" ' exit=1 usage census: could not clone s
 
 # (f): runs append, they do not overwrite.
 assert_eq "$(line_count)" 4 'log accumulates one line per run'
+
+# One bootstrap per original run; the child guard prevents a second update.
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 4 'bootstrap executes once per run'
+assert_match "$(sed -n 1p "$BOOTSTRAP_CALLS")" '-NoProfile -File .*update-task-checkout.ps1 -UpdateOnly$' 'bootstrap uses the shared Windows updater'
+
+# Offline/failed bootstrap still runs the publisher and preserves its status.
+rc=0
+out=$(BOOTSTRAP_EXIT=1 STUB_EXIT=3 bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 3 'bootstrap failure preserves publisher exit'
+assert_match "$out" 'WARNING: checkout bootstrap unavailable' 'bootstrap failure warns'
+assert_match "$out" 'args:--dry-run' 'bootstrap failure still publishes'
+
+# The update replaces the shell entry itself: it must be read from disk before work runs.
+# This is a Git-free fixture, with no remotes or inherited push configuration.
+mkdir -p "$test_root/updated/scripts"
+cp -- "$script" "$test_root/updated/scripts/publish-usage-census.sh"
+cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
+#!/usr/bin/env bash
+printf 'updated code:%s\n' "$*"
+exit 4
+EOF_REPLACEMENT
+rc=0
+out=$(BOOTSTRAP_REPLACEMENT="$test_root/replacement.sh" BOOTSTRAP_ENTRY="$test_root/updated/scripts/publish-usage-census.sh" bash "$test_root/updated/scripts/publish-usage-census.sh" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 4 'updated shell entry exit propagates'
+assert_eq "$out" 'updated code:--dry-run' 'runs the updated entry from disk with arguments'
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 6 'failure and update each bootstrap once'
 
 printf 'PASS: %s assertions\n' "$passed"

@@ -18,6 +18,21 @@
 #   USAGE_CENSUS_LOG   log file (default: ~/.cache/usage-census.log)
 set -euo pipefail
 
+# Use Windows Git and the same cross-session mutex as the PowerShell tasks.
+# Keep the existing wsl.exe task action: no task re-registration is necessary.
+if [[ ${WSL_AUTOMATION_CENSUS_REEXEC:-} != 1 ]]; then
+    scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    updater=$(wslpath -w "$scripts_dir/update-task-checkout.ps1" 2>/dev/null) || updater=''
+    task_pwsh=$(command -v pwsh.exe || true)
+    if [[ -z $task_pwsh ]]; then task_pwsh='/mnt/c/Program Files/PowerShell/7/pwsh.exe'; fi
+    if [[ -z $updater ]] || ! "$task_pwsh" -NoProfile -File "$updater" -UpdateOnly >/dev/null 2>&1; then
+        printf '%s\n' 'WARNING: checkout bootstrap unavailable; continuing with current code' >&2
+    fi
+    # Re-read the updated shell source once; retain positional arguments and publish status.
+    export WSL_AUTOMATION_CENSUS_REEXEC=1
+    exec /bin/bash "$scripts_dir/publish-usage-census.sh" "$@"
+fi
+
 url=${SKILLS_EVALS_URL:-https://github.com/Adam-S-Daniel/skills-evals.git}
 log=${USAGE_CENSUS_LOG:-$HOME/.cache/usage-census.log}
 mkdir -p -- "$(dirname -- "$log")"
