@@ -336,12 +336,26 @@ window.
   The same quoting, `~/repos`, and `|| cd ~` reasoning applies.
 - `codex remote-control start` (experimental in codex-cli 0.160.0) starts
   Codex's app-server daemon with remote control enabled. The daemon runs in
-  its own session with no terminal, so the command may return and the tab
-  close; that is fine. The keeper checks for the **daemon**, not the tab:
+  its own session with no terminal (reparented to `/init`), and the command
+  returns as soon as it has started it, so **the "Codex Remote Control" tab
+  closes within seconds and there is normally no Codex tab to see**. That is
+  the intended, headless steady state, not a failed launch. The keeper checks
+  for the **daemon**, not the tab:
   a `codex app-server` process with both `--remote-control` and
   `--managed-daemon`, or a still-running `codex remote-control start`.
   So a closed tab is not relaunched while the daemon lives, and a daemon
   that some other Codex process already started counts too.
+- **To confirm it is running**, look for the daemon inside the distro with
+  `pgrep -af 'codex app-server.*--remote-control'`; `~/.codex/app-server-daemon/app-server.pid`
+  records its pid and start time. Each keeper launch logs
+  `Started codex remote-control start` in `keeper.log`; a run that finds the
+  daemon alive logs nothing about Codex.
+- **Two environments with this machine's name in the Codex app is expected** when
+  the Codex desktop app is also open: it runs its own `codex app-server` inside
+  WSL with `CODEX_HOME` pointing at the Windows `%USERPROFILE%\.codex`, so it
+  registers for remote control under a different installation id but the same
+  server name. The keeper's daemon is the one using the WSL `~/.codex`, and it
+  stays up when the desktop app is closed.
 - `codex remote-control pair`/`stop`, `codex exec`, `codex agents`, the
   `codex app-server daemon pid-update-loop` helper, a `codex app-server`
   without remote control, and an editor with those words in a file name do
