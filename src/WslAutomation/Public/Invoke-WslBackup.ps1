@@ -28,9 +28,18 @@ function Invoke-WslBackup {
         3. Unless forced or -IgnoreActivity is set, an activity gate (Test-WslActivity): a distro
            that looks actively in use is left alone rather than stopped out from under the user.
 
-        Immediately before the export - after the lock is held - the Claude Code Remote Control
-        session (the keeper's always-on session) is stopped best-effort with SIGTERM. It does not
-        count as activity on its own, and the keeper relaunches it within its own polling
+        Immediately before the export - after the lock is held - the Claude Code sessions the
+        export is about to stop are first recorded for Invoke-ClaudeSessionKeeper: the live list
+        (Get-ClaudeAgentSessions, including which sessions are mid-turn) is written to
+        -SessionSnapshotPath marked restore-pending, so the keeper resumes them after the
+        export, asking the ones that were mid-turn to continue. The keeper's own refresh of that
+        file runs every few minutes and can race the export, which is why the backup records it
+        itself. If the list cannot be read, the keeper's last snapshot is kept and marked
+        restore-pending instead. This step is best effort: a failure is logged (never with a
+        session id) and never fails the backup. Only the count of sessions is logged.
+
+        Right after that, the Claude Code Remote Control session (the keeper's always-on
+        session) is stopped best-effort with SIGTERM. It does not count as activity on its own, and the keeper relaunches it within its own polling
         interval, so there is nothing gained by leaving it running through an export that is
         about to stop the whole distro anyway.
 
@@ -100,6 +109,12 @@ function Invoke-WslBackup {
         from sleep before an export is attempted. Defaults to 10 (see AGENTS.md's "wsl --export
         fails on a transitioning WSL" section for why 5 was not enough).
 
+    .PARAMETER SessionSnapshotPath
+        Path to the keeper's snapshot of active Claude Code sessions, which this function marks
+        restore-pending right before stopping the distro (see above). Defaults to
+        "$env:LOCALAPPDATA\wsl-automation\agents-snapshot.json", the same file
+        Invoke-ClaudeSessionKeeper reads.
+
     .PARAMETER IgnoreActivity
         Skip the activity gate (Test-WslActivity) entirely and export regardless of whether WSL
         looks in use. The wake guard still applies.
@@ -143,6 +158,8 @@ function Invoke-WslBackup {
         [int]$ForceWindowEndHour = 6,
 
         [int]$MinMinutesSinceWake = 10,
+
+        [string]$SessionSnapshotPath = (Join-Path $env:LOCALAPPDATA 'wsl-automation' 'agents-snapshot.json'),
 
         [switch]$IgnoreActivity
     )
@@ -259,7 +276,38 @@ function Invoke-WslBackup {
     New-WslBackupLock -LockPath $LockPath -DistroName $DistroName | Out-Null
 
     try {
-        # Step 10: best-effort stop the Claude Code Remote Control session right before the
+        # Step 10: best-effort record the Claude sessions the export is about to stop, for the
+        # keeper to resume afterwards. The keeper's own 5-minute refresh can race this export (it
+        # fires at the same minute as the backup), so a session that was mid-turn may be missing
+        # from its last snapshot; the live list taken here is the truth. Marked restore-pending so
+        # the keeper restores from it instead of overwriting it with the post-export list. Never
+        # fails the backup, and never logs a session id.
+        try {
+            $sessionsToStop = Get-ClaudeAgentSessions -DistroName $DistroName
+            if ($null -ne $sessionsToStop) {
+                Write-ClaudeAgentSnapshot -Path $SessionSnapshotPath -Sessions $sessionsToStop -RestorePending
+                Write-WslAutomationLog -Message "Recorded $(@($sessionsToStop).Count) Claude session(s) for the keeper to resume after the export" -LogFile $LogFile
+            }
+            else {
+                # The list could not be read: fall back to the keeper's last snapshot.
+                $lastSnapshot = Read-ClaudeAgentSnapshot -Path $SessionSnapshotPath
+                if ($null -eq $lastSnapshot) {
+                    Write-WslAutomationLog -Message 'Could not list Claude sessions and no keeper snapshot exists; nothing to record for restore' -LogFile $LogFile
+                }
+                else {
+                    if (-not $lastSnapshot.RestorePending) {
+                        Write-ClaudeAgentSnapshot -Path $SessionSnapshotPath -Sessions $lastSnapshot.Sessions `
+                            -CapturedAt $lastSnapshot.CapturedAt -RestorePending
+                    }
+                    Write-WslAutomationLog -Message 'Could not list Claude sessions; kept the keeper''s last snapshot for restore after the export' -LogFile $LogFile
+                }
+            }
+        }
+        catch {
+            Write-WslAutomationLog -Message "Failed to record Claude sessions for restore (continuing with the backup): $($_.Exception.GetType().Name)" -LogFile $LogFile
+        }
+
+        # Step 10a: best-effort stop the Claude Code Remote Control session right before the
         # export. 'wsl --export' is about to stop the whole distro regardless, and the keeper
         # relaunches the session within its own polling interval, so nothing is preserved by
         # leaving it running through the export - and killing it first means the export's own

@@ -16,7 +16,12 @@ function Invoke-ClaudeSessionRestore {
 
         A snapshotted SessionId that is not a UUID, or a Cwd that is not an absolute Linux path,
         is skipped and logged rather than passed on. With -DryRun nothing is resumed; the ids
-        that would be are logged instead.
+        that would be are logged instead, with whether each would be asked to continue.
+
+        A session whose snapshot entry has Working set was in the middle of a turn when it was
+        lost, so it is resumed with a fixed prompt telling it to continue the interrupted task;
+        a session that was idle is resumed without one. The summary line counts how many were
+        asked to continue.
 
         Logging goes to the keeper's own log under LOCALAPPDATA: session ids and counts only,
         never a session's cwd, name or title.
@@ -49,6 +54,9 @@ function Invoke-ClaudeSessionRestore {
     $resumed = 0
     $failed = 0
     $skipped = 0
+    $askedToContinue = 0
+    $continuePrompt = 'This session was interrupted mid-turn when its WSL distro was stopped ' +
+        '(a backup export or a crash). Continue the task you were working on from where you left off.'
 
     $current = Get-ClaudeAgentSessions -DistroName $DistroName
     if ($null -eq $current) {
@@ -71,14 +79,24 @@ function Invoke-ClaudeSessionRestore {
             continue
         }
 
+        $wasWorking = [bool]($session.PSObject.Properties['Working'] -and $session.Working -eq $true)
+
         if ($DryRun) {
-            Write-WslAutomationLog -Message "DryRun: would resume Claude session $($session.SessionId)" -LogFile $LogFile
+            $continueNote = if ($wasWorking) { ' and ask it to continue' } else { '' }
+            Write-WslAutomationLog -Message "DryRun: would resume Claude session $($session.SessionId)$continueNote" -LogFile $LogFile
             continue
         }
 
-        $result = Start-ClaudeSessionResume -DistroName $DistroName -SessionId $session.SessionId -Cwd $session.Cwd
+        $resumeArgs = @{ DistroName = $DistroName; SessionId = $session.SessionId; Cwd = $session.Cwd }
+        if ($wasWorking) {
+            $resumeArgs.ContinuePrompt = $continuePrompt
+        }
+        $result = Start-ClaudeSessionResume @resumeArgs
         if ($null -ne $result -and $result.ExitCode -eq 0) {
             $resumed++
+            if ($wasWorking) {
+                $askedToContinue++
+            }
         }
         else {
             $exitCode = if ($null -ne $result) { $result.ExitCode } else { 'none' }
@@ -89,8 +107,8 @@ function Invoke-ClaudeSessionRestore {
 
     $snapshotCount = @($Snapshot.Sessions).Count
     $alreadyRunning = $snapshotCount - $missing.Count
-    Write-WslAutomationLog -Message ("Session restore: $resumed resumed, $failed failed, $skipped skipped " +
-        "($snapshotCount in snapshot, $alreadyRunning already running)") -LogFile $LogFile
+    Write-WslAutomationLog -Message ("Session restore: $resumed resumed ($askedToContinue asked to continue), " +
+        "$failed failed, $skipped skipped ($snapshotCount in snapshot, $alreadyRunning already running)") -LogFile $LogFile
 
     return [pscustomobject]@{ Completed = $true; Resumed = $resumed; Failed = $failed; Skipped = $skipped }
 }

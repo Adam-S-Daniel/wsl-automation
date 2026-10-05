@@ -35,6 +35,15 @@ Describe 'Invoke-WslBackup' {
         Mock -CommandName Get-LastWakeTime -ModuleName WslAutomation -MockWith {
             (Get-Date).AddHours(-1)
         }
+
+        # The pre-export session recording (step 10) lists sessions through wsl.exe and writes
+        # the keeper's snapshot under -SessionSnapshotPath, whose default is built from
+        # LOCALAPPDATA. Point that at the test drive (so no test can touch the real file, and the
+        # default resolves on a machine without LOCALAPPDATA) and default the list to "no sessions".
+        $script:savedLocalAppData = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = Join-Path -Path $TestDrive -ChildPath ([guid]::NewGuid().ToString())
+        $script:snapshotPath = Join-Path $env:LOCALAPPDATA 'wsl-automation' 'agents-snapshot.json'
+        Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith { , @() }
         Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
             [pscustomobject]@{
                 IsActive           = $false
@@ -45,6 +54,10 @@ Describe 'Invoke-WslBackup' {
                 IdleClaudePids     = @()
             }
         }
+    }
+
+    AfterEach {
+        $env:LOCALAPPDATA = $script:savedLocalAppData
     }
 
     Context 'a successful tar export' {
@@ -679,6 +692,166 @@ Describe 'Invoke-WslBackup' {
             $result.Status | Should -Be 'Completed'
             $logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
             (Get-Content -Path $logFile -Raw) | Should -Not -Match 'idle Claude session'
+        }
+    }
+
+    Context 'recording sessions for the keeper before the export' {
+        BeforeEach {
+            $script:idWorking = '11111111-1111-4111-8111-111111111111'
+            $script:idIdle = '22222222-2222-4222-8222-222222222222'
+            $script:callOrder = [System.Collections.Generic.List[string]]::new()
+            Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
+                param($Arguments)
+                $script:callOrder.Add($Arguments -join ' ')
+                if ($Arguments[0] -eq '--export') {
+                    Set-Content -Path $Arguments[2] -Value 'fake tar payload' -NoNewline
+                }
+                [pscustomobject]@{ ExitCode = 0; Output = @() }
+            }
+            $script:logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
+        }
+
+        It 'writes a restore-pending snapshot of the listed sessions strictly before any kill -TERM and before the export' {
+            Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{
+                    IsActive           = $false
+                    Reason             = 'Idle'
+                    ActiveProcessCount = 0
+                    ActiveCommands     = @()
+                    RemoteControlPids  = @(4242)
+                    IdleClaudePids     = @(31073)
+                }
+            }
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith {
+                , @(
+                    [pscustomobject]@{ SessionId = '11111111-1111-4111-8111-111111111111'; Cwd = '/home/u/a'; Kind = 'background'; Working = $true }
+                    [pscustomobject]@{ SessionId = '22222222-2222-4222-8222-222222222222'; Cwd = '/home/u/b'; Kind = 'background'; Working = $false }
+                )
+            }
+            Mock -CommandName Write-ClaudeAgentSnapshot -ModuleName WslAutomation -MockWith {
+                $script:callOrder.Add("snapshot pending=$([bool]$RestorePending) sessions=$(@($Sessions).Count) path=$Path")
+            }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            $snapshotIndex = -1
+            $exportIndex = -1
+            $killIndexes = @()
+            for ($i = 0; $i -lt $script:callOrder.Count; $i++) {
+                if ($snapshotIndex -lt 0 -and $script:callOrder[$i] -like 'snapshot *') { $snapshotIndex = $i }
+                if ($script:callOrder[$i] -match 'kill -TERM') { $killIndexes += $i }
+                if ($exportIndex -lt 0 -and $script:callOrder[$i] -match '^--export ') { $exportIndex = $i }
+            }
+            $snapshotIndex | Should -BeGreaterOrEqual 0
+            $killIndexes.Count | Should -Be 2
+            foreach ($killIndex in $killIndexes) {
+                $snapshotIndex | Should -BeLessThan $killIndex
+            }
+            $snapshotIndex | Should -BeLessThan $exportIndex
+            $script:callOrder[$snapshotIndex] | Should -Be "snapshot pending=True sessions=2 path=$($script:snapshotPath)"
+
+            $logContent = Get-Content -Path $script:logFile -Raw
+            $logContent | Should -Match ([regex]::Escape('Recorded 2 Claude session(s) for the keeper to resume after the export'))
+            $logContent | Should -Not -Match $script:idWorking
+            $logContent | Should -Not -Match $script:idIdle
+        }
+
+        It 'persists the sessions, including which were mid-turn, as a restore-pending snapshot file' {
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith {
+                , @(
+                    [pscustomobject]@{ SessionId = '11111111-1111-4111-8111-111111111111'; Cwd = '/home/u/a'; Kind = 'background'; Working = $true }
+                    [pscustomobject]@{ SessionId = '22222222-2222-4222-8222-222222222222'; Cwd = '/home/u/b'; Kind = 'background'; Working = $false }
+                )
+            }
+
+            Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath | Out-Null
+
+            $snapshot = Get-Content -LiteralPath $script:snapshotPath -Raw | ConvertFrom-Json
+            $snapshot.restorePending | Should -BeTrue
+            @($snapshot.sessions).Count | Should -Be 2
+            $snapshot.sessions[0].sessionId | Should -Be $script:idWorking
+            $snapshot.sessions[0].working | Should -BeTrue
+            $snapshot.sessions[1].working | Should -BeFalse
+        }
+
+        It 'honors -SessionSnapshotPath' {
+            $customPath = Join-Path $TestDrive 'custom' 'snapshot.json'
+
+            Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath `
+                -SessionSnapshotPath $customPath | Out-Null
+
+            $customPath | Should -Exist
+            $script:snapshotPath | Should -Not -Exist
+        }
+
+        It 'marks the keeper''s last snapshot restore-pending, with the same sessions and timestamp, when the list is unreadable' {
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith { $null }
+            New-Item -ItemType Directory -Path (Split-Path $script:snapshotPath -Parent) -Force | Out-Null
+            Set-Content -LiteralPath $script:snapshotPath -Value ('{"capturedAt":"2026-10-01T00:00:00.0000000Z","restorePending":false,"sessions":[' +
+                '{"sessionId":"11111111-1111-4111-8111-111111111111","cwd":"/home/u/a","kind":"background","working":true}]}')
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            $snapshot = Get-Content -LiteralPath $script:snapshotPath -Raw | ConvertFrom-Json -DateKind String
+            $snapshot.restorePending | Should -BeTrue
+            $snapshot.capturedAt | Should -Be '2026-10-01T00:00:00.0000000Z'
+            @($snapshot.sessions).Count | Should -Be 1
+            $snapshot.sessions[0].sessionId | Should -Be $script:idWorking
+            $snapshot.sessions[0].working | Should -BeTrue
+            $logContent = Get-Content -Path $script:logFile -Raw
+            $logContent | Should -Match 'kept the keeper''s last snapshot for restore'
+            $logContent | Should -Not -Match $script:idWorking
+        }
+
+        It 'leaves a snapshot that is already restore-pending untouched when the list is unreadable' {
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith { $null }
+            Mock -CommandName Write-ClaudeAgentSnapshot -ModuleName WslAutomation -MockWith { }
+            New-Item -ItemType Directory -Path (Split-Path $script:snapshotPath -Parent) -Force | Out-Null
+            Set-Content -LiteralPath $script:snapshotPath -Value ('{"capturedAt":"2026-10-01T00:00:00.0000000Z","restorePending":true,"sessions":[' +
+                '{"sessionId":"11111111-1111-4111-8111-111111111111","cwd":"/home/u/a","kind":"background"}]}')
+
+            Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath | Out-Null
+
+            Should -Invoke -CommandName Write-ClaudeAgentSnapshot -ModuleName WslAutomation -Times 0 -Exactly
+        }
+
+        It 'records nothing, and says so, when the list is unreadable and no snapshot exists' {
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith { $null }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            $script:snapshotPath | Should -Not -Exist
+            Get-Content -Path $script:logFile -Raw | Should -Match 'nothing to record for restore'
+        }
+
+        It 'still exports, and logs the failure without any id, when the snapshot step throws' {
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith {
+                , @([pscustomobject]@{ SessionId = '11111111-1111-4111-8111-111111111111'; Cwd = '/home/u/a'; Kind = 'background'; Working = $true })
+            }
+            Mock -CommandName Write-ClaudeAgentSnapshot -ModuleName WslAutomation -MockWith { throw 'disk full for 11111111-1111-4111-8111-111111111111' }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
+            $result.FilePath | Should -Exist
+            Should -Invoke -CommandName Invoke-WslExe -ModuleName WslAutomation -Times 1 -Exactly -ParameterFilter {
+                $Arguments[0] -eq '--export'
+            }
+            $logContent = Get-Content -Path $script:logFile -Raw
+            $logContent | Should -Match 'Failed to record Claude sessions for restore'
+            $logContent | Should -Not -Match $script:idWorking
+            Test-Path -Path $script:lockPath | Should -BeFalse
+        }
+
+        It 'still exports when listing the sessions throws' {
+            Mock -CommandName Get-ClaudeAgentSessions -ModuleName WslAutomation -MockWith { throw 'boom' }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'Completed'
         }
     }
 }

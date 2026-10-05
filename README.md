@@ -224,13 +224,22 @@ window.
   undocumented, this **fails safe to busy** on anything unexpected: a missing
   file, a read failure, a parse error, a pid that doesn't match, or any
   status other than exactly `idle`.
-- **Immediately before the export**, once the lock is held, the Claude Code
+- **Immediately before the export**, once the lock is held, the backup records
+  the Claude Code sessions the export is about to stop (`claude agents
+  --json`, including which are mid-turn) in the keeper's snapshot file
+  (`-SessionSnapshotPath`, default `%LOCALAPPDATA%\wsl-automation\agents-snapshot.json`),
+  marked restore-pending, so the keeper resumes them afterwards. If the list
+  can't be read, the keeper's last snapshot is kept and marked restore-pending
+  instead. Best-effort - a failure only logs and never fails the backup - and
+  only the count is logged.
+- Right after that, the Claude Code
   Remote Control session is stopped with `SIGTERM` (best-effort - a failure
   only logs). It doesn't count as activity and the keeper relaunches it
   within its own polling interval, so nothing is preserved by leaving it
   running through an export that is about to stop the whole distro anyway.
   Every idle Claude session found above is stopped the same way at the same
-  point - it's resumable afterwards with `claude --resume`, and the export is
+  point - it's resumable afterwards with `claude --resume` (the keeper does
+  that from the snapshot), and the export is
   about to stop the whole distro regardless. Only the count of sessions
   stopped is logged, never a pid or session id.
 
@@ -253,22 +262,28 @@ window.
 - **Session snapshot and restore.** Every run that finds the Remote Control
   server alive records the active Claude Code sessions (`claude agents
   --json`, run through `bash -l -c` so `~/.local/bin` is on PATH: session id,
-  cwd and kind only) in `%LOCALAPPDATA%\wsl-automation\agents-snapshot.json`
+  cwd, kind and whether it is mid-turn, never its name) in `%LOCALAPPDATA%\wsl-automation\agents-snapshot.json`
   (`-SessionSnapshotPath`), written atomically and never overwritten when the
   list could not be read. A run that finds the server dead - you quit it, or a
   backup's `wsl --export` stopped the distro - launches a new one and then
   resumes every snapshotted session that is no longer listed, from its own
   cwd, with `claude --bg --resume <session-id>`, the same command that
-  restores one by hand. Sessions still listed are skipped, so a repeated
-  restore is harmless. If the list can't be read in that run (typically the
+  restores one by hand. A session that was mid-turn is resumed with a prompt
+  telling it to continue the interrupted task; an idle one is resumed idle.
+  Sessions still listed are skipped, so a repeated restore is harmless. If the list can't be read in that run (typically the
   distro is still stopped while the launcher boots it), the snapshot is marked
   `restorePending` and the next run restores before it refreshes anything.
+  The backup writes that same restore-pending snapshot itself, right before it
+  stops the distro (see above), because the keeper's refresh fires at the same
+  minute as the backup and can miss a session that was busy; the refresh never
+  overwrites a restore-pending snapshot and skips its write while a fresh
+  backup lock is held.
   The keeper log records session ids and counts, never a cwd or session name.
   `-NoSessionRestore` turns the restore off; `-DryRun` only logs the ids it
   would resume.
-- **Known limitation:** the snapshot is up to one keeper interval old, so a
-  session you deliberately ended within the last interval before `claude rc`
-  died is brought back.
+- **Known limitation:** for a stop that is not a backup (a crash), the snapshot
+  is up to one keeper interval old, so a session you deliberately ended within
+  the last interval before `claude rc` died is brought back.
 - **Codex remote control.** After the Claude handling, if Codex's
   remote-control daemon is not running (`Test-CodexRemoteControl`, via
   `pgrep -af codex`), it triggers the Codex remote control launcher task

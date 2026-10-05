@@ -3,11 +3,11 @@ function Write-ClaudeAgentSnapshot {
     .SYNOPSIS
         Atomically writes the keeper's snapshot of active Claude Code sessions.
     .DESCRIPTION
-        Serializes { capturedAt, restorePending, sessions: [{ sessionId, cwd, kind }] } to a
-        temporary file next to -Path and then moves it over -Path with Move-Item -Force, so a
-        reader (the next keeper run) never sees a half-written file. Creates the parent
-        directory if needed. Only the session id, cwd and kind are stored - never a session's
-        name or title.
+        Serializes { capturedAt, restorePending, sessions: [{ sessionId, cwd, kind, working }] }
+        to a temporary file next to -Path and then moves it over -Path with Move-Item -Force, so
+        a reader (the next keeper run) never sees a half-written file. Creates the parent
+        directory if needed. Only the session id, cwd, kind and working flag (whether the
+        session was in the middle of a turn) are stored - never a session's name or title.
 
         RestorePending marks a snapshot whose sessions have not been restored yet after the
         Remote Control server was found dead; while it is set, Invoke-ClaudeSessionKeeper does
@@ -16,8 +16,9 @@ function Write-ClaudeAgentSnapshot {
     .PARAMETER Path
         Path to the snapshot file.
     .PARAMETER Sessions
-        Session objects with SessionId, Cwd and Kind properties (as returned by
-        Get-ClaudeAgentSessions or Read-ClaudeAgentSnapshot). May be empty.
+        Session objects with SessionId, Cwd, Kind and Working properties (as returned by
+        Get-ClaudeAgentSessions or Read-ClaudeAgentSnapshot). A missing Working is stored as
+        false. May be empty.
     .PARAMETER RestorePending
         Whether a restore of these sessions is still outstanding.
     .PARAMETER CapturedAt
@@ -52,6 +53,7 @@ function Write-ClaudeAgentSnapshot {
                     sessionId = $session.SessionId
                     cwd       = $session.Cwd
                     kind      = $session.Kind
+                    working   = [bool]($session.PSObject.Properties['Working'] -and $session.Working -eq $true)
                 }
             }
         )
