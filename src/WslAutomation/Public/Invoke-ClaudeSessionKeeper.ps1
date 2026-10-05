@@ -25,13 +25,21 @@ function Invoke-ClaudeSessionKeeper {
         Session snapshot and restore. When 'claude rc' dies - the user quits it, or a backup's
         'wsl --export' stops the whole distro - the Claude Code sessions running under it stop
         too and drop out of 'claude agents'. So every run that finds the Remote Control server
-        alive also records the active sessions (Get-ClaudeAgentSessions: id, cwd, kind) in
-        -SessionSnapshotPath, written atomically and never overwritten when the list could not
-        be read. A run that finds it dead launches a new one as above and then resumes every
-        snapshotted session that is not listed any more, from its own cwd, with
-        'claude --bg --resume <id>' (Start-ClaudeSessionResume) - the same command that
-        restores one by hand. Sessions that are still listed are skipped, so a repeated restore
-        is harmless.
+        alive also records the active sessions (Get-ClaudeAgentSessions: id, cwd, kind, and
+        whether the session is mid-turn) in -SessionSnapshotPath, written atomically and never
+        overwritten when the list could not be read. A run that finds it dead launches a new
+        one as above and then resumes every snapshotted session that is not listed any more,
+        from its own cwd, with 'claude --bg --resume <id>' (Start-ClaudeSessionResume) - the
+        same command that restores one by hand. A session that was mid-turn when it was
+        snapshotted is resumed with a prompt to continue its interrupted task; an idle one is
+        resumed idle. Sessions that are still listed are skipped, so a repeated restore is
+        harmless.
+
+        The backup (Invoke-WslBackup) records the sessions itself, marked restore-pending,
+        right before it stops them, so a session that was busy when the last 5-minute refresh
+        ran - or when that refresh raced the backup's start - is not forgotten. The refresh
+        therefore never overwrites a restore-pending snapshot and skips its write while a fresh
+        backup lock is held.
 
         If the live list cannot be read in that run (typically the distro is still stopped,
         because the launcher has only just begun booting it), the snapshot is marked
@@ -40,8 +48,9 @@ function Invoke-ClaudeSessionKeeper {
         Without that mark the next run would overwrite the snapshot with the post-crash list
         and the lost sessions would be forgotten. The snapshot file itself is never deleted.
 
-        Known limitation: the snapshot is up to one keeper interval old, so a session the user
-        deliberately ended within that interval before 'claude rc' died is brought back.
+        Known limitation: for a stop that is not a backup (a crash), the snapshot is up to one
+        keeper interval old, so a session the user deliberately ended within that interval
+        before 'claude rc' died is brought back, and one started within it is missed.
 
         WSL user manager. Right after the lock wait and before the Claude handling, the keeper
         restarts the default user's systemd user manager if it has died, which would leave no
@@ -192,7 +201,18 @@ function Invoke-ClaudeSessionKeeper {
         elseif (-not $DryRun) {
             $sessions = Get-ClaudeAgentSessions -DistroName $DistroName
             if ($null -ne $sessions) {
-                Write-ClaudeAgentSnapshot -Path $SessionSnapshotPath -Sessions $sessions
+                # The backup writes a restore-pending snapshot right as it starts, and this run
+                # may have passed its own lock check just before that. Overwriting it with the
+                # live list would forget the sessions the backup is about to stop, so re-check
+                # the lock and the snapshot immediately before writing. (Under -NoSessionRestore
+                # a pending mark is deliberately ignored, as above, so it never blocks the write.)
+                $backupLock = Test-WslBackupLock -LockPath $LockPath -StaleMinutes $LockStaleMinutes
+                $currentSnapshot = Read-ClaudeAgentSnapshot -Path $SessionSnapshotPath
+                $backupStarting = $backupLock.Present -and -not $backupLock.Stale
+                $restoreOutstanding = -not $NoSessionRestore -and $currentSnapshot -and $currentSnapshot.RestorePending
+                if (-not $backupStarting -and -not $restoreOutstanding) {
+                    Write-ClaudeAgentSnapshot -Path $SessionSnapshotPath -Sessions $sessions
+                }
             }
         }
     }

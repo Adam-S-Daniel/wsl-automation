@@ -5,10 +5,12 @@ function Read-ClaudeAgentSnapshot {
         Write-ClaudeAgentSnapshot.
     .DESCRIPTION
         Returns an object with CapturedAt (string), RestorePending (bool) and Sessions (an
-        array of SessionId/Cwd/Kind objects), or $null when the file is missing, unreadable,
-        not JSON, or not shaped like a snapshot. Never throws: a corrupt snapshot only costs
-        one restore, never the keeper run. Session entries missing a sessionId or cwd are
-        dropped, the same rule Get-ClaudeAgentSessions applies to live output.
+        array of SessionId/Cwd/Kind/Working objects), or $null when the file is missing,
+        unreadable, not JSON, or not shaped like a snapshot. Never throws: a corrupt snapshot
+        only costs one restore, never the keeper run. Session entries missing a sessionId or cwd
+        are dropped, the same rule Get-ClaudeAgentSessions applies to live output. Working is
+        $true only when the entry's 'working' is the JSON value true; a snapshot written before
+        the field existed reads as $false.
     .PARAMETER Path
         Path to the snapshot file.
     #>
@@ -46,10 +48,12 @@ function Read-ClaudeAgentSnapshot {
                     continue
                 }
                 $kindProperty = $entry.PSObject.Properties['kind']
+                $workingProperty = $entry.PSObject.Properties['working']
                 [pscustomobject]@{
                     SessionId = "$($sessionIdProperty.Value)"
                     Cwd       = "$($cwdProperty.Value)"
                     Kind      = if ($kindProperty) { "$($kindProperty.Value)" } else { $null }
+                    Working   = [bool]($workingProperty -and $workingProperty.Value -eq $true)
                 }
             }
         )

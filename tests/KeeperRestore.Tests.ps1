@@ -24,8 +24,8 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
         }
 
         function script:New-TestSession {
-            param([string]$Id, [string]$Cwd, [string]$Kind = 'background')
-            [pscustomobject]@{ sessionId = $Id; cwd = $Cwd; kind = $Kind }
+            param([string]$Id, [string]$Cwd, [string]$Kind = 'background', [switch]$Working)
+            [pscustomobject]@{ sessionId = $Id; cwd = $Cwd; kind = $Kind; working = [bool]$Working }
         }
     }
 
@@ -126,6 +126,71 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
             Test-Path -LiteralPath $script:snapshotPath | Should -BeFalse
         }
 
+        It 'does not overwrite a restore-pending snapshot the backup wrote while this run was listing sessions' {
+            # The backup lands its restore-pending snapshot after this run's first snapshot read
+            # but before its refresh write: simulated by a list call that writes the file.
+            $path = $script:snapshotPath
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions {
+                Set-Content -LiteralPath $path -Value ('{"capturedAt":"2026-10-01T00:00:00.0000000Z","restorePending":true,' +
+                    '"sessions":[{"sessionId":"11111111-1111-4111-8111-111111111111","cwd":"/home/u/repos/a","kind":"background","working":true}]}')
+                , @()
+            }.GetNewClosure()
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs | Out-Null
+
+            $snapshot = Get-Content -LiteralPath $script:snapshotPath -Raw | ConvertFrom-Json
+            $snapshot.restorePending | Should -BeTrue
+            @($snapshot.sessions).Count | Should -Be 1
+            $snapshot.sessions[0].working | Should -BeTrue
+        }
+
+        It 'does not overwrite the snapshot when a fresh backup lock appeared after this run''s own lock check' {
+            Write-TestSnapshot -Sessions @(New-TestSession -Id $script:idA -Cwd '/home/u/repos/a' -Working)
+            $before = Get-Content -LiteralPath $script:snapshotPath -Raw
+            # First lock check (the wait loop) sees no backup; the re-check right before the write does.
+            $lockChecks = [System.Collections.Generic.List[int]]::new()
+            Mock -ModuleName WslAutomation Test-WslBackupLock {
+                $lockChecks.Add(1)
+                [pscustomobject]@{ Present = ($lockChecks.Count -gt 1); Stale = $false; AgeMinutes = 0; Data = $null }
+            }.GetNewClosure()
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs | Out-Null
+
+            $lockChecks.Count | Should -Be 2
+            Get-Content -LiteralPath $script:snapshotPath -Raw | Should -Be $before
+        }
+
+        It 'still refreshes the snapshot when the lock re-check finds only a stale lock' {
+            Write-TestSnapshot -Sessions @(New-TestSession -Id $script:idA -Cwd '/home/u/repos/a')
+            $lockChecks = [System.Collections.Generic.List[int]]::new()
+            Mock -ModuleName WslAutomation Test-WslBackupLock {
+                $lockChecks.Add(1)
+                # The first (wait loop) check is clear; the re-check sees a stale lock file.
+                [pscustomobject]@{ Present = ($lockChecks.Count -gt 1); Stale = $true; AgeMinutes = 999; Data = $null }
+            }.GetNewClosure()
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs | Out-Null
+
+            @((Get-Content -LiteralPath $script:snapshotPath -Raw | ConvertFrom-Json).sessions).Count | Should -Be 0
+        }
+
+        It 'records the working flag of a live session in the snapshot' {
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions {
+                , @(
+                    [pscustomobject]@{ SessionId = '11111111-1111-4111-8111-111111111111'; Cwd = '/home/u/repos'; Kind = 'background'; Working = $true }
+                    [pscustomobject]@{ SessionId = '22222222-2222-4222-8222-222222222222'; Cwd = '/home/u/repos'; Kind = 'background'; Working = $false }
+                )
+            }
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs | Out-Null
+
+            $snapshot = Get-Content -LiteralPath $script:snapshotPath -Raw | ConvertFrom-Json
+            $snapshot.sessions[0].working | Should -BeTrue
+            $snapshot.sessions[1].working | Should -BeFalse
+        }
+
         It 'finishes a pending restore first, then clears the mark without replacing the snapshot with the live list' {
             Write-TestSnapshot -RestorePending -Sessions @(
                 (New-TestSession -Id $script:idA -Cwd '/home/u/repos/a')
@@ -204,9 +269,55 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
             @($snapshot.sessions).Count | Should -Be 3
 
             $log = Get-Content -LiteralPath $script:logFile -Raw
-            $log | Should -Match 'Session restore: 2 resumed, 0 failed, 0 skipped \(3 in snapshot, 1 already running\)'
+            $log | Should -Match 'Session restore: 2 resumed \(0 asked to continue\), 0 failed, 0 skipped \(3 in snapshot, 1 already running\)'
             # Session ids may be logged; cwds (and names) never are.
             $log | Should -Not -Match 'proj-a'
+        }
+
+        It 'asks a session that was mid-turn to continue, resumes an idle one bare, and counts the former in the summary' {
+            Write-TestSnapshot -Sessions @(
+                (New-TestSession -Id $script:idA -Cwd '/home/u/repos/proj-a' -Working)
+                (New-TestSession -Id $script:idB -Cwd '/home/u/repos/proj-b')
+            )
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+
+            $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+            $result.ResumedSessionCount | Should -Be 2
+            Should -Invoke -ModuleName WslAutomation Start-ClaudeSessionResume -Times 1 -Exactly -ParameterFilter {
+                $SessionId -eq '11111111-1111-4111-8111-111111111111' -and
+                $ContinuePrompt -eq ('This session was interrupted mid-turn when its WSL distro was stopped (a backup export or a crash). ' +
+                    'Continue the task you were working on from where you left off.')
+            }
+            Should -Invoke -ModuleName WslAutomation Start-ClaudeSessionResume -Times 1 -Exactly -ParameterFilter {
+                $SessionId -eq '22222222-2222-4222-8222-222222222222' -and -not $ContinuePrompt
+            }
+            $log = Get-Content -LiteralPath $script:logFile -Raw
+            $log | Should -Match 'Session restore: 2 resumed \(1 asked to continue\), 0 failed, 0 skipped \(2 in snapshot, 0 already running\)'
+            $log | Should -Not -Match 'proj-a'
+            $log | Should -Not -Match 'interrupted mid-turn'
+        }
+
+        It 'does not count a failed resume of a mid-turn session as asked to continue' {
+            Write-TestSnapshot -Sessions @(New-TestSession -Id $script:idA -Cwd '/home/u/repos/proj-a' -Working)
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+            Mock -ModuleName WslAutomation Start-ClaudeSessionResume {
+                [pscustomobject]@{ ExitCode = 1; Output = @() }
+            }
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs | Out-Null
+
+            Get-Content -LiteralPath $script:logFile -Raw | Should -Match '0 resumed \(0 asked to continue\), 1 failed'
+        }
+
+        It 'reads an older snapshot without a working field as idle sessions, resumed without a prompt' {
+            Set-Content -LiteralPath $script:snapshotPath -Value ('{"capturedAt":"x","restorePending":false,"sessions":[' +
+                '{"sessionId":"11111111-1111-4111-8111-111111111111","cwd":"/home/u/repos/a","kind":"background"}]}')
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs | Out-Null
+
+            Should -Invoke -ModuleName WslAutomation Start-ClaudeSessionResume -Times 1 -Exactly -ParameterFilter { -not $ContinuePrompt }
         }
 
         It 'resumes nothing when every snapshotted session is still listed' {
@@ -233,7 +344,7 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
             $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
 
             $result.ResumedSessionCount | Should -Be 2
-            Get-Content -LiteralPath $script:logFile -Raw | Should -Match '2 resumed, 1 failed'
+            Get-Content -LiteralPath $script:logFile -Raw | Should -Match '2 resumed \(0 asked to continue\), 1 failed'
         }
 
         It 'skips and logs a snapshotted session id that is not a UUID, never passing it on' {
@@ -252,7 +363,7 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
             }
             $log = Get-Content -LiteralPath $script:logFile -Raw
             $log | Should -Match 'not a UUID'
-            $log | Should -Match '1 resumed, 0 failed, 1 skipped'
+            $log | Should -Match '1 resumed \(0 asked to continue\), 0 failed, 1 skipped'
         }
 
         It 'resumes nothing and keeps the restore pending when the live list cannot be read' {
@@ -340,6 +451,21 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
             $log = Get-Content -LiteralPath $script:logFile -Raw
             $log | Should -Match "DryRun: would resume Claude session $($script:idA)"
             $log | Should -Match "DryRun: would resume Claude session $($script:idC)"
+        }
+
+        It 'says under -DryRun which sessions would be asked to continue' {
+            Write-TestSnapshot -Sessions @(
+                (New-TestSession -Id $script:idA -Cwd '/home/u/repos/proj-a' -Working)
+                (New-TestSession -Id $script:idB -Cwd '/home/u/repos/proj-b')
+            )
+            Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+
+            Invoke-ClaudeSessionKeeper @script:keeperArgs -DryRun | Out-Null
+
+            Should -Invoke -ModuleName WslAutomation Start-ClaudeSessionResume -Times 0 -Exactly
+            $log = Get-Content -LiteralPath $script:logFile -Raw
+            $log | Should -Match "DryRun: would resume Claude session $($script:idA) and ask it to continue"
+            $log | Should -Match "DryRun: would resume Claude session $($script:idB)\s*(\r?\n|$)"
         }
     }
 }
@@ -589,11 +715,32 @@ Describe 'Get-ClaudeAgentSessions' {
         $sessions[0].Cwd | Should -Be '/home/passp/repos'
         $sessions[0].Kind | Should -Be 'background'
         $sessions[1].Kind | Should -Be 'interactive'
-        # Only these three fields are carried; the session's name/title never is.
-        @($sessions[0].PSObject.Properties.Name) | Should -Be @('SessionId', 'Cwd', 'Kind')
+        # Only these four fields are carried; the session's name/title never is.
+        @($sessions[0].PSObject.Properties.Name) | Should -Be @('SessionId', 'Cwd', 'Kind', 'Working')
         Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
             ($Arguments -join '|') -eq '-d|Ubuntu|--exec|bash|-l|-c|claude agents --json'
         }
+    }
+
+    It 'maps Working from status "busy" or state "working" exactly, and to $false otherwise or when missing' {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{
+                ExitCode = 0
+                Output   = @(
+                    ('[{"sessionId":"a0000000-0000-4000-8000-000000000000","cwd":"/x","status":"busy"},' +
+                        '{"sessionId":"b0000000-0000-4000-8000-000000000000","cwd":"/x","state":"working"},' +
+                        '{"sessionId":"c0000000-0000-4000-8000-000000000000","cwd":"/x","status":"idle","state":"blocked"},' +
+                        '{"sessionId":"d0000000-0000-4000-8000-000000000000","cwd":"/x"},' +
+                        '{"sessionId":"e0000000-0000-4000-8000-000000000000","cwd":"/x","status":"Busy","state":"Working"},' +
+                        '{"sessionId":"f0000000-0000-4000-8000-000000000000","cwd":"/x","status":"idle","state":"working"}]')
+                )
+            }
+        }
+
+        $working = InModuleScope WslAutomation { @((Get-ClaudeAgentSessions -DistroName 'Ubuntu').Working) }
+
+        $working | Should -Be @($true, $true, $false, $false, $false, $true)
+        $working | ForEach-Object { $_ | Should -BeOfType [bool] }
     }
 
     It 'skips entries missing sessionId or cwd' {
@@ -698,6 +845,32 @@ Describe 'Start-ClaudeSessionResume' {
         }
     }
 
+    It 'adds the prompt as a separate trailing argument after the session id, never inside the script text' {
+        $prompt = 'Continue; "quoted" $(touch /tmp/x) text'
+        InModuleScope WslAutomation -Parameters @{ P = $prompt } {
+            Start-ClaudeSessionResume -DistroName 'Ubuntu' -SessionId 'c2165965-516f-5d82-ad4d-afa62ee6a8ed' -Cwd '/home/u/repo' -ContinuePrompt $P
+        } | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
+            $Arguments.Count -eq 11 -and
+            ($Arguments[0..6] -join '|') -eq '-d|Ubuntu|--exec|bash|-l|-c|cd -- "$1" && exec claude --bg --resume "$2" "$3"' -and
+            $Arguments[7] -eq 'bash' -and
+            $Arguments[8] -eq '/home/u/repo' -and
+            $Arguments[9] -eq 'c2165965-516f-5d82-ad4d-afa62ee6a8ed' -and
+            $Arguments[10] -eq 'Continue; "quoted" $(touch /tmp/x) text'
+        }
+    }
+
+    It 'keeps the original argument array when the prompt is empty' {
+        InModuleScope WslAutomation {
+            Start-ClaudeSessionResume -DistroName 'Ubuntu' -SessionId 'c2165965-516f-5d82-ad4d-afa62ee6a8ed' -Cwd '/home/u/repo' -ContinuePrompt ''
+        } | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 1 -Exactly -ParameterFilter {
+            $Arguments.Count -eq 10 -and $Arguments[6] -eq 'cd -- "$1" && exec claude --bg --resume "$2"'
+        }
+    }
+
     It 'rejects <Case> before reaching wsl.exe' -ForEach @(
         @{ Case = 'a non-UUID session id'; SessionId = 'c2165965'; Cwd = '/home/u' }
         @{ Case = 'a session id with shell text'; SessionId = 'c2165965-516f-5d82-ad4d-afa62ee6a8ed; id'; Cwd = '/home/u' }
@@ -728,6 +901,33 @@ Describe 'Claude agent snapshot file' {
         $snapshot.Sessions[0].SessionId | Should -Be 'c0000000-0000-4000-8000-000000000000'
         (Get-Content -LiteralPath $path -Raw) | Should -Match '"sessions":\s*\['
         Get-ChildItem -LiteralPath (Split-Path $path -Parent) -Filter '*.tmp-*' | Should -BeNullOrEmpty
+    }
+
+    It 'round-trips the working flag per session' {
+        $path = Join-Path $TestDrive 'working-snapshot.json'
+
+        $snapshot = InModuleScope WslAutomation -Parameters @{ P = $path } {
+            Write-ClaudeAgentSnapshot -Path $P -Sessions @(
+                [pscustomobject]@{ SessionId = 'a0000000-0000-4000-8000-000000000000'; Cwd = '/x'; Kind = 'background'; Working = $true }
+                [pscustomobject]@{ SessionId = 'b0000000-0000-4000-8000-000000000000'; Cwd = '/x'; Kind = 'background'; Working = $false }
+                [pscustomobject]@{ SessionId = 'c0000000-0000-4000-8000-000000000000'; Cwd = '/x'; Kind = 'background' }
+            )
+            Read-ClaudeAgentSnapshot -Path $P
+        }
+
+        @($snapshot.Sessions.Working) | Should -Be @($true, $false, $false)
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).sessions[0].working | Should -BeTrue
+    }
+
+    It 'reads a snapshot written before the working field existed with Working = $false' {
+        $path = Join-Path $TestDrive 'old-snapshot.json'
+        Set-Content -LiteralPath $path -Value ('{"capturedAt":"2026-10-01T00:00:00Z","restorePending":false,"sessions":[' +
+            '{"sessionId":"a0000000-0000-4000-8000-000000000000","cwd":"/x","kind":"background"}]}')
+
+        $snapshot = InModuleScope WslAutomation -Parameters @{ P = $path } { Read-ClaudeAgentSnapshot -Path $P }
+
+        @($snapshot.Sessions).Count | Should -Be 1
+        $snapshot.Sessions[0].Working | Should -BeFalse
     }
 
     It 'reads <Case> as $null' -ForEach @(

@@ -13,9 +13,11 @@ function Get-ClaudeAgentSessions {
         {"pid":1411684,"id":"c2165965","cwd":"/home/u/repos","kind":"background",
         "sessionId":"c2165965-516f-5d82-ad4d-afa62ee6a8ed","name":"...","status":"idle",...}.
         Each one becomes an object with SessionId (the full 'sessionId', not the short 'id'),
-        Cwd and Kind ('background' or 'interactive'). An entry missing sessionId or cwd is
-        skipped: neither can be resumed without the other. Nothing else - in particular not the
-        session's name or title - is carried through.
+        Cwd, Kind ('background' or 'interactive') and Working. Working is $true when the entry's
+        'status' is exactly 'busy' or its 'state' is exactly 'working' - the session is in the
+        middle of a turn - and $false otherwise, including when neither field is present. An
+        entry missing sessionId or cwd is skipped: neither can be resumed without the other.
+        Nothing else - in particular not the session's name or title - is carried through.
 
         Fails closed and never throws. A distro that is not Running (checked with
         Get-WslDistroState first, so a stopped distro is never booted just to ask), a non-zero
@@ -83,10 +85,14 @@ function Get-ClaudeAgentSessions {
                     continue
                 }
                 $kindProperty = $entry.PSObject.Properties['kind']
+                $statusProperty = $entry.PSObject.Properties['status']
+                $stateProperty = $entry.PSObject.Properties['state']
                 [pscustomobject]@{
                     SessionId = $sessionId
                     Cwd       = $cwd
                     Kind      = if ($kindProperty) { "$($kindProperty.Value)" } else { $null }
+                    Working   = [bool](($statusProperty -and $statusProperty.Value -ceq 'busy') -or
+                        ($stateProperty -and $stateProperty.Value -ceq 'working'))
                 }
             }
         )

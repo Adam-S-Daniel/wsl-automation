@@ -248,8 +248,20 @@ idle, history intact. `Invoke-ClaudeSessionKeeper` automates exactly that:
   server alive, and without the mark it would refresh the snapshot from the
   post-crash list and forget every lost session. With it, that run restores
   first and only then clears the mark.
-- **Known limitation:** a session deliberately ended within the last keeper
-  interval before `claude rc` died is brought back.
+- **The backup records the sessions itself.** The keeper and the backup both
+  fire at :00, and the keeper's last refresh raced the backup's teardown, so a
+  session that was busy mid-turn was never snapshotted (observed 2026-10-05).
+  `Invoke-WslBackup` now writes the live list, restore-pending, right before it
+  stops anything (best-effort; if the list is unreadable it re-marks the
+  keeper's last snapshot), and the keeper's refresh re-checks the lock and the
+  mark immediately before writing, so it never overwrites that file.
+- **Interrupted sessions are asked to continue.** The snapshot carries a
+  per-session `working` flag (`status` `busy` or `state` `working`). A
+  `working` session is resumed with a fixed prompt as a third positional
+  argument (`... --resume "$2" "$3"`); an idle one is resumed bare.
+- **Known limitation:** for a stop that is not a backup (a crash), a session
+  deliberately ended within the last keeper interval before `claude rc` died is
+  brought back.
 - Only session ids and counts go to the keeper log (LOCALAPPDATA, not the
   shared OneDrive backup log) - never a cwd or a session name.
 
