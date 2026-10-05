@@ -163,7 +163,7 @@ Describe 'Update-WslAutomationRepo' {
         }
     }
 
-    It 'fast-forwards clean main with every Git call bounded and releases the lock' {
+    It 'keeps repeated unchanged successful updates silent while releasing the lock' {
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -TimeoutSeconds 7
         $result.Status | Should -Be 'Updated'
         $result.Changed | Should -BeFalse
@@ -173,6 +173,14 @@ Describe 'Update-WslAutomationRepo' {
         $script:disposed | Should -Be 1
         $script:lockWait | Should -Be 5000
         @($script:headReadReleaseCounts) | Should -Be @(0, 0)
+        Test-Path $script:logFile | Should -BeFalse
+
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -TimeoutSeconds 7
+        $result.Status | Should -Be 'Updated'
+        $result.Changed | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 14 -Exactly -ParameterFilter { $TimeoutSeconds -eq 7 }
+        $script:released | Should -Be 2
+        $script:disposed | Should -Be 2
         Test-Path $script:logFile | Should -BeFalse
     }
 

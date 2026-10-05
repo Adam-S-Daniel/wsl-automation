@@ -143,8 +143,8 @@ interval is removed. A per-checkout named mutex serializes updates across
 Windows sessions, with a 5-second lock wait. Every Git call has a 30-second
 timeout and authentication prompts are disabled. Changed HEADs and warnings go to
 `%LOCALAPPDATA%\wsl-automation\repo-update.log` without raw Git output or
-credential-bearing URLs. Unchanged successful updates and idle keeper checks are
-silent, so their short intervals do not grow the logs with no-op messages.
+credential-bearing URLs. Unchanged successful updates are silent, so their short
+intervals do not grow the log with no-op messages.
 
 - Dirty tracked or untracked files: warn and leave the working tree and branch
   untouched; run the task using the current code.
@@ -301,6 +301,11 @@ window.
   second instance while one is already running.
 - Because it runs in session 0 it cannot open a terminal itself; when no
   Remote Control session is running it triggers the launcher task below.
+- Every run that finds the Remote Control session running writes one
+  timestamped **Claude Remote Control session present** line to
+  **%LOCALAPPDATA%\wsl-automation\keeper.log** using timestamp format
+  **yyyy-MM-dd HH:mm:ss**. The log rotates above 10 MiB to one
+  **keeper.log.1** archive, replacing the previous archive.
 - **Session snapshot and restore.** Every run that finds the Remote Control
   server alive records the active Claude Code sessions (`claude agents
   --json`, run through `bash -l -c` so `~/.local/bin` is on PATH: session id,
@@ -319,8 +324,8 @@ window.
   stops the distro (see above), because the keeper's refresh fires at the same
   minute as the backup and can miss a session that was busy; the refresh never
   overwrites a restore-pending snapshot and skips its write while a fresh
-  backup lock is held.
-  The keeper log records session ids and counts, never a cwd or session name.
+  backup lock is held. The keeper log records session ids and counts, never a
+  cwd or session name.
   `-NoSessionRestore` turns the restore off; `-DryRun` only logs the ids it
   would resume.
 - **Known limitation:** for a stop that is not a backup (a crash), the snapshot

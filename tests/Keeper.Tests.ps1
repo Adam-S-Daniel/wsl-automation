@@ -30,18 +30,34 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         Mock -ModuleName WslAutomation Start-Sleep { }
     }
 
-    It 'returns SessionPresent and does not launch when there is no lock and a session already exists' {
+    It 'logs once per healthy-session check and does not launch when a session already exists' {
+        Remove-Item -LiteralPath $script:logFile -ErrorAction SilentlyContinue
         Mock -ModuleName WslAutomation Test-WslBackupLock {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
+        Mock -ModuleName WslAutomation Get-Date -ParameterFilter { $Format -eq 'yyyy-MM-dd HH:mm:ss' } {
+            '2026-10-05 12:34:56'
+        }
 
         $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath
 
         $result.Status | Should -Be 'SessionPresent'
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
-        Test-Path $script:logFile | Should -BeFalse
+        $lines = @(Get-Content -LiteralPath $script:logFile)
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Be '2026-10-05 12:34:56  Claude Remote Control session present'
+
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath
+
+        $result.Status | Should -Be 'SessionPresent'
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
+        $lines = @(Get-Content -LiteralPath $script:logFile)
+        $lines.Count | Should -Be 2
+        $lines[0] | Should -Be '2026-10-05 12:34:56  Claude Remote Control session present'
+        $lines[1] | Should -Be '2026-10-05 12:34:56  Claude Remote Control session present'
     }
 
     It 'launches a session and returns Launched when there is no lock and no session exists' {
