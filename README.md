@@ -141,9 +141,10 @@ Each run fetches `origin`, switches to `main` if necessary and the working tree
 is clean, then runs `git merge --ff-only origin/main`. The old 12-hour update
 interval is removed. A per-checkout named mutex serializes updates across
 Windows sessions, with a 5-second lock wait. Every Git call has a 30-second
-timeout and authentication prompts are disabled. Outcomes go to
+timeout and authentication prompts are disabled. Changed HEADs and warnings go to
 `%LOCALAPPDATA%\wsl-automation\repo-update.log` without raw Git output or
-credential-bearing URLs.
+credential-bearing URLs. Unchanged successful updates and idle keeper checks are
+silent, so their short intervals do not grow the logs with no-op messages.
 
 - Dirty tracked or untracked files: warn and leave the working tree and branch
   untouched; run the task using the current code.
@@ -154,11 +155,13 @@ credential-bearing URLs.
 - Offline, failed or timed-out Git, or lock contention: warn and continue the
   task using the current code. The next run retries.
 
-When HEAD or branch changes, PowerShell entries run themselves once in a fresh
+When HEAD changes, PowerShell entries run themselves once in a fresh
 PowerShell host before loading task code, preserving parameters and exit status.
-The census entry calls the same updater through Windows PowerShell (`pwsh.exe`
+The census entry calls the same updater through PowerShell 7 (`pwsh.exe`
 on PATH, falling back to the standard MSI install), then re-execs its Bash
-entry from disk once. Environment guards prevent either entry from looping.
+entry from disk once. Coreutils `timeout` bounds the census bootstrap to 300
+seconds, with a 5-second kill grace period; a timeout or missing utility warns
+and lets publishing continue. Environment guards prevent either entry from looping.
 `pull-repo.ps1` remains a separate, manual general-purpose pull tool; scheduled
 self-updates do not call it.
 

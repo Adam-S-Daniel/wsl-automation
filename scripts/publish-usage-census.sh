@@ -25,7 +25,9 @@ if [[ ${WSL_AUTOMATION_CENSUS_REEXEC:-} != 1 ]]; then
     updater=$(wslpath -w "$scripts_dir/update-task-checkout.ps1" 2>/dev/null) || updater=''
     task_pwsh=$(command -v pwsh.exe || true)
     if [[ -z $task_pwsh ]]; then task_pwsh='/mnt/c/Program Files/PowerShell/7/pwsh.exe'; fi
-    if [[ -z $updater ]] || ! "$task_pwsh" -NoProfile -File "$updater" -UpdateOnly >/dev/null 2>&1; then
+    # Bound even a stuck Windows host. Missing timeout also fails open without starting it.
+    task_timeout=$(command -v timeout || true)
+    if [[ -z $updater || -z $task_timeout ]] || ! "$task_timeout" --kill-after=5s 300s "$task_pwsh" -NoProfile -File "$updater" -UpdateOnly >/dev/null 2>&1; then
         printf '%s\n' 'WARNING: checkout bootstrap unavailable; continuing with current code' >&2
     fi
     # Re-read the updated shell source once; retain positional arguments and publish status.
