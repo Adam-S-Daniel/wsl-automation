@@ -145,8 +145,9 @@ assert_eq "$(wc -l <"$TIMEOUT_CALLS" | tr -d ' ')" 7 'timeout seam runs once per
 # Hide only timeout from Bash lookup; the other test tools stay available.
 rc=0
 out=$(
-    # Exported function is invoked by the child Bash entry.
-    # shellcheck disable=SC2317
+    # Exported function is invoked by the child Bash entry. Older ShellCheck
+    # reports this as SC2317; 0.11 reports it as SC2329.
+    # shellcheck disable=SC2317,SC2329
     command() {
         if [[ $1 == -v && ${2:-} == timeout ]]; then return 1; fi
         builtin command "$@"
