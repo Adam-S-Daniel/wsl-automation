@@ -129,6 +129,48 @@ vice versa, if you choose to gate the backup on session activity too).
 
 ## Task descriptions
 
+### Checkout update before every scripted task
+
+The five task actions that run repo scripts (backup, keeper, ccstatusline sync,
+Codex Cloud sync, and usage census) first call `Update-WslAutomationRepo` for
+that same checkout. The two on-demand launcher actions invoke their CLIs
+directly and have no repo script to update. Existing task actions are unchanged;
+**no re-registration is needed** after deploying this change to the checkout.
+
+Each run fetches `origin`, switches to `main` if necessary and the working tree
+is clean, then runs `git merge --ff-only origin/main`. The old 12-hour update
+interval is removed. A per-checkout named mutex serializes updates across
+Windows sessions, with a 5-second lock wait. Every Git call has a 30-second
+timeout and authentication prompts are disabled. Changed HEADs and warnings go to
+`%LOCALAPPDATA%\wsl-automation\repo-update.log` without raw Git output or
+credential-bearing URLs. Unchanged successful updates and idle keeper checks are
+silent, so their short intervals do not grow the logs with no-op messages.
+
+- Dirty tracked or untracked files: warn and leave the working tree and branch
+  untouched; run the task using the current code.
+- A clean checkout on another branch (or detached HEAD): switch to `main`.
+- Local commits on `main`, including a checkout ahead of or diverged from the
+  remote: warn and skip the fast-forward. No merge commit, reset, stash, clean,
+  or force operation is used.
+- Offline, failed or timed-out Git, or lock contention: warn and continue the
+  task using the current code. The next run retries.
+
+When HEAD changes, PowerShell entries run themselves once in a fresh
+PowerShell host before loading task code, preserving parameters and exit status.
+The census entry calls the same updater through PowerShell 7 (`pwsh.exe`
+on PATH, falling back to the standard MSI install), then re-execs its Bash
+entry from disk once. Coreutils `timeout` bounds the census bootstrap to 300
+seconds, with a 5-second kill grace period; a timeout or missing utility warns
+and lets publishing continue. Environment guards prevent either entry from looping.
+`pull-repo.ps1` remains a separate, manual general-purpose pull tool; scheduled
+self-updates do not call it.
+
+**Trust:** tasks execute whatever code is on `main`. The default branch is
+PR-only through the [repo-settings rulesets](https://github.com/Adam-S-Daniel/repo-settings/blob/main/fleet.yml).
+Reviewing and merging a change therefore also authorizes it to run on the next
+task invocation. Dirty, divergent, or unavailable checkouts can continue to run
+older or local code until their warning is resolved.
+
 ### Backup task (default name: `WSL Ubuntu Daily Backup`)
 
 `wsl --export` stops the distro it exports - tar or vhdx, in use or not (see

@@ -91,16 +91,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot '..' 'src' 'WslAutomation') -Force
+# Update before loading task code; a changed checkout runs this entry again in a fresh host.
+. (Join-Path $PSScriptRoot 'update-task-checkout.ps1')
+$taskBootstrap = Initialize-WslAutomationTask -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
+if ($taskBootstrap.Relaunched) { exit $taskBootstrap.ExitCode }
 
-# Best-effort: keep the repo current (12h-gated inside) so scheduled tasks run
-# up-to-date code. A self-update failure must never fail the task itself.
-try {
-    Update-WslAutomationRepo -RepoPath (Split-Path -Path $PSScriptRoot -Parent) | Out-Null
-}
-catch {
-    Write-Warning "repo self-update skipped: $_"
-}
+Import-Module (Join-Path $PSScriptRoot '..' 'src' 'WslAutomation') -Force
 
 try {
     $keeperParams = @{

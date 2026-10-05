@@ -1,53 +1,67 @@
+function Get-WslAutomationGitStartInfo {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new('git')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Environment['GIT_TERMINAL_PROMPT'] = '0'
+    $startInfo.Environment['GCM_INTERACTIVE'] = 'Never'
+    # An inherited askpass program could still open a credential dialog.
+    foreach ($name in @('GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE')) {
+        $startInfo.Environment.Remove($name) | Out-Null
+    }
+    foreach ($argument in $Arguments) { $startInfo.ArgumentList.Add($argument) }
+    $startInfo
+}
+
+function Start-WslAutomationGitProcess {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    if (-not $PSCmdlet.ShouldProcess('git', 'Start bounded Git process')) { throw 'Git process start skipped' }
+    [Diagnostics.Process]::Start((Get-WslAutomationGitStartInfo -Arguments $Arguments))
+}
+
 function Invoke-GitExe {
     <#
     .SYNOPSIS
-        Invokes git.exe and captures its exit code and output.
+        Invokes git with a deadline and captures its exit code and output.
     .DESCRIPTION
-        This is the ONLY function in the module allowed to invoke git.exe directly. Every other
-        function must call through Invoke-GitExe so tests have a single mock seam and nothing
-        ever calls the real git.exe from automated tests.
-    .PARAMETER Arguments
-        Arguments to pass to git.exe.
-    .PARAMETER RepoPath
-        When given, prepended as `-C <RepoPath>` so git operates against that repository
-        regardless of the current working directory.
-    .EXAMPLE
-        Invoke-GitExe -RepoPath 'C:\repo' -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
+        The module's single Git seam. Arguments never pass through a shell, authentication
+        prompts are disabled, and only a process started here can be stopped on timeout.
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [string[]]$Arguments,
-
-        [string]$RepoPath
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [string]$RepoPath,
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 30
     )
 
     $gitArgs = @()
-    if ($RepoPath) {
-        $gitArgs += @('-C', $RepoPath)
-    }
+    if ($RepoPath) { $gitArgs += @('-C', $RepoPath) }
     $gitArgs += $Arguments
-
-    $savedPreference = $PSNativeCommandUseErrorActionPreference
+    $process = Start-WslAutomationGitProcess -Arguments $gitArgs
     try {
-        $PSNativeCommandUseErrorActionPreference = $false
-        $raw = & git @gitArgs 2>&1
-        $exit = $LASTEXITCODE
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $outputTask = [Threading.Tasks.Task]::WhenAll([Threading.Tasks.Task[]]@($stdout, $stderr))
+        $finished = $process.WaitForExit($TimeoutSeconds * 1000)
+        $remaining = [Math]::Max(0, ($TimeoutSeconds * 1000) - [int]$timer.ElapsedMilliseconds)
+        if (-not $finished -or -not $outputTask.Wait($remaining)) {
+            # Never signal a special pid, including one returned by an incomplete test mock.
+            if ($process.Id -is [int] -and $process.Id -gt 1 -and -not $process.HasExited) {
+                $process.Kill($true)
+            }
+            return [pscustomobject]@{ ExitCode = 124; Output = @() }
+        }
+        $output = @(($stdout.Result + "`n" + $stderr.Result) -split '\r?\n' | Where-Object { $_ -ne '' })
+        [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output }
     }
     finally {
-        $PSNativeCommandUseErrorActionPreference = $savedPreference
-    }
-
-    $output = @()
-    foreach ($item in $raw) {
-        $line = "$item"
-        if ($line -ne '') {
-            $output += $line
-        }
-    }
-
-    [pscustomobject]@{
-        ExitCode = $exit
-        Output   = $output
+        $process.Dispose()
     }
 }

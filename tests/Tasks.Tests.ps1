@@ -851,3 +851,88 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 }
+
+Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
+    BeforeAll {
+        $script:repoRoot = Split-Path $PSScriptRoot -Parent
+        $parseErrors = $null
+        $script:taskAst = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $script:repoRoot 'src/WslAutomation/Public/Set-WslAutomationScheduledTasks.ps1'),
+            [ref]$null, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $script:assignments = @{}
+        foreach ($assignment in $script:taskAst.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+            if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst]) {
+                $script:assignments[$assignment.Left.VariablePath.UserPath] = $assignment.Right
+            }
+        }
+        function Get-TaskActionScript {
+            param($Node, [string[]]$Seen = @())
+            foreach ($constant in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+                if ($constant.Value.EndsWith('.ps1')) { $constant.Value }
+            }
+            foreach ($expanded in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) {
+                if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-usage-census.sh')) { 'publish-usage-census.sh' }
+            }
+            foreach ($variable in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
+                $name = $variable.VariablePath.UserPath
+                if ($script:assignments.ContainsKey($name) -and $name -notin $Seen) {
+                    Get-TaskActionScript -Node $script:assignments[$name] -Seen ($Seen + $name)
+                }
+            }
+        }
+        $script:actionScripts = @()
+        $actions = @($script:taskAst.FindAll({ param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'New-ScheduledTaskAction'
+        }, $true))
+        foreach ($action in $actions) {
+            $argumentIndex = 0
+            for ($i = 0; $i -lt $action.CommandElements.Count; $i++) {
+                $element = $action.CommandElements[$i]
+                if ($element -is [Management.Automation.Language.CommandParameterAst] -and $element.ParameterName -eq 'Argument') { $argumentIndex = $i + 1 }
+            }
+            $script:actionScripts += @(Get-TaskActionScript -Node $action.CommandElements[$argumentIndex])
+        }
+        $script:actionCount = $actions.Count
+    }
+
+    It 'covers all five script actions among seven registered task actions' {
+        $script:actionCount | Should -Be 7
+        $script:actionScripts.Count | Should -Be 5
+        @($script:actionScripts | Sort-Object) | Should -Be @(
+            'ensure-claude-session.ps1', 'publish-usage-census.sh', 'sync-ccstatusline-config.ps1',
+            'sync-codex-cloud-environments.ps1', 'wsl-ubuntu-backup.ps1'
+        )
+    }
+
+    It 'bootstraps <Entry> before importing and invoking task code' -ForEach @(
+        @{ Entry = 'ensure-claude-session.ps1'; Work = 'Invoke-ClaudeSessionKeeper' },
+        @{ Entry = 'sync-ccstatusline-config.ps1'; Work = 'Update-CcstatuslineConfig' },
+        @{ Entry = 'sync-codex-cloud-environments.ps1'; Work = 'Invoke-CodexCloudEnvironmentSync' },
+        @{ Entry = 'wsl-ubuntu-backup.ps1'; Work = 'Invoke-WslBackup' }
+    ) {
+        $script:actionScripts | Should -Contain $Entry
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:repoRoot 'scripts' $Entry), [ref]$null, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $commands = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true))
+        $bootstrap = @($commands | Where-Object { $_.GetCommandName() -eq 'Initialize-WslAutomationTask' })
+        $import = @($commands | Where-Object { $_.GetCommandName() -eq 'Import-Module' })
+        $workCommand = @($commands | Where-Object { $_.GetCommandName() -eq $Work })
+        $bootstrap.Count | Should -Be 1
+        $import.Count | Should -Be 1
+        $workCommand.Count | Should -Be 1
+        $bootstrap[0].Extent.StartOffset | Should -BeLessThan $import[0].Extent.StartOffset
+        $bootstrap[0].Extent.StartOffset | Should -BeLessThan $workCommand[0].Extent.StartOffset
+        $sourced = @($commands | Where-Object { $_.InvocationOperator -eq 'Dot' })
+        $sourced.Count | Should -Be 1
+        @($sourced[0].FindAll({ param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value -eq 'update-task-checkout.ps1' }, $true)).Count | Should -Be 1
+        $sourced[0].Extent.StartOffset | Should -BeLessThan $bootstrap[0].Extent.StartOffset
+        $exitBlocks = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.IfStatementAst] }, $true) | Where-Object {
+            @($_.Clauses[0].Item1.FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and $n.Member.Value -eq 'Relaunched' }, $true)).Count -gt 0
+        })
+        $exitBlocks.Count | Should -Be 1
+        @($exitBlocks[0].FindAll({ param($n) $n -is [Management.Automation.Language.ExitStatementAst] }, $true)).Count | Should -Be 1
+        $exitBlocks[0].Extent.EndOffset | Should -BeLessThan $import[0].Extent.StartOffset
+    }
+}
