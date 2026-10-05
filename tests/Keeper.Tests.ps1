@@ -19,6 +19,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $script:snapshotPath = Join-Path $TestDrive 'agents-snapshot.json'
 
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
+        Mock -ModuleName WslAutomation Repair-WslUserRuntime { 'Healthy' }
         # Session restore and Codex remote control are covered by their own Describe blocks
         # below; here they are neutralized (no sessions, codex daemon present) so these tests keep
         # asserting only the Remote Control launch.
@@ -40,6 +41,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         $result.Status | Should -Be 'SessionPresent'
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
+        Test-Path $script:logFile | Should -BeFalse
     }
 
     It 'launches a session and returns Launched when there is no lock and no session exists' {
