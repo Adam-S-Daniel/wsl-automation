@@ -180,6 +180,7 @@ function Invoke-ClaudeSessionKeeper {
 
     if (Test-ClaudeSession -DistroName $DistroName) {
         $status = 'SessionPresent'
+        Write-WslAutomationLog -Message 'Claude Remote Control session present' -LogFile $LogFile
 
         $snapshot = $null
         if (-not $NoSessionRestore) {
