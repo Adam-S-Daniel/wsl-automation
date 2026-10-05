@@ -1,4 +1,4 @@
-function New-WslAutomationGitStartInfo {
+function Get-WslAutomationGitStartInfo {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string[]]$Arguments)
 
@@ -22,7 +22,7 @@ function Start-WslAutomationGitProcess {
     param([Parameter(Mandatory)][string[]]$Arguments)
 
     if (-not $PSCmdlet.ShouldProcess('git', 'Start bounded Git process')) { throw 'Git process start skipped' }
-    [Diagnostics.Process]::Start((New-WslAutomationGitStartInfo -Arguments $Arguments))
+    [Diagnostics.Process]::Start((Get-WslAutomationGitStartInfo -Arguments $Arguments))
 }
 
 function Invoke-GitExe {

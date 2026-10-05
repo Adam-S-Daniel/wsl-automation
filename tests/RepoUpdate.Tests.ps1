@@ -70,7 +70,7 @@ Describe 'Noninteractive Git process configuration' {
                     $saved[$name] = [Environment]::GetEnvironmentVariable($name)
                     [Environment]::SetEnvironmentVariable($name, 'interactive-fixture')
                 }
-                $info = New-WslAutomationGitStartInfo -Arguments @('-C', 'example folder', 'fetch', 'origin')
+                $info = Get-WslAutomationGitStartInfo -Arguments @('-C', 'example folder', 'fetch', 'origin')
                 $info.Environment['GIT_TERMINAL_PROMPT'] | Should -BeExactly '0'
                 $info.Environment['GCM_INTERACTIVE'] | Should -BeExactly 'Never'
                 foreach ($name in @('GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE')) {
@@ -97,7 +97,7 @@ Describe 'Noninteractive Git process configuration' {
         $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Start-WslAutomationGitProcess' }, $true)
         $start = $function.Body.Find({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static -and $node.Expression.TypeName.FullName -eq 'Diagnostics.Process' -and $node.Member.Value -eq 'Start' }, $true)
         $start | Should -Not -BeNullOrEmpty
-        $calls = @($start.Arguments[0].FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'New-WslAutomationGitStartInfo' }, $true))
+        $calls = @($start.Arguments[0].FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Get-WslAutomationGitStartInfo' }, $true))
         $calls.Count | Should -Be 1
         $calls[0].CommandElements[1] | Should -BeOfType ([Management.Automation.Language.CommandParameterAst])
         $calls[0].CommandElements[1].ParameterName | Should -BeExactly 'Arguments'
