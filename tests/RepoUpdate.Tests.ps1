@@ -5,6 +5,107 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..' 'scripts' 'update-task-checkout.ps1')
 }
 
+Describe 'Checkout mutex name policy' {
+    It 'uses the current host namespace by default and produces stable names' {
+        InModuleScope WslAutomation {
+            $name = Get-WslAutomationRepoMutexName -RepoPath $TestDrive
+            $prefix = if ($IsWindows) { 'Global\WslAutomationRepoUpdate-' } else { 'WslAutomationRepoUpdate-' }
+            $name.StartsWith($prefix) | Should -BeTrue
+            $name | Should -BeExactly (Get-WslAutomationRepoMutexName -RepoPath $TestDrive)
+        }
+    }
+
+    It 'uses the Windows global namespace and canonicalizes path case' {
+        InModuleScope WslAutomation {
+            $saved = Get-Variable IsWindows -Scope Script -ErrorAction SilentlyContinue
+            $savedValue = if ($saved) { $saved.Value } else { $null }
+            try {
+                $script:IsWindows = $true
+                $name = Get-WslAutomationRepoMutexName -RepoPath (Join-Path $TestDrive 'Example')
+                $name.StartsWith('Global\WslAutomationRepoUpdate-') | Should -BeTrue
+                $name | Should -BeExactly (Get-WslAutomationRepoMutexName -RepoPath (Join-Path $TestDrive 'example'))
+                $name | Should -BeExactly (Get-WslAutomationRepoMutexName -RepoPath (Join-Path $TestDrive 'Example' '..' 'Example'))
+            }
+            finally {
+                if ($saved) { Set-Variable IsWindows -Scope Script -Value $savedValue }
+                else { Remove-Variable IsWindows -Scope Script }
+            }
+        }
+    }
+
+    It 'uses no session namespace off Windows and preserves case distinctions' {
+        InModuleScope WslAutomation {
+            $saved = Get-Variable IsWindows -Scope Script -ErrorAction SilentlyContinue
+            $savedValue = if ($saved) { $saved.Value } else { $null }
+            try {
+                $script:IsWindows = $false
+                $name = Get-WslAutomationRepoMutexName -RepoPath (Join-Path $TestDrive 'Example')
+                $name.StartsWith('WslAutomationRepoUpdate-') | Should -BeTrue
+                $name | Should -Not -BeExactly (Get-WslAutomationRepoMutexName -RepoPath (Join-Path $TestDrive 'example'))
+            }
+            finally {
+                if ($saved) { Set-Variable IsWindows -Scope Script -Value $savedValue }
+                else { Remove-Variable IsWindows -Scope Script }
+            }
+        }
+    }
+
+    It 'creates the mutex using the policy helper' {
+        InModuleScope WslAutomation {
+            Mock Get-WslAutomationRepoMutexName { 'WslAutomationTestMutex-Only' }
+            $mutex = New-WslAutomationRepoMutex -RepoPath $TestDrive
+            try { Should -Invoke Get-WslAutomationRepoMutexName -Times 1 -Exactly -ParameterFilter { $RepoPath -eq $TestDrive } }
+            finally { $mutex.Dispose() }
+        }
+    }
+}
+
+Describe 'Noninteractive Git process configuration' {
+    It 'overrides inherited interactive settings and removes askpass helpers' {
+        InModuleScope WslAutomation {
+            $names = @('GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE', 'GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'WSL_AUTOMATION_TEST_SENTINEL')
+            $saved = @{}
+            try {
+                foreach ($name in $names) {
+                    $saved[$name] = [Environment]::GetEnvironmentVariable($name)
+                    [Environment]::SetEnvironmentVariable($name, 'interactive-fixture')
+                }
+                $info = New-WslAutomationGitStartInfo -Arguments @('-C', 'example folder', 'fetch', 'origin')
+                $info.Environment['GIT_TERMINAL_PROMPT'] | Should -BeExactly '0'
+                $info.Environment['GCM_INTERACTIVE'] | Should -BeExactly 'Never'
+                foreach ($name in @('GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE')) {
+                    $info.Environment.ContainsKey($name) | Should -BeFalse
+                }
+                $info.Environment['WSL_AUTOMATION_TEST_SENTINEL'] | Should -BeExactly 'interactive-fixture'
+                $info.FileName | Should -BeExactly 'git'
+                $info.UseShellExecute | Should -BeFalse
+                $info.CreateNoWindow | Should -BeTrue
+                $info.RedirectStandardOutput | Should -BeTrue
+                $info.RedirectStandardError | Should -BeTrue
+                @($info.ArgumentList) | Should -Be @('-C', 'example folder', 'fetch', 'origin')
+            }
+            finally {
+                foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+            }
+        }
+    }
+
+    It 'starts Git using the configuration helper' {
+        # Parse the call wiring without launching a process or touching credentials.
+        $path = Join-Path $PSScriptRoot '..' 'src' 'WslAutomation' 'Private' 'Invoke-GitExe.ps1'
+        $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
+        $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Start-WslAutomationGitProcess' }, $true)
+        $start = $function.Body.Find({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static -and $node.Expression.TypeName.FullName -eq 'Diagnostics.Process' -and $node.Member.Value -eq 'Start' }, $true)
+        $start | Should -Not -BeNullOrEmpty
+        $calls = @($start.Arguments[0].FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'New-WslAutomationGitStartInfo' }, $true))
+        $calls.Count | Should -Be 1
+        $calls[0].CommandElements[1] | Should -BeOfType ([Management.Automation.Language.CommandParameterAst])
+        $calls[0].CommandElements[1].ParameterName | Should -BeExactly 'Arguments'
+        $calls[0].CommandElements[2] | Should -BeOfType ([Management.Automation.Language.VariableExpressionAst])
+        $calls[0].CommandElements[2].VariablePath.UserPath | Should -BeExactly 'Arguments'
+    }
+}
+
 Describe 'Update-WslAutomationRepo' {
     BeforeEach {
         $script:logFile = Join-Path $TestDrive 'repo-update.log'

@@ -1,8 +1,6 @@
-function Start-WslAutomationGitProcess {
-    [CmdletBinding(SupportsShouldProcess)]
+function New-WslAutomationGitStartInfo {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string[]]$Arguments)
-
-    if (-not $PSCmdlet.ShouldProcess('git', 'Start bounded Git process')) { throw 'Git process start skipped' }
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new('git')
     $startInfo.UseShellExecute = $false
@@ -11,8 +9,20 @@ function Start-WslAutomationGitProcess {
     $startInfo.RedirectStandardError = $true
     $startInfo.Environment['GIT_TERMINAL_PROMPT'] = '0'
     $startInfo.Environment['GCM_INTERACTIVE'] = 'Never'
+    # An inherited askpass program could still open a credential dialog.
+    foreach ($name in @('GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE')) {
+        $startInfo.Environment.Remove($name) | Out-Null
+    }
     foreach ($argument in $Arguments) { $startInfo.ArgumentList.Add($argument) }
-    [Diagnostics.Process]::Start($startInfo)
+    $startInfo
+}
+
+function Start-WslAutomationGitProcess {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    if (-not $PSCmdlet.ShouldProcess('git', 'Start bounded Git process')) { throw 'Git process start skipped' }
+    [Diagnostics.Process]::Start((New-WslAutomationGitStartInfo -Arguments $Arguments))
 }
 
 function Invoke-GitExe {
