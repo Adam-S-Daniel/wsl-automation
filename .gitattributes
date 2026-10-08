@@ -1,3 +1,5 @@
 * text=auto
 # bash scripts inside WSL run from the Windows checkout and reject CRLF, which core.autocrlf=true (Git for Windows default) would otherwise produce
 *.sh text eol=lf
+# managed by _agent-guidance: hook scripts must stay LF for bash (see ADR 0019)
+.claude/hooks/*.sh text eol=lf
