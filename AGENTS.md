@@ -120,7 +120,7 @@ Re-open this only if Microsoft ships a WSL event provider.
 ### Why the backup is a daily timer and not an at-logon trigger
 
 `Set-WslAutomationScheduledTasks` deliberately replaces whatever triggers a
-backup task has accumulated with a single daily trigger (now repeating hourly
+backup task has accumulated with a single daily trigger (repeating hourly
 for the following day — see below). The at-logon alternative was measured and
 rejected — don't reintroduce it.
 
@@ -136,9 +136,9 @@ rejected — don't reintroduce it.
 So an at-logon trigger alone cannot guarantee a daily backup. A fixed daily
 time is still the mechanism.
 
-**The catch-up for a missed run is now the trigger's own hourly repetition
+**The catch-up for a missed run is the trigger's own hourly repetition
 (`-BackupRetryIntervalMinutes`, default 60, for one day), not
-`-StartWhenAvailable`.** `-StartWhenAvailable` used to fire a missed run the
+`-StartWhenAvailable`.** `-StartWhenAvailable` would fire a missed run the
 instant the machine came back — which is exactly the wrong moment twice over:
 it lands inside the WSL post-wake transition window (see below), and it gives
 `Invoke-WslBackup`'s own wake guard and activity gate (`Test-WslActivity`) no
@@ -199,18 +199,18 @@ and defers (`DeferredRecentWake`) rather than attempt the export inside the
 transition window. Any other work that adds a boot/resume-adjacent trigger
 owes the same delay.
 
-### Idle Claude Code sessions no longer count as backup activity
+### Idle Claude Code sessions do not count as backup activity
 
 Observed live 2026-09-27: a second interactive Claude Code session
 (`claude --resume <id>`, left open in a terminal alongside its npm/node MCP
 child processes) deferred the backup 13 consecutive daily runs with
 `Deferred: WSL in use (... claude, npm, node)`. Only the `-ForceAfterDays`
-override (then 9 days; now 3, in-window only) would ever have let a backup
+override (9 days when this was observed; 3 now, in-window only) would ever have let a backup
 through — people routinely leave Claude sessions open, so this defeated the
 activity gate's whole point. Don't re-treat a `claude` process as activity on
-sight; it isn't one any more.
+sight; it isn't one.
 
-`Test-WslActivity` now reads each non-Remote-Control `claude` process's own
+`Test-WslActivity` reads each non-Remote-Control `claude` process's own
 `~/.claude/sessions/<pid>.json` (one `wsl --exec` call per pid, `status`
 `busy` vs `idle`) and excludes an idle session, and everything it spawned,
 before the pty rules run. This **fails safe to busy** on anything it doesn't
@@ -218,7 +218,7 @@ recognise — the file is Claude Code-internal and undocumented (observed in
 2.1.282), so a missing file, a non-zero exit, a parse error, a pid mismatch,
 or any status other than exactly `idle` all count as busy, same as before
 this existed. `Invoke-WslBackup` also `SIGTERM`s the idle sessions it finds,
-immediately before the export, the same way it already did for the Remote
+immediately before the export, the same way it does for the Remote
 Control session — they're resumable afterwards with `claude --resume`.
 
 A session run as its versioned binary is identified too: its `comm` is the
@@ -254,7 +254,7 @@ idle, history intact. `Invoke-ClaudeSessionKeeper` automates exactly that:
 - **The backup records the sessions itself.** The keeper and the backup both
   fire at :00, and the keeper's last refresh raced the backup's teardown, so a
   session that was busy mid-turn was never snapshotted (observed 2026-10-05).
-  `Invoke-WslBackup` now writes the live list, restore-pending, right before it
+  `Invoke-WslBackup` writes the live list, restore-pending, right before it
   stops anything (best-effort; if the list is unreadable it re-marks the
   keeper's last snapshot), and the keeper's refresh re-checks the lock and the
   mark immediately before writing, so it never overwrites that file.
@@ -340,8 +340,9 @@ Windows user account*. A task running as SYSTEM sees no distro at all, so every
 schedule, exits, and backs up nothing — no error to notice.
 
 The accepted cost of a user principal is that these tasks cannot run before
-someone has logged on. That is expected; `-StartWhenAvailable` covers it for the
-backup.
+someone has logged on. That is expected; the backup trigger's hourly repetition
+(`-BackupRetryIntervalMinutes`) catches it up once someone has logged on;
+`-StartWhenAvailable` is forced off (see above).
 
 ### `wsl --export --vhd` and throwaway distros
 
