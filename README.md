@@ -8,8 +8,7 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   file so the two never collide. It also resumes the Claude Code sessions
   that died with a Remote Control server, and keeps
   `codex remote-control start` (Codex's app-server daemon with remote
-  control enabled) running, and a Windows `claude rc --spawn same-dir`
-  session in a pwsh tab starting in `D:\Repos`.
+  control enabled) running.
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
 - A daily usage census publish (see "Usage census task" below).
@@ -26,9 +25,7 @@ Task Scheduler. It covers three jobs:
    Remote Control enabled is running inside the distro, and launch one (in a
    Windows Terminal tab) if not - but only after waiting for any in-progress
    backup to clear. Remote Control is the point: it is what lets you pick the
-   session up from claude.ai or the phone without being at the machine. It
-   also keeps Codex's remote-control daemon and a Windows-side Claude Code
-   Remote Control session running.
+   session up from claude.ai or the phone without being at the machine.
 3. **Task registration** - create or update the two Scheduled Tasks above
    idempotently, and archive any legacy ad-hoc scripts they replace.
 
@@ -136,7 +133,7 @@ vice versa, if you choose to gate the backup on session activity too).
 
 The five task actions that run repo scripts (backup, keeper, ccstatusline sync,
 Codex Cloud sync, and usage census) first call `Update-WslAutomationRepo` for
-that same checkout. The three on-demand launcher actions invoke their CLIs
+that same checkout. The two on-demand launcher actions invoke their CLIs
 directly and have no repo script to update. Existing task actions are unchanged;
 **no re-registration is needed** after deploying this change to the checkout.
 
@@ -338,12 +335,6 @@ window.
   remote-control daemon is not running (`Test-CodexRemoteControl`, via
   `pgrep -af codex`), it triggers the Codex remote control launcher task
   below. `-NoCodexRemoteControl` turns this off.
-- **Windows Remote Control session.** After the Codex handling, if no Windows
-  `claude rc` Remote Control session is running (`Test-ClaudeWindowsSession`,
-  which reads the `Win32_Process` command lines of `claude.exe`), it triggers
-  the Windows Claude Code launcher task below. The check does not depend on
-  the distro state, and Windows sessions are not snapshotted or restored.
-  `-NoWindowsSession` turns this off.
 - **WSL user manager.** After the backup lock wait and before the session
   work, if the default user's systemd user manager (`user@<uid>.service`) has
   died - it takes `/run/user/<uid>` with it, which breaks new shells, snap apps
@@ -406,23 +397,6 @@ window.
   `codex agents`. Re-running `scripts\register-tasks.ps1` registers the new
   task but does not remove the old one; delete it with
   `Unregister-ScheduledTask -TaskName 'Codex Agents Launcher'`.
-
-### Windows Claude Code launcher task (default name: `Claude Code Windows Session Launcher`)
-
-- Built exactly like the Codex launcher above - interactive, on demand, no
-  trigger of its own, `wt.exe` as the action - but the tab uses the Windows
-  Terminal `PowerShell` profile (`-p PowerShell`), starts in `D:\Repos`
-  (`-WindowsReposDir`) and runs
-  `pwsh.exe -NoLogo -Command "claude rc --spawn same-dir"`.
-  `--spawn same-dir` is pinned for the same reason as the WSL launcher:
-  `D:\Repos` is a folder of clones, not a git repo.
-- It needs the Windows `claude` (the native installer's `claude.exe` on the
-  user PATH). pwsh loads your profile, so `claude` resolves as in a normal
-  tab. There is no `-NoExit`, so the tab closes when claude exits and the
-  keeper opens another on its next run.
-- If claude is not installed, the tab closes at once and the keeper opens
-  another every interval. Pass `-NoWindowsSession` to the keeper on a machine
-  without it.
 
 ### ccstatusline config sync task (default name: `ccstatusline Config Sync`)
 
@@ -684,10 +658,6 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
   the snapshot.
 - Codex's remote-control daemon is checked, and started if missing, on every
   run, after the Claude handling, through its own launcher task.
-- A Windows `claude rc` session is checked, and started if missing, on every
-  run, after the Codex handling, through its own launcher task. Only
-  Remote Control processes of `claude.exe` count; WSL claude processes are
-  invisible to the check, and the two Claude keepers never satisfy each other.
 
 ## Testing
 

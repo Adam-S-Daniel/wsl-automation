@@ -63,15 +63,6 @@ function Invoke-ClaudeSessionKeeper {
         task (-CodexLauncherTaskName, registered by Set-WslAutomationScheduledTasks) through the
         same Start-ClaudeLauncherTask seam. The check looks for the daemon process, not the
         launcher's terminal tab, so a daemon that detaches is not relaunched every run.
-
-        Windows Remote Control session. After the Codex handling, the keeper also keeps a
-        'claude rc --spawn same-dir' session running in a pwsh Windows Terminal tab, run by the
-        Windows claude executable: if Test-ClaudeWindowsSession finds no such process, it starts
-        the Windows launcher task (-WindowsLauncherTaskName, registered by
-        Set-WslAutomationScheduledTasks) through the same Start-ClaudeLauncherTask seam. It does
-        not depend on the distro state, so it is checked even when the distro is stopped; it
-        runs after the backup-lock wait like everything else; and Windows sessions are not
-        snapshotted or restored.
     .PARAMETER DistroName
         Name of the WSL distro to check/launch into. Defaults to 'Ubuntu'.
     .PARAMETER LauncherTaskName
@@ -101,19 +92,13 @@ function Invoke-ClaudeSessionKeeper {
         to 'Codex Remote Control Launcher'.
     .PARAMETER NoCodexRemoteControl
         Do not check for, or start, Codex's remote-control daemon.
-    .PARAMETER WindowsLauncherTaskName
-        Name of the interactive scheduled task that opens the Windows Remote Control session.
-        Defaults to 'Claude Code Windows Session Launcher'.
-    .PARAMETER NoWindowsSession
-        Do not check for, or start, a Windows Remote Control session.
     .PARAMETER DryRun
         When a session would be launched, only log the intent and return 'DryRun' instead of
-        actually starting one. Also logs the session ids a restore would resume, the Codex
-        remote-control start it would trigger, and the Windows session it would launch, without
-        doing any of them, and never writes the snapshot.
+        actually starting one. Also logs the session ids a restore would resume, and the Codex
+        remote-control start it would trigger, without doing either, and never writes the snapshot.
     .OUTPUTS
         An object with Status ('SessionPresent', 'Launched' or 'DryRun'), WaitedSeconds,
-        ResumedSessionCount, CodexRemoteControlLaunched and WindowsSessionLaunched.
+        ResumedSessionCount and CodexRemoteControlLaunched.
     .EXAMPLE
         Invoke-ClaudeSessionKeeper
 
@@ -147,10 +132,6 @@ function Invoke-ClaudeSessionKeeper {
         [string]$CodexLauncherTaskName = 'Codex Remote Control Launcher',
 
         [switch]$NoCodexRemoteControl,
-
-        [string]$WindowsLauncherTaskName = 'Claude Code Windows Session Launcher',
-
-        [switch]$NoWindowsSession,
 
         [switch]$DryRun
     )
@@ -280,23 +261,10 @@ function Invoke-ClaudeSessionKeeper {
         }
     }
 
-    $windowsLaunched = $false
-    if (-not $NoWindowsSession -and -not (Test-ClaudeWindowsSession)) {
-        if ($DryRun) {
-            Write-WslAutomationLog -Message 'DryRun: would launch a Windows Claude Remote Control session' -LogFile $LogFile
-        }
-        else {
-            Start-ClaudeLauncherTask -LauncherTaskName $WindowsLauncherTaskName
-            Write-WslAutomationLog -Message "Launched new Windows Claude Remote Control session (via '$WindowsLauncherTaskName')" -LogFile $LogFile
-            $windowsLaunched = $true
-        }
-    }
-
     return [pscustomobject]@{
         Status                     = $status
         WaitedSeconds              = [int]$waited
         ResumedSessionCount        = [int]$resumedCount
         CodexRemoteControlLaunched = $codexLaunched
-        WindowsSessionLaunched     = $windowsLaunched
     }
 }

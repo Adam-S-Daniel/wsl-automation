@@ -7,8 +7,7 @@
     Thin wrapper that imports the WslAutomation module and calls
     Invoke-ClaudeSessionKeeper with the given parameters, keeping a Claude Code
     session with Remote Control enabled alive in the distro, resuming the
-    sessions that died with it, keeping 'codex remote-control start' running, and
-    keeping a Windows Remote Control session running. Exits 0
+    sessions that died with it, and keeping 'codex remote-control start' running. Exits 0
     whether a session was already present, one was launched, or -DryRun was
     used; exits 1 on any error. Intended to run frequently (for example every 5
     minutes) from a scheduled task.
@@ -54,17 +53,9 @@
     Do not check for, or start, Codex's remote-control daemon. Passed through to
     Invoke-ClaudeSessionKeeper only when set.
 
-.PARAMETER WindowsLauncherTaskName
-    Name of the interactive scheduled task that opens the Windows Remote Control
-    session. Passed through to Invoke-ClaudeSessionKeeper only when supplied.
-
-.PARAMETER NoWindowsSession
-    Do not check for, or start, a Windows Remote Control session. Passed through
-    to Invoke-ClaudeSessionKeeper only when set.
-
 .PARAMETER DryRun
     Only log what would happen; never actually launch a Claude Code session,
-    resume one, run 'codex remote-control start', or launch a Windows session.
+    resume one, or run 'codex remote-control start'.
 
 .EXAMPLE
     ./ensure-claude-session.ps1
@@ -94,10 +85,6 @@ param(
 
     [switch]$NoCodexRemoteControl,
 
-    [string]$WindowsLauncherTaskName,
-
-    [switch]$NoWindowsSession,
-
     [switch]$DryRun
 )
 
@@ -124,14 +111,11 @@ try {
     if ($NoSessionRestore) { $keeperParams['NoSessionRestore'] = $true }
     if ($PSBoundParameters.ContainsKey('CodexLauncherTaskName')) { $keeperParams['CodexLauncherTaskName'] = $CodexLauncherTaskName }
     if ($NoCodexRemoteControl) { $keeperParams['NoCodexRemoteControl'] = $true }
-    if ($PSBoundParameters.ContainsKey('WindowsLauncherTaskName')) { $keeperParams['WindowsLauncherTaskName'] = $WindowsLauncherTaskName }
-    if ($NoWindowsSession) { $keeperParams['NoWindowsSession'] = $true }
     if ($DryRun) { $keeperParams['DryRun'] = $true }
 
     $result = Invoke-ClaudeSessionKeeper @keeperParams
     Write-Information -MessageData ("Keeper result: $($result.Status) (waited $($result.WaitedSeconds)s, " +
-        "resumed $($result.ResumedSessionCount) session(s), codex remote-control started: $($result.CodexRemoteControlLaunched), " +
-        "windows session started: $($result.WindowsSessionLaunched))") -InformationAction Continue
+        "resumed $($result.ResumedSessionCount) session(s), codex remote-control started: $($result.CodexRemoteControlLaunched))") -InformationAction Continue
 
     exit 0
 }
