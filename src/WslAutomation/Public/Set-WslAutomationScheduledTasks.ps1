@@ -4,23 +4,25 @@ function Set-WslAutomationScheduledTasks {
     <#
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
-        session keeper and its two launchers, ccstatusline config sync, Codex Cloud environment
+        session keeper and its three launchers, ccstatusline config sync, Codex Cloud environment
         sync, and the daily usage census publish.
 
     .DESCRIPTION
-        Creates seven Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates eight Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
         launcher task the keeper triggers to actually open a Remote Control Claude Code session
         in Windows Terminal; a second on-demand launcher task the keeper triggers to run
-        'codex remote-control start'; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
+        'codex remote-control start'; a third on-demand launcher task the keeper triggers to
+        open a Windows Remote Control Claude Code session (the Windows claude executable in a
+        pwsh Windows Terminal tab); and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
         on its own short repeating interval; and a Codex Cloud environment sync task that runs
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
         distro once a day, calling wsl.exe directly so no pwsh is involved.
 
         The keeper and ccstatusline tasks run as background S4U tasks (session 0), so their
-        frequent checks never flash a console window on the desktop; both launchers are
+        frequent checks never flash a console window on the desktop; all three launchers are
         interactive (they must show a terminal) and on-demand (no trigger); the backup is
         interactive. Both S4U
         tasks require an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath
@@ -33,8 +35,8 @@ function Set-WslAutomationScheduledTasks {
         -BackupRetryIntervalMinutes for why). The keeper, launcher, and ccstatusline, Codex
         Cloud sync, and usage census tasks' Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
-        in sync; the Codex remote control launcher is built exactly like the Claude Code one. Re-running
-        this function is idempotent for all seven tasks.
+        in sync; the Codex remote control and Windows session launchers are built exactly like the Claude
+        Code one. Re-running this function is idempotent for all eight tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -98,6 +100,16 @@ function Set-WslAutomationScheduledTasks {
         -CodexLauncherTaskName default, so a different name here also has to be passed to the
         keeper.
 
+    .PARAMETER WindowsLauncherTaskName
+        Name of the interactive, on-demand task the keeper triggers to open a Windows Remote
+        Control Claude Code session. Defaults to 'Claude Code Windows Session Launcher'. The
+        keeper looks the task up by its own -WindowsLauncherTaskName default, so a different
+        name here also has to be passed to the keeper.
+
+    .PARAMETER WindowsReposDir
+        Starting directory of the Windows Remote Control session's terminal tab. Defaults to
+        'D:\Repos'.
+
     .PARAMETER BackupTime
         Time of day (HH:mm) the backup task's daily trigger fires. Defaults to '02:00'.
 
@@ -143,7 +155,7 @@ function Set-WslAutomationScheduledTasks {
         warning is emitted if a Store-packaged path would be used for the keeper.
 
     .PARAMETER WtPath
-        Path to wt.exe (Windows Terminal) used as both launcher tasks' action. Defaults to the
+        Path to wt.exe (Windows Terminal) used as all three launcher tasks' action. Defaults to the
         stable per-user WindowsApps execution alias when present, else wt.exe on PATH.
 
     .PARAMETER LegacyScriptsToArchive
@@ -165,7 +177,7 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
 
-        Registers (or updates) all seven scheduled tasks using default names, backup time, and
+        Registers (or updates) all eight scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
         daily usage census publish.
 
@@ -177,7 +189,7 @@ function Set-WslAutomationScheduledTasks {
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         'PSUseSingularNouns',
         '',
-        Justification = 'This function manages seven related scheduled tasks by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
+        Justification = 'This function manages eight related scheduled tasks by design; Set-WslAutomationScheduledTasks is the name specified by the project spec.')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
@@ -200,6 +212,10 @@ function Set-WslAutomationScheduledTasks {
         [string]$LauncherTaskName = 'Claude Code Session Launcher',
 
         [string]$CodexLauncherTaskName = 'Codex Remote Control Launcher',
+
+        [string]$WindowsLauncherTaskName = 'Claude Code Windows Session Launcher',
+
+        [string]$WindowsReposDir = 'D:\Repos',
 
         [string]$BackupTime = '02:00',
 
@@ -427,6 +443,31 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Windows session launcher task: interactive, on-demand terminal opener ---
+    # Built exactly like the Codex launcher above - same wt.exe action shape, settings and
+    # interactive principal, no trigger of its own - but the tab is a pwsh tab running the Windows
+    # claude as 'claude rc --spawn same-dir' (see Get-ClaudeWindowsSessionWtArgumentList). The
+    # keeper triggers it by name when Test-ClaudeWindowsSession finds no such process.
+    $windowsLauncherArguments = (Get-ClaudeWindowsSessionWtArgumentList -ReposDir $WindowsReposDir) -join ' '
+    $windowsLauncherAction = New-ScheduledTaskAction -Execute $WtPath -Argument $windowsLauncherArguments
+    $windowsLauncherSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew
+    $windowsLauncherPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+
+    $existingWindowsLauncherTask = Get-ScheduledTask -TaskName $WindowsLauncherTaskName -ErrorAction SilentlyContinue
+    if ($existingWindowsLauncherTask) {
+        if ($PSCmdlet.ShouldProcess($WindowsLauncherTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $WindowsLauncherTaskName -Action $windowsLauncherAction -Trigger $null `
+                -Settings $windowsLauncherSettings -Principal $windowsLauncherPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($WindowsLauncherTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $WindowsLauncherTaskName -Action $windowsLauncherAction -Trigger $null `
+                -Settings $windowsLauncherSettings -Principal $windowsLauncherPrincipal
+        }
+    }
+
     # --- ccstatusline task: background config sync -------------------------
     # Purely background work (reads the ccstatusline config out of WSL) that never needs a window,
     # so - like the keeper - it runs as an S4U/session-0 task. Otherwise it would flash its own
@@ -613,6 +654,7 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
+    Write-Information -MessageData "Windows session launcher task '$WindowsLauncherTaskName' (interactive, on-demand): $WtPath $windowsLauncherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue

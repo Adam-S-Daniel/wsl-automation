@@ -219,8 +219,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Settings.FakeSettings -eq $true -and
                 $null -eq $Trigger
             }
-            # Same settings as the Claude Code launcher: on battery, never stopped, one instance.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 2 -Exactly -ParameterFilter {
+            # Same settings for all three launchers: on battery, never stopped, one instance.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $MultipleInstances -eq 'IgnoreNew' -and
                 $null -eq $ExecutionTimeLimit
             }
@@ -235,12 +235,39 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs both launchers and the backup task interactively (the keeper and ccstatusline tasks are the S4U ones)' {
+        It 'registers the interactive Windows session launcher task with a wt.exe action running claude rc in a pwsh tab in D:\Repos, and no trigger of its own' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Code Windows Session Launcher' -and
+                $Action.Execute -eq 'C:\fake\wt.exe' -and
+                $Action.Argument -match 'new-tab' -and
+                $Action.Argument -match '-p PowerShell' -and
+                $Action.Argument -match '--title "Claude Code \(Windows\)"' -and
+                $Action.Argument -match '-d "D:\\Repos"' -and
+                $Action.Argument -match 'pwsh\.exe -NoLogo -Command "claude rc --spawn same-dir"' -and
+                $Settings.FakeSettings -eq $true -and
+                $null -eq $Trigger
+            }
+        }
+
+        It 'honors -WindowsLauncherTaskName and -WindowsReposDir' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WindowsLauncherTaskName 'My Windows Tab' `
+                -WindowsReposDir 'E:\Work\' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'My Windows Tab' -and $Action.Argument -match '-d "E:\\Work" pwsh\.exe'
+            }
+        }
+
+        It 'runs all three launchers and the backup task interactively (the keeper and ccstatusline tasks are the S4U ones)' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # Backup + both launchers are Interactive; keeper + ccstatusline are S4U/background.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 3 -Exactly -ParameterFilter {
+            # Backup + all three launchers are Interactive; keeper + ccstatusline are S4U/background.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 4 -Exactly -ParameterFilter {
                 $LogonType -eq 'Interactive'
             }
         }
@@ -613,6 +640,47 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the Windows session launcher task already exists' {
+
+        BeforeEach {
+            $script:existingWindowsLauncherTask = [pscustomobject]@{
+                TaskName  = 'Claude Code Windows Session Launcher'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Claude Code Windows Session Launcher') {
+                    return $script:existingWindowsLauncherTask
+                }
+                return $null
+            }
+        }
+
+        It 'updates it in place with a rebuilt action, settings and principal, and no trigger' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Code Windows Session Launcher' -and
+                $Action.Execute -eq 'C:\fake\wt.exe' -and
+                $Action.Argument -match '-Command "claude rc --spawn same-dir"' -and
+                $Settings.FakeSettings -eq $true -and
+                $Principal.FakePrincipal -eq $true -and
+                $null -eq $Trigger
+            }
+        }
+
+        It 'does not create a second Windows session launcher task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Code Windows Session Launcher'
+            }
+        }
+    }
+
     Context 'when the Codex Cloud sync task already exists' {
 
         BeforeEach {
@@ -896,8 +964,8 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all five script actions among seven registered task actions' {
-        $script:actionCount | Should -Be 7
+    It 'covers all five script actions among eight registered task actions' {
+        $script:actionCount | Should -Be 8
         $script:actionScripts.Count | Should -Be 5
         @($script:actionScripts | Sort-Object) | Should -Be @(
             'ensure-claude-session.ps1', 'publish-usage-census.sh', 'sync-ccstatusline-config.ps1',

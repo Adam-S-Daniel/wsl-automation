@@ -41,6 +41,7 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
         Mock -ModuleName WslAutomation Start-Sleep { }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $true }
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume {
             [pscustomobject]@{ ExitCode = 0; Output = @() }
         }
@@ -482,6 +483,7 @@ Describe 'Invoke-ClaudeSessionKeeper codex remote control' {
         Mock -ModuleName WslAutomation Start-Sleep { }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $true }
         Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
 
@@ -589,6 +591,177 @@ Describe 'Invoke-ClaudeSessionKeeper codex remote control' {
         $result.CodexRemoteControlLaunched | Should -BeFalse
         Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
         Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw | Should -Match 'DryRun: would run codex remote-control start'
+    }
+}
+
+Describe 'Invoke-ClaudeSessionKeeper Windows session' {
+
+    BeforeEach {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = 0; Output = @() }
+        }
+        Mock -ModuleName WslAutomation Test-WslBackupLock {
+            [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
+        }
+        Mock -ModuleName WslAutomation Start-Sleep { }
+        Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
+        Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
+        Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
+        Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
+
+        $script:keeperArgs = @{
+            DistroName          = 'Ubuntu'
+            LockPath            = (Join-Path $TestDrive 'backup.lock')
+            LogFile             = (Join-Path $TestDrive 'keeper.log')
+            SessionSnapshotPath = (Join-Path $TestDrive 'agents-snapshot.json')
+        }
+    }
+
+    It 'starts the Windows launcher task when no Windows Remote Control session is running' {
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $false }
+
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $result.WindowsSessionLaunched | Should -BeTrue
+        $result.Status | Should -Be 'SessionPresent'
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
+            $LauncherTaskName -eq 'Claude Code Windows Session Launcher'
+        }
+        Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw |
+            Should -Match "Launched new Windows Claude Remote Control session \(via 'Claude Code Windows Session Launcher'\)"
+    }
+
+    It 'honors -WindowsLauncherTaskName' {
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $false }
+
+        Invoke-ClaudeSessionKeeper @script:keeperArgs -WindowsLauncherTaskName 'My Windows Tab' | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
+            $LauncherTaskName -eq 'My Windows Tab'
+        }
+    }
+
+    It 'launches nothing when a Windows Remote Control session is already running' {
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $true }
+
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $result.WindowsSessionLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
+    }
+
+    It 'checks the Windows session independently of the other two, launching each through its own task' {
+        Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $false }
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $false }
+
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $result.Status | Should -Be 'Launched'
+        $result.CodexRemoteControlLaunched | Should -BeTrue
+        $result.WindowsSessionLaunched | Should -BeTrue
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 3 -Exactly
+        foreach ($taskName in 'Claude Code Session Launcher', 'Codex Remote Control Launcher', 'Claude Code Windows Session Launcher') {
+            Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
+                $LauncherTaskName -eq $taskName
+            }
+        }
+    }
+
+    It 'starts the session once, then leaves it alone on later runs once claude.exe shows Remote Control' {
+        # Real Test-ClaudeWindowsSession against a mocked process list: the first run sees only a
+        # plain claude and the background daemon, later runs also see 'claude rc'.
+        $script:windowsClaudeLines = @(
+            '"C:\Users\example\.local\bin\claude.exe"',
+            '"C:\Users\example\.local\bin\claude.exe" daemon run'
+        )
+        Mock -ModuleName WslAutomation Get-WindowsProcessCommandLine { $script:windowsClaudeLines }
+
+        $first = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $script:windowsClaudeLines += '"C:\Users\example\.local\bin\claude.exe" rc --spawn same-dir'
+        $second = Invoke-ClaudeSessionKeeper @script:keeperArgs
+        $third = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $first.WindowsSessionLaunched | Should -BeTrue
+        $second.WindowsSessionLaunched | Should -BeFalse
+        $third.WindowsSessionLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 1 -Exactly -ParameterFilter {
+            $LauncherTaskName -eq 'Claude Code Windows Session Launcher'
+        }
+    }
+
+    It 'neither checks for nor starts the session under -NoWindowsSession' {
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $false }
+
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs -NoWindowsSession
+
+        $result.WindowsSessionLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Test-ClaudeWindowsSession -Times 0 -Exactly
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
+    }
+
+    It 'only logs the launch under -DryRun' {
+        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $false }
+
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs -DryRun
+
+        $result.WindowsSessionLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly
+        Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw | Should -Match 'DryRun: would launch a Windows Claude Remote Control session'
+    }
+}
+
+Describe 'Test-ClaudeWindowsSession' {
+
+    BeforeEach {
+        $script:windowsLines = @()
+        Mock -ModuleName WslAutomation Get-WindowsProcessCommandLine { $script:windowsLines }
+    }
+
+    It 'accepts the Remote Control command line <_>' -ForEach @(
+        '"C:\Users\example\.local\bin\claude.exe" rc --spawn same-dir'
+        'claude.exe rc'
+        'C:\Users\example\.local\bin\claude.exe remote-control'
+        'claude --remote-control'
+    ) {
+        $script:windowsLines = @($_)
+
+        Test-ClaudeWindowsSession | Should -BeTrue
+    }
+
+    It 'rejects the command line <_>' -ForEach @(
+        '"C:\Users\example\.local\bin\claude.exe"'
+        'claude.exe --resume 11111111-1111-4111-8111-111111111111'
+        'claude.exe daemon run rc'
+        'claude.exe bg-pty-host rc'
+        'C:\src\rcfile\claude.exe'
+    ) {
+        $script:windowsLines = @($_)
+
+        Test-ClaudeWindowsSession | Should -BeFalse
+    }
+
+    It 'returns false when there are no claude.exe processes' {
+        $script:windowsLines = @()
+
+        Test-ClaudeWindowsSession | Should -BeFalse
+    }
+
+    It 'returns false when the process list cannot be read' {
+        Mock -ModuleName WslAutomation Get-WindowsProcessCommandLine { throw 'Access denied' }
+
+        Test-ClaudeWindowsSession | Should -BeFalse
+    }
+
+    It 'asks the seam for claude.exe processes' {
+        Test-ClaudeWindowsSession | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Get-WindowsProcessCommandLine -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'claude.exe'
+        }
     }
 }
 
