@@ -406,3 +406,33 @@ change their own linger) and starts the manager.
 - **Linger is intentionally enabled on this machine.** Do not turn it off to
   "clean up"; the keeper's repair and the user's own recovery both rely on it.
 - The manager is addressed by numeric uid, so no user name reaches a log.
+
+### CI: three required checks that always run
+
+`.github/workflows/ci.yml` has three jobs, `shell` (ubuntu), `test` (windows)
+and `test-linux` (ubuntu), intended as required status checks; they are made
+required in repo-settings' `fleet.yml` after this lands. A required check
+cannot use `on.paths` (a skipped check blocks the merge), so all three run on
+every pull request and skip early instead: each job's `salient` step diffs the
+pull request's base and head and gates every later step on it, and a final
+step reports success when nothing salient changed. The salient paths are
+`src/**`, `scripts/**`, `tests/**`, `.github/workflows/ci.yml`,
+`.github/workflows/actions.lock` and `PSScriptAnalyzerSettings.psd1`. On any
+other event, or when the changed files cannot be determined, the job runs in
+full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;
+`tests/CiWorkflow.Tests.ps1` enforces that shape.
+
+**Action pins.** Workflows name actions by release tag, locked to a commit in
+`.github/workflows/actions.lock`
+([ADR 0021](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0021-actions-pin-through-lockfiles.md)).
+
+- The `shell` job runs the shared
+  [`Adam-S-Daniel/verify-actions-lock`](https://github.com/Adam-S-Daniel/verify-actions-lock)
+  check, which verifies the lockfile only when a pull request touches workflow
+  dependencies.
+- After changing a `uses:`, regenerate with `gh actions-lock --no-narrow`.
+- A moved or unreachable pin: find out why first, then recover with
+  `gh actions-lock --accept-moved`.
+- `reachability-unknown` means GitHub's API was unreachable; re-run the job.
+- Cross-repo reusable workflows (`jobs.<id>.uses`) are not covered by the
+  lockfile and take a full 40-character commit SHA.
