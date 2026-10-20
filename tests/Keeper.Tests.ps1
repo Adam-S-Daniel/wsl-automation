@@ -20,14 +20,12 @@ Describe 'Invoke-ClaudeSessionKeeper' {
 
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
         Mock -ModuleName WslAutomation Repair-WslUserRuntime { 'Healthy' }
-        # Session restore, Codex remote control and the Windows session are covered by their own
-        # Describe blocks (KeeperRestore.Tests.ps1); here they are neutralized (no sessions, codex
-        # daemon and Windows session present) so these tests keep asserting only the Remote
-        # Control launch.
+        # Session restore and Codex remote control are covered by their own Describe blocks
+        # below; here they are neutralized (no sessions, codex daemon present) so these tests keep
+        # asserting only the Remote Control launch.
         Mock -ModuleName WslAutomation Get-ClaudeAgentSessions { , @() }
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
         Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
-        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $true }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Start-Sleep { }
     }

@@ -353,33 +353,6 @@ Describe 'WslAutomation helpers' {
             $joined | Should -BeLike '* bash -l -c "cd ~/repos || cd ~ && exec codex remote-control start"'
         }
     }
-
-    Describe 'Get-ClaudeWindowsSessionWtArgumentList' {
-        # Same quoting rules as the WSL lists above: the launcher task joins the array on spaces,
-        # so the title, the directory and the pwsh command must carry their own quotes.
-
-        It 'builds exactly the expected wt.exe argument list' {
-            $argumentList = InModuleScope WslAutomation { Get-ClaudeWindowsSessionWtArgumentList }
-
-            $argumentList | Should -Be @(
-                '-w', '0', 'new-tab', '-p', 'PowerShell', '--title', '"Claude Code (Windows)"',
-                '-d', '"D:\Repos"', 'pwsh.exe', '-NoLogo', '-Command', '"claude rc --spawn same-dir"'
-            )
-        }
-
-        It 'trims a trailing backslash from the starting directory so it cannot escape the closing quote' {
-            $argumentList = InModuleScope WslAutomation { Get-ClaudeWindowsSessionWtArgumentList -ReposDir 'E:\Work\' }
-
-            $argumentList[7] | Should -Be '-d'
-            $argumentList[8] | Should -Be '"E:\Work"'
-        }
-
-        It 'contains no semicolon, which wt.exe would treat as a command separator' {
-            $joined = InModuleScope WslAutomation { (Get-ClaudeWindowsSessionWtArgumentList) -join ' ' }
-
-            $joined | Should -Not -BeLike '*;*'
-        }
-    }
 }
 
 Describe 'Invoke-WslExe' {

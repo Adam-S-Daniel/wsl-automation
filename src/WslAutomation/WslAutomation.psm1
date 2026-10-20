@@ -23,7 +23,6 @@ Export-ModuleMember -Function @(
     'Test-WslActivity',
     'Test-ClaudeSession',
     'Test-CodexRemoteControl',
-    'Test-ClaudeWindowsSession',
     'Start-ClaudeSession',
     'Invoke-ClaudeSessionKeeper',
     'Set-WslAutomationScheduledTasks',

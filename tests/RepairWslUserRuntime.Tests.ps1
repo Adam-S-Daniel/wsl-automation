@@ -200,7 +200,6 @@ Describe 'Invoke-ClaudeSessionKeeper user manager repair' {
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
-        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $true }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
         Mock -ModuleName WslAutomation Test-WslBackupLock {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
@@ -262,7 +261,6 @@ Describe 'Invoke-ClaudeSessionKeeper when the user manager repair cannot reach w
         Mock -ModuleName WslAutomation Start-ClaudeSessionResume { }
         Mock -ModuleName WslAutomation Start-ClaudeLauncherTask { }
         Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
-        Mock -ModuleName WslAutomation Test-ClaudeWindowsSession { $true }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $false }
         Mock -ModuleName WslAutomation Test-WslBackupLock {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
