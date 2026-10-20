@@ -241,10 +241,10 @@ Describe 'Update-WslAutomationRepo' {
     It 'never falls back to a regular merge after a failed fast-forward' {
         $script:mergeExit = 1
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningVariable warnings -WarningAction SilentlyContinue
-        $result.Status | Should -Be 'Error'
+        $result.Status | Should -Be 'FastForwardFailed'
         $result.Changed | Should -BeFalse
         $warnings | Should -Not -BeNullOrEmpty
-        Get-Content $script:logFile -Raw | Should -Match 'WARNING.*Error'
+        Get-Content $script:logFile -Raw | Should -Match 'WARNING.*FastForwardFailed'
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 1 -Exactly -ParameterFilter { $Arguments[0] -eq 'merge' -and $Arguments[1] -eq '--ff-only' }
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments[0] -in @('reset', 'stash', 'clean') -or ($Arguments[0] -eq 'merge' -and $Arguments[1] -ne '--ff-only') }
     }
@@ -253,24 +253,24 @@ Describe 'Update-WslAutomationRepo' {
         $script:branch = 'feature-example'
         $script:switchExit = 1
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
-        $result.Status | Should -Be 'Error'
+        $result.Status | Should -Be 'SwitchFailed'
         $result.Changed | Should -BeFalse
         $script:headReads | Should -Be 2
         Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments[0] -eq 'merge' }
     }
 
     It 'verifies movement after a <Command> that <Failure>' -ForEach @(
-        @{ Command = 'switch main'; Failure = 'exits nonzero' },
-        @{ Command = 'switch main'; Failure = 'throws' },
-        @{ Command = 'merge --ff-only origin/main'; Failure = 'exits nonzero' },
-        @{ Command = 'merge --ff-only origin/main'; Failure = 'throws' }
+        @{ Command = 'switch main'; Failure = 'exits nonzero'; Status = 'SwitchFailed' },
+        @{ Command = 'switch main'; Failure = 'throws'; Status = 'Error' },
+        @{ Command = 'merge --ff-only origin/main'; Failure = 'exits nonzero'; Status = 'FastForwardFailed' },
+        @{ Command = 'merge --ff-only origin/main'; Failure = 'throws'; Status = 'Error' }
     ) {
         $script:branch = 'feature-example'
         if ($Command -eq 'switch main') { $script:switchMoves = $true; $script:switchExit = 1 }
         else { $script:changed = $true; $script:mergeExit = 1 }
         if ($Failure -eq 'throws') { $script:gitFailure = $Command }
         $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
-        $result.Status | Should -Be 'Error'
+        $result.Status | Should -Be $Status
         $result.Changed | Should -BeTrue
         $script:headReads | Should -Be 2
         @($script:headReadReleaseCounts) | Should -Be @(0, 0)
@@ -324,6 +324,36 @@ Describe 'Update-WslAutomationRepo' {
         $result.Status | Should -Be 'Error'
         Get-Content $script:logFile -Raw | Should -Not -Match 'credential-bearing'
         $script:released | Should -Be 1
+    }
+
+    It 'reports <Status> when <Command> exits nonzero' -ForEach @(
+        @{ Command = 'status'; Status = 'InspectFailed' },
+        @{ Command = 'ancestry'; Status = 'AncestryCheckFailed' }
+    ) {
+        if ($Command -eq 'status') {
+            Mock -ModuleName WslAutomation Invoke-GitExe -ParameterFilter { ($Arguments -join ' ') -eq 'status --porcelain' } {
+                [pscustomobject]@{ ExitCode = 128; Output = @() }
+            }
+        }
+        else { $script:ancestorExit = 128 }
+        $result = Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningAction SilentlyContinue
+        $result.Status | Should -Be $Status
+        Get-Content $script:logFile -Raw | Should -Match "WARNING: checkout update skipped \($Status\)"
+        Should -Invoke -ModuleName WslAutomation Invoke-GitExe -Times 0 -Exactly -ParameterFilter { $Arguments[0] -eq 'merge' }
+    }
+
+    It 'shows a skipped update once, with one WARNING prefix' {
+        $script:fetchExit = 1
+        # 6>&1 collects what would reach the console; -InformationVariable would also see the
+        # log line's discarded echo.
+        $output = @(Update-WslAutomationRepo -RepoPath $TestDrive -LogFile $script:logFile -WarningVariable warnings -WarningAction SilentlyContinue 6>&1)
+        $result = $output | Where-Object { $_ -isnot [Management.Automation.InformationRecord] }
+        $result.Status | Should -Be 'FetchFailed'
+        @($warnings).Count | Should -Be 1
+        $warnings[0].Message | Should -BeExactly 'checkout update skipped (FetchFailed); continuing with current code'
+        @($output | Where-Object { $_ -is [Management.Automation.InformationRecord] }).Count | Should -Be 0
+        @(Get-Content $script:logFile) | Should -HaveCount 1
+        Get-Content $script:logFile -Raw | Should -Match '  WARNING: checkout update skipped \(FetchFailed\)'
     }
 
     It 'does no work under WhatIf' {
