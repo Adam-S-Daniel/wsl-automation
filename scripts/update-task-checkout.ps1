@@ -34,7 +34,7 @@ function Initialize-WslAutomationTask {
         if (-not $update.Changed) { return $result }
     }
     catch {
-        Write-Warning 'WARNING: checkout bootstrap failed; continuing with current code'
+        Write-Warning 'checkout bootstrap failed; continuing with current code'
         return $result
     }
 
@@ -70,7 +70,7 @@ if ($UpdateOnly) {
         Update-WslAutomationRepo -RepoPath (Split-Path $PSScriptRoot -Parent) -Confirm:$false | Out-Null
     }
     catch {
-        Write-Warning 'WARNING: checkout bootstrap failed; continuing with current code'
+        Write-Warning 'checkout bootstrap failed; continuing with current code'
     }
     exit 0
 }
