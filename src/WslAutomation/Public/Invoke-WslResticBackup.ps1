@@ -101,6 +101,10 @@ function Invoke-WslResticBackup {
         Backs up the running 'Ubuntu' distro into D:\Backups\wsl-restic and copies the
         repository into the OneDrive folder's 'restic' subdirectory.
     #>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        'PSAvoidUsingPlainTextForPassword',
+        '',
+        Justification = 'A path to the root-only password file inside the distro, not the password itself.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(

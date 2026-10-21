@@ -59,6 +59,10 @@
     Runs an unattended backup with no closing prompt, as a scheduled task
     would.
 #>
+[System.Diagnostics.CodeAnalysis.SuppressMessage(
+    'PSAvoidUsingPlainTextForPassword',
+    '',
+    Justification = 'A path to the root-only password file inside the distro, not the password itself.')]
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
