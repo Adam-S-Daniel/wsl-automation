@@ -5,3 +5,5 @@
 .claude/hooks/*.sh text eol=lf
 # read by restic inside WSL from the Windows checkout; keep it LF like the scripts
 scripts/wsl-restic-excludes.txt text eol=lf
+# managed by _agent-guidance: the agent-checks runner must stay LF for bash (see ADR 0021)
+.githooks/* text eol=lf
