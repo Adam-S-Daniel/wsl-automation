@@ -9,7 +9,8 @@ function Set-WslAutomationScheduledTasks {
 
     .DESCRIPTION
         Creates seven Windows Scheduled Tasks, or updates them in place if they already exist:
-        a daily backup task that runs scripts/wsl-ubuntu-backup.ps1; a session-keeper task that
+        a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
+        running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
         launcher task the keeper triggers to actually open a Remote Control Claude Code session
         in Windows Terminal; a second on-demand launcher task the keeper triggers to run
@@ -19,21 +20,19 @@ function Set-WslAutomationScheduledTasks {
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
         distro once a day, calling wsl.exe directly so no pwsh is involved.
 
-        The keeper and ccstatusline tasks run as background S4U tasks (session 0), so their
-        frequent checks never flash a console window on the desktop; both launchers are
-        interactive (they must show a terminal) and on-demand (no trigger); the backup is
-        interactive. Both S4U
-        tasks require an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath
-        and scripts/grant-keeper-batch-logon.ps1. The usage census task is S4U too, but its
-        action is wsl.exe itself, so it needs no pwsh at all.
+        The backup, keeper and ccstatusline tasks run as background S4U tasks (session 0), so
+        they never flash a console window on the desktop; both launchers are interactive (they
+        must show a terminal) and on-demand (no trigger). The three pwsh-based S4U tasks require
+        an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath and
+        scripts/grant-keeper-batch-logon.ps1. The usage census task is S4U too, but its action
+        is wsl.exe itself, so it needs no pwsh at all.
 
-        When the backup task already exists, its Action and Triggers are replaced but its
-        existing Settings and Principal objects are otherwise kept as-is - except that
-        StartWhenAvailable is always reset to $false on the carried-through Settings object (see
-        -BackupRetryIntervalMinutes for why). The keeper, launcher, and ccstatusline, Codex
-        Cloud sync, and usage census tasks' Settings and Principal are always (re)built fresh from this function's
+        Every task's Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
-        in sync; the Codex remote control launcher is built exactly like the Claude Code one. Re-running
+        in sync; the Codex remote control launcher is built exactly like the Claude Code one.
+        That now includes the backup task, which used to keep an existing task's Settings and
+        Principal: re-running this function is what switches an existing backup task from the
+        interactive 'wsl --export' backup to the background restic one in place. Re-running
         this function is idempotent for all seven tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
@@ -50,20 +49,22 @@ function Set-WslAutomationScheduledTasks {
         Windows-only: throws immediately if $IsWindows is false.
 
     .PARAMETER ScriptsDir
-        Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
+        Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
+        wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
         sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and
         publish-usage-census.sh.
 
     .PARAMETER BackupDir
-        Directory the backup task writes exported WSL archives to.
+        The OneDrive-synced directory the backup task copies the restic repository into (its
+        'restic' subdirectory) and writes its log to.
+
+    .PARAMETER ResticRepoDir
+        The restic repository on a local Windows drive, for example 'D:\Backups\wsl-restic'.
+        Must be a drive-letter path; the distro reaches it at /mnt/<drive>/... .
 
     .PARAMETER DistroName
         Name of the WSL distro to back up and to keep a Remote Control Claude Code session alive
         in. Defaults to 'Ubuntu'.
-
-    .PARAMETER Format
-        Backup format passed through to wsl-ubuntu-backup.ps1: 'tar' or 'vhdx'. Defaults to
-        'tar'.
 
     .PARAMETER WakeBackupToRun
         When set, the backup task is registered with -WakeToRun so Windows wakes the machine
@@ -75,11 +76,11 @@ function Set-WslAutomationScheduledTasks {
         (-BackupRetryIntervalMinutes) the next time the machine is awake - not by
         -StartWhenAvailable, which this task no longer sets on either a fresh registration or an
         update: it used to fire a missed run the instant the machine woke, straight into the WSL
-        transition window Invoke-WslBackup's own wake guard now defers instead (see AGENTS.md).
-        Only enable -WakeBackupToRun on hardware where scheduled wake is reliable (for example an
-        S3-capable desktop). This only affects a freshly registered task's WakeToRun setting; an
-        existing task's WakeToRun is preserved as-is, though its StartWhenAvailable is always
-        reset to $false.
+        transition window Invoke-WslResticBackup's own wake guard now defers instead (see
+        AGENTS.md). Only enable -WakeBackupToRun on hardware where scheduled wake is reliable
+        (for example an S3-capable desktop). The backup task's settings are rebuilt on every
+        run, so this applies to an existing task too: re-running without it turns WakeToRun
+        off.
 
     .PARAMETER BackupTaskName
         Name of the scheduled task that runs the backup. Defaults to 'WSL Ubuntu Daily Backup'.
@@ -103,8 +104,9 @@ function Set-WslAutomationScheduledTasks {
 
     .PARAMETER BackupRetryIntervalMinutes
         How often, in minutes, the backup task's trigger repeats over the day following
-        -BackupTime, so a run deferred by Invoke-WslBackup's wake guard or activity gate (or
-        simply missed because the machine was asleep) gets retried without -StartWhenAvailable.
+        -BackupTime, so a run deferred by Invoke-WslResticBackup's wake guard (or simply missed
+        because the machine was asleep) gets retried without -StartWhenAvailable. Once a run
+        succeeds, the rest of the day's retries skip silently.
         Defaults to 60.
 
     .PARAMETER KeeperIntervalMinutes
@@ -129,7 +131,7 @@ function Set-WslAutomationScheduledTasks {
     .PARAMETER UsageCensusTime
         Time of day (HH:mm) the usage census task's daily trigger fires. Defaults to '12:37':
         the laptop is usually awake at midday, and :37 is well clear of the backup's :00 hourly
-        retries (an export takes about five minutes and stops the distro).
+        retries.
 
     .PARAMETER WslExePath
         Path to wsl.exe used as the usage census task's action. Defaults to
@@ -163,14 +165,14 @@ function Set-WslAutomationScheduledTasks {
         to read it.
 
     .EXAMPLE
-        Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Backups\WSL'
+        Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
         Registers (or updates) all seven scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
         daily usage census publish.
 
     .EXAMPLE
-        Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -WhatIf
+        Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
 
         Shows what would change without actually registering, updating, or renaming anything.
     #>
@@ -186,10 +188,10 @@ function Set-WslAutomationScheduledTasks {
         [Parameter(Mandatory)]
         [string]$BackupDir,
 
-        [string]$DistroName = 'Ubuntu',
+        [Parameter(Mandatory)]
+        [string]$ResticRepoDir,
 
-        [ValidateSet('tar', 'vhdx')]
-        [string]$Format = 'tar',
+        [string]$DistroName = 'Ubuntu',
 
         [switch]$WakeBackupToRun,
 
@@ -239,12 +241,16 @@ function Set-WslAutomationScheduledTasks {
     # Read-Host hang under the hidden scheduled task that -NoPause exists to prevent. Trim
     # defensively for every user-supplied path embedded in a quoted argument string below.
     $BackupDir = $BackupDir.TrimEnd('\')
+    $ResticRepoDir = $ResticRepoDir.TrimEnd('\')
     $ScriptsDir = $ScriptsDir.TrimEnd('\')
     $PwshPath = $PwshPath.TrimEnd('\')
 
     # --- Backup task: action + daily trigger repeating over the following day ---------------
-    $backupScriptPath = Join-Path $ScriptsDir 'wsl-ubuntu-backup.ps1'
-    $backupArguments = "-NoProfile -File `"$backupScriptPath`" -BackupDir `"$BackupDir`" -DistroName $DistroName -Format $Format -NoPause"
+    # The live restic backup (Invoke-WslResticBackup) replaced the 'wsl --export' one under the
+    # same task name, so re-running the installer switches the task in place. wsl-ubuntu-backup.ps1
+    # and Invoke-WslBackup stay in the module as a manual-only command.
+    $backupScriptPath = Join-Path $ScriptsDir 'wsl-restic-backup.ps1'
+    $backupArguments = "-NoProfile -File `"$backupScriptPath`" -BackupDir `"$BackupDir`" -RepoDir `"$ResticRepoDir`" -DistroName $DistroName -NoPause"
     $backupAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $backupArguments
     $backupTrigger = New-ScheduledTaskTrigger -Daily -At $BackupTime
 
@@ -265,48 +271,48 @@ function Set-WslAutomationScheduledTasks {
     }
     $backupTrigger.Repetition = $backupRepetition
 
+    # Settings/Principal are always rebuilt fresh for the backup task now, like the keeper's,
+    # whether it already exists or not. They used to be carried through from an existing task,
+    # because that task was the interactive 'wsl --export' backup and its settings were tuned by
+    # hand. Switching it to the restic backup needs every one of them to change, and carrying
+    # them through would silently keep the export's:
+    # - Principal: S4U (session 0) instead of Interactive. The export needed the user's own
+    #   session; 'wsl.exe -u root' does not, and S4U is what keeps the run from ever opening a
+    #   window on the desktop (see the keeper principal below).
+    # - Battery: allowed to start on battery and not stopped when unplugged. The AC-only rule
+    #   existed because a 27-65 GB export ran on battery; a daily restic run takes a minute or
+    #   two, and an AC-only task on a laptop that is rarely plugged in would rarely back up.
+    # - ExecutionTimeLimit: 2 hours instead of the export's 4.
+    # - StartWhenAvailable: off - the trigger's own -BackupRetryIntervalMinutes repetition is
+    #   what catches up a missed run, without firing the instant the machine wakes into WSL's
+    #   post-wake transition window.
+    # - WakeToRun: only with -WakeBackupToRun (waking a Modern Standby laptop for the backup can
+    #   hang it in a half-woken state). Because the settings are rebuilt, this now applies to an
+    #   existing task too.
+    # - MultipleInstances IgnoreNew, so a slow run is never doubled up by the next retry.
+    $backupSettingsParams = @{
+        AllowStartIfOnBatteries    = $true
+        DontStopIfGoingOnBatteries = $true
+        StartWhenAvailable         = $false
+        ExecutionTimeLimit         = New-TimeSpan -Hours 2
+        MultipleInstances          = 'IgnoreNew'
+    }
+    if ($WakeBackupToRun) {
+        $backupSettingsParams['WakeToRun'] = $true
+    }
+    $backupSettings = New-ScheduledTaskSettingsSet @backupSettingsParams
+    $backupPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
     $existingBackupTask = Get-ScheduledTask -TaskName $BackupTaskName -ErrorAction SilentlyContinue
     if ($existingBackupTask) {
-        # Keep the existing Settings/Principal; only Action and Triggers are replaced (this
-        # intentionally drops any logon/other trigger the task may have picked up over time).
-        # StartWhenAvailable is always forced off on the carried-through Settings object - see
-        # -BackupRetryIntervalMinutes for why - everything else on it (including WakeToRun) is
-        # left exactly as the existing task had it.
-        $existingBackupTask.Settings.StartWhenAvailable = $false
-        # AC-only by owner decision: no 27 GB export on battery, and no export cut off mid-way by
-        # unplugging. New-ScheduledTaskSettingsSet already defaults both of these to $true, but
-        # that default is made explicit here so it can't silently change on a carried-through
-        # Settings object either.
-        $existingBackupTask.Settings.DisallowStartIfOnBatteries = $true
-        $existingBackupTask.Settings.StopIfGoingOnBatteries = $true
+        # Only the Action, Triggers, Settings and Principal are replaced; any logon or other
+        # trigger the task picked up over time is dropped in favor of the one daily trigger.
         if ($PSCmdlet.ShouldProcess($BackupTaskName, 'Update scheduled task')) {
             Set-WslScheduledTask -TaskName $BackupTaskName -Action $backupAction -Trigger $backupTrigger `
-                -Settings $existingBackupTask.Settings -Principal $existingBackupTask.Principal
+                -Settings $backupSettings -Principal $backupPrincipal
         }
     }
     else {
-        # -WakeToRun is opt-in (see -WakeBackupToRun): waking a Modern Standby laptop for the
-        # backup can hang it in a half-woken state. StartWhenAvailable is off - the trigger's own
-        # -BackupRetryIntervalMinutes repetition is what catches up a missed run now, without
-        # firing the instant the machine wakes into WSL's own post-wake transition window.
-        $backupSettingsParams = @{
-            StartWhenAvailable = $false
-            ExecutionTimeLimit = New-TimeSpan -Hours 4
-            MultipleInstances  = 'IgnoreNew'
-        }
-        if ($WakeBackupToRun) {
-            $backupSettingsParams['WakeToRun'] = $true
-        }
-        $backupSettings = New-ScheduledTaskSettingsSet @backupSettingsParams
-        # AC-only by owner decision: no 27 GB export on battery, and no export cut off mid-way by
-        # unplugging. New-ScheduledTaskSettingsSet already defaults both of these to $true (there
-        # is no constructor parameter to request them directly - only -AllowStartIfOnBatteries
-        # and -DontStopIfGoingOnBatteries to request the opposite), so they are set explicitly
-        # here on the resulting Settings object so that default can't silently change.
-        $backupSettings.DisallowStartIfOnBatteries = $true
-        $backupSettings.StopIfGoingOnBatteries = $true
-        $backupPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
-
         if ($PSCmdlet.ShouldProcess($BackupTaskName, 'Register scheduled task')) {
             Register-WslScheduledTask -TaskName $BackupTaskName -Action $backupAction -Trigger $backupTrigger `
                 -Settings $backupSettings -Principal $backupPrincipal
@@ -609,7 +615,7 @@ function Set-WslAutomationScheduledTasks {
     }
 
     # --- Summary -------------------------------------------------------------
-    Write-Information -MessageData "Backup task '$BackupTaskName': $backupArguments (daily at $BackupTime, retrying every $BackupRetryIntervalMinutes min for up to 1 day)" -InformationAction Continue
+    Write-Information -MessageData "Backup task '$BackupTaskName' (background/S4U, live restic backup): $backupArguments (daily at $BackupTime, retrying every $BackupRetryIntervalMinutes min for up to 1 day; allowed on battery)" -InformationAction Continue
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
