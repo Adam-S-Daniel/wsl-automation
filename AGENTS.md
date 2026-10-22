@@ -424,7 +424,7 @@ full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;
 
 **Action pins.** Workflows name actions by release tag, locked to a commit in
 `.github/workflows/actions.lock`
-([ADR 0021](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0021-actions-pin-through-lockfiles.md)).
+([ADR 0023](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0023-actions-pin-through-lockfiles.md)).
 
 - The `shell` job runs the shared
   [`Adam-S-Daniel/verify-actions-lock`](https://github.com/Adam-S-Daniel/verify-actions-lock)
