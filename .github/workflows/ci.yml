@@ -52,7 +52,7 @@ jobs:
           done <"$changed"
           decide false "no salient path changed"
       - name: Verify action lockfile
-        uses: Adam-S-Daniel/verify-actions-lock@v1.0.0
+        uses: Adam-S-Daniel/verify-actions-lock@v1.1.0
       - name: ShellCheck
         if: steps.salient.outputs.run == 'true'
         run: shellcheck scripts/sync-codex-cloud-environments.sh tests/sync-codex-cloud-environments.test.sh scripts/publish-usage-census.sh tests/publish-usage-census.test.sh scripts/wsl-restic-backup.sh tests/wsl-restic-backup.test.sh
