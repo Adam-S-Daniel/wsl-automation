@@ -1,20 +1,8 @@
 name: CI
 on:
   pull_request:
-    paths:
-      - 'src/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - '.github/workflows/ci.yml'
-      - 'PSScriptAnalyzerSettings.psd1'
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - '.github/workflows/ci.yml'
-      - 'PSScriptAnalyzerSettings.psd1'
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,31 +10,128 @@ jobs:
   shell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide whether salient paths changed
+        id: salient
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          decide() {
+            echo "run=$1" >>"$GITHUB_OUTPUT"
+            echo "salient: run=$1 ($2)"
+            exit 0
+          }
+          if [[ "${EVENT_NAME:-}" != "pull_request" ]]; then
+            decide true "event is not pull_request"
+          fi
+          sha_re='^[0-9a-f]{40}$'
+          if ! [[ "${BASE_SHA:-}" =~ $sha_re && "${HEAD_SHA:-}" =~ $sha_re ]]; then
+            decide true "base or head SHA is missing or malformed"
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            decide true "base or head commit is not available locally"
+          fi
+          changed=$(mktemp)
+          trap 'rm -f "$changed"' EXIT
+          if ! git diff --no-renames --name-only -z "$BASE_SHA" "$HEAD_SHA" >"$changed"; then
+            decide true "git diff failed"
+          fi
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              src/* | scripts/* | tests/* | .github/workflows/ci.yml | .github/workflows/actions.lock | PSScriptAnalyzerSettings.psd1)
+                decide true "a salient path changed"
+                ;;
+            esac
+          done <"$changed"
+          decide false "no salient path changed"
+      - name: Verify action lockfile
+        uses: Adam-S-Daniel/verify-actions-lock@v1.0.0
       - name: ShellCheck
+        if: steps.salient.outputs.run == 'true'
         run: shellcheck scripts/sync-codex-cloud-environments.sh tests/sync-codex-cloud-environments.test.sh scripts/publish-usage-census.sh tests/publish-usage-census.test.sh scripts/wsl-restic-backup.sh tests/wsl-restic-backup.test.sh
       - name: Codex Cloud environment sync behavior test
+        if: steps.salient.outputs.run == 'true'
         run: bash tests/sync-codex-cloud-environments.test.sh
       - name: Usage census wrapper behavior test
+        if: steps.salient.outputs.run == 'true'
         run: bash tests/publish-usage-census.test.sh
       - name: restic backup script behavior test
+        if: steps.salient.outputs.run == 'true'
         run: bash tests/wsl-restic-backup.test.sh
+      - name: Nothing salient changed
+        if: steps.salient.outputs.run != 'true'
+        shell: bash
+        run: echo "No salient path changed in this pull request; skipping."
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide whether salient paths changed
+        id: salient
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          decide() {
+            echo "run=$1" >>"$GITHUB_OUTPUT"
+            echo "salient: run=$1 ($2)"
+            exit 0
+          }
+          if [[ "${EVENT_NAME:-}" != "pull_request" ]]; then
+            decide true "event is not pull_request"
+          fi
+          sha_re='^[0-9a-f]{40}$'
+          if ! [[ "${BASE_SHA:-}" =~ $sha_re && "${HEAD_SHA:-}" =~ $sha_re ]]; then
+            decide true "base or head SHA is missing or malformed"
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            decide true "base or head commit is not available locally"
+          fi
+          changed=$(mktemp)
+          trap 'rm -f "$changed"' EXIT
+          if ! git diff --no-renames --name-only -z "$BASE_SHA" "$HEAD_SHA" >"$changed"; then
+            decide true "git diff failed"
+          fi
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              src/* | scripts/* | tests/* | .github/workflows/ci.yml | .github/workflows/actions.lock | PSScriptAnalyzerSettings.psd1)
+                decide true "a salient path changed"
+                ;;
+            esac
+          done <"$changed"
+          decide false "no salient path changed"
       - name: Show tool versions
+        if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: |
           $PSVersionTable.PSVersion
           Get-Module -ListAvailable Pester, PSScriptAnalyzer | Select-Object Name, Version
       - name: PSScriptAnalyzer
+        if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: |
           $findings = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
           $findings | Format-Table -AutoSize | Out-String | Write-Output
           if ($findings) { throw "PSScriptAnalyzer found $($findings.Count) issue(s)" }
+      - name: Install powershell-yaml
+        if: steps.salient.outputs.run == 'true'
+        shell: pwsh
+        run: Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
       - name: Pester
+        if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: |
           $cfg = New-PesterConfiguration
@@ -54,11 +139,60 @@ jobs:
           $cfg.Run.Exit = $true
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
+      - name: Nothing salient changed
+        if: steps.salient.outputs.run != 'true'
+        shell: bash
+        run: echo "No salient path changed in this pull request; skipping."
   test-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide whether salient paths changed
+        id: salient
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          decide() {
+            echo "run=$1" >>"$GITHUB_OUTPUT"
+            echo "salient: run=$1 ($2)"
+            exit 0
+          }
+          if [[ "${EVENT_NAME:-}" != "pull_request" ]]; then
+            decide true "event is not pull_request"
+          fi
+          sha_re='^[0-9a-f]{40}$'
+          if ! [[ "${BASE_SHA:-}" =~ $sha_re && "${HEAD_SHA:-}" =~ $sha_re ]]; then
+            decide true "base or head SHA is missing or malformed"
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            decide true "base or head commit is not available locally"
+          fi
+          changed=$(mktemp)
+          trap 'rm -f "$changed"' EXIT
+          if ! git diff --no-renames --name-only -z "$BASE_SHA" "$HEAD_SHA" >"$changed"; then
+            decide true "git diff failed"
+          fi
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              src/* | scripts/* | tests/* | .github/workflows/ci.yml | .github/workflows/actions.lock | PSScriptAnalyzerSettings.psd1)
+                decide true "a salient path changed"
+                ;;
+            esac
+          done <"$changed"
+          decide false "no salient path changed"
+      - name: Install powershell-yaml
+        if: steps.salient.outputs.run == 'true'
+        shell: pwsh
+        run: Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
       - name: Pester (agent workspace trust, Linux)
+        if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: |
           $PSVersionTable.PSVersion
@@ -68,3 +202,7 @@ jobs:
           $cfg.Run.Exit = $true
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
+      - name: Nothing salient changed
+        if: steps.salient.outputs.run != 'true'
+        shell: bash
+        run: echo "No salient path changed in this pull request; skipping."
