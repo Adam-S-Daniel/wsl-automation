@@ -141,9 +141,35 @@ time is still the mechanism.
 `-StartWhenAvailable`.** `-StartWhenAvailable` used to fire a missed run the
 instant the machine came back — which is exactly the wrong moment twice over:
 it lands inside the WSL post-wake transition window (see below), and it gives
-`Invoke-WslBackup`'s own wake guard and activity gate (`Test-WslActivity`) no
-chance to defer first. An hourly retry still catches up a missed day within
-the same day, without racing the wake.
+the backup's own wake guard (`Invoke-WslResticBackup`, and the manual
+`Invoke-WslBackup`'s activity gate too) no chance to defer first. An hourly
+retry still catches up a missed day within the same day, without racing the
+wake; once a run succeeds, the rest of the day's retries skip silently.
+
+### The daily backup is a live restic backup, not `wsl --export`
+
+The `WSL Ubuntu Daily Backup` task runs `Invoke-WslResticBackup`: restic as
+root inside the running distro, into a repository on a local disk, then a
+one-way robocopy into the OneDrive-synced backup dir. `Invoke-WslBackup`
+(`wsl --export`) stays in the module as a manual-only command.
+
+- **Why.** `wsl --export` always stops the distro (next section), so every
+  nightly backup killed the running Claude Code sessions. That is not a flag
+  away: in the WSL source, `ExportDistribution` calls `_ConversionBegin`, which
+  calls `_TerminateInstanceInternal`. Don't look for an export mode that
+  leaves the distro running.
+- **`/mnt/*` is excluded on purpose.** `/mnt/wslg/distro` is a bind mount of
+  `/` on the same device, so `--one-file-system` does not skip it and the
+  backup would read the root filesystem twice (verified on the owner's machine
+  2026-10-20). Keep the line in `scripts/wsl-restic-excludes.txt`.
+- **It takes no `backup.lock`.** The lock exists so the keeper waits instead of
+  launching a session into a distro an export is about to stop. restic stops
+  nothing, so holding it would only delay the keeper.
+- **The OneDrive copy order is load-bearing.** Everything but `snapshots\`
+  first (`/E`, no deletes), then `snapshots\` (`/MIR`), and only on the weekly
+  prune run `index\` then `data\` (`/MIR`). OneDrive can upload at any instant;
+  in this order it never holds a snapshot whose packs have not arrived, and
+  never loses a pack a surviving snapshot still needs.
 
 ### `wsl --export` stops the running distro
 
@@ -291,8 +317,8 @@ hardest: one hung instance suppresses every subsequent interval for the whole
 execution-time limit, not just the next one.
 
 **Recognising it:** the run starts on time, the log stops a few seconds in, and
-Task Scheduler Id 329 terminates it at *exactly* `ExecutionTimeLimit` later (4h
-for the backup, 2h for the keeper, 5 min for ccstatusline).
+Task Scheduler Id 329 terminates it at *exactly* `ExecutionTimeLimit` later (2h
+for the backup and the keeper, 5 min for ccstatusline).
 `LastTaskResult=267014` (`0x41306`, `SCHED_S_TASK_TERMINATED`) is the signature
 — a stuck prompt, not a slow export. Note it is a *terminated* result, not an
 error one, so failure-only alerting will not see it.
@@ -339,9 +365,9 @@ Windows user account*. A task running as SYSTEM sees no distro at all, so every
 `wsl.exe` call against it is meaningless. It registers cleanly, runs on
 schedule, exits, and backs up nothing — no error to notice.
 
-The accepted cost of a user principal is that these tasks cannot run before
-someone has logged on. That is expected; `-StartWhenAvailable` covers it for the
-backup.
+The accepted cost of a user principal is that the interactive tasks cannot run
+before someone has logged on. That is expected. The S4U tasks, the backup among
+them, run either way, and the backup's hourly retry covers a missed run.
 
 ### `wsl --export --vhd` and throwaway distros
 
@@ -424,7 +450,7 @@ full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;
 
 **Action pins.** Workflows name actions by release tag, locked to a commit in
 `.github/workflows/actions.lock`
-([ADR 0023](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0023-actions-pin-through-lockfiles.md)).
+([ADR 0024](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0024-actions-pin-through-lockfiles.md)).
 
 - The `shell` job runs the shared
   [`Adam-S-Daniel/verify-actions-lock`](https://github.com/Adam-S-Daniel/verify-actions-lock)

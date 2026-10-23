@@ -14,6 +14,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
 
         $script:scriptsDir = Join-Path $TestDrive 'scripts'
         $script:backupDir = Join-Path $TestDrive 'backups'
+        $script:resticRepoDir = 'D:\Backups\wsl-restic'
         New-Item -ItemType Directory -Path $script:scriptsDir -Force | Out-Null
         New-Item -ItemType Directory -Path $script:backupDir -Force | Out-Null
 
@@ -54,20 +55,23 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         Mock -ModuleName WslAutomation New-ScheduledTaskSettingsSet {
-            # DisallowStartIfOnBatteries/StopIfGoingOnBatteries start $false here (unlike their
-            # real $true default) so the backup task's explicit post-construction assignment
-            # (there is no constructor parameter for either - see Set-WslAutomationScheduledTasks)
-            # has a real property to write to and is actually observable by the tests below,
-            # rather than being indistinguishable from a default that was never touched.
+            # Mirrors the real contract for the battery flags: DisallowStartIfOnBatteries and
+            # StopIfGoingOnBatteries default to $true and only -AllowStartIfOnBatteries /
+            # -DontStopIfGoingOnBatteries turn them off, so a task's battery behavior is
+            # observable on the Settings object it is registered with.
             [pscustomobject]@{
                 FakeSettings               = $true
-                DisallowStartIfOnBatteries = $false
-                StopIfGoingOnBatteries     = $false
+                DisallowStartIfOnBatteries = -not $AllowStartIfOnBatteries
+                StopIfGoingOnBatteries     = -not $DontStopIfGoingOnBatteries
+                StartWhenAvailable         = [bool]$StartWhenAvailable
+                ExecutionTimeLimit         = $ExecutionTimeLimit
+                MultipleInstances          = $MultipleInstances
+                WakeToRun                  = [bool]$WakeToRun
             }
         }
 
         Mock -ModuleName WslAutomation New-ScheduledTaskPrincipal {
-            [pscustomobject]@{ FakePrincipal = $true; UserId = $UserId }
+            [pscustomobject]@{ FakePrincipal = $true; UserId = $UserId; LogonType = $LogonType }
         }
 
         # Register-/Set-ScheduledTask are real cmdletization (CDXML) functions on Windows whose
@@ -107,19 +111,36 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Mock -ModuleName WslAutomation Get-ScheduledTask { $null }
         }
 
-        It 'creates the backup task with an action whose arguments contain -NoPause and a quoted BackupDir' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+        It 'creates the backup task with a wsl-restic-backup.ps1 action passing quoted BackupDir and RepoDir and -NoPause' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
+
+            $backupAction = @($script:capturedActions | Where-Object { $_.Argument -match 'wsl-restic-backup\.ps1' })
+
+            $backupAction.Count | Should -Be 1
+            $backupAction[0].Execute | Should -Be 'C:\fake\pwsh.exe'
+            $expectedScript = Join-Path $script:scriptsDir 'wsl-restic-backup.ps1'
+            $backupAction[0].Argument | Should -Be ("-NoProfile -File `"$expectedScript`" -BackupDir `"$($script:backupDir)`" " +
+                "-RepoDir `"$($script:resticRepoDir)`" -DistroName Debian -NoPause")
+        }
+
+        It 'no longer schedules the wsl --export backup or passes -Format' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            $backupAction = $script:capturedActions | Where-Object { $_.Argument -match 'wsl-ubuntu-backup\.ps1' }
+            $script:capturedActions | Where-Object { $_.Argument -match 'wsl-ubuntu-backup\.ps1' } | Should -BeNullOrEmpty
+            $script:capturedActions | Where-Object { $_.Argument -match '-Format' } | Should -BeNullOrEmpty
+        }
 
-            $backupAction | Should -Not -BeNullOrEmpty
-            $backupAction.Argument | Should -Match '-NoPause'
-            $backupAction.Argument | Should -Match ([regex]::Escape('"' + $script:backupDir + '"'))
+        It 'requires -ResticRepoDir' {
+            (Get-Command Set-WslAutomationScheduledTasks).Parameters['ResticRepoDir'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] } |
+                ForEach-Object { $_.Mandatory } | Should -Contain $true
+            (Get-Command Set-WslAutomationScheduledTasks).Parameters.ContainsKey('Format') | Should -BeFalse
         }
 
         It 'creates the keeper task with an action that references ensure-claude-session.ps1 and threads DistroName' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
 
             $keeperAction = $script:capturedActions | Where-Object { $_.Argument -match 'ensure-claude-session\.ps1' }
@@ -129,7 +150,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'creates exactly one daily trigger for the backup task and no logon trigger' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter {
@@ -141,7 +162,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the backup task via Register-WslScheduledTask with the backup action and daily trigger' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             # ParameterFilter checks the actual Action.Argument and Trigger passed to the real
@@ -151,14 +172,14 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             # this even though it might still satisfy the factory-capture-only assertions above.
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'WSL Ubuntu Daily Backup' -and
-                $Action.Argument -match 'wsl-ubuntu-backup\.ps1' -and
+                $Action.Argument -match 'wsl-restic-backup\.ps1' -and
                 $Action.Argument -match '-NoPause' -and
                 $Trigger.IsDaily -eq $true
             }
         }
 
         It 'registers the keeper task via Register-WslScheduledTask with the keeper action and a once/repeating trigger' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -168,19 +189,19 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all four background tasks as S4U in session 0, where no desktop window can flash' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+        It 'runs all five background tasks as S4U in session 0, where no desktop window can flash' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The keeper, ccstatusline sync, Codex Cloud sync, and usage census are windowless
-            # background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 4 -Exactly -ParameterFilter {
+            # The backup, keeper, ccstatusline sync, Codex Cloud sync, and usage census are
+            # windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 5 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
 
         It 'no longer relies on -WindowStyle Hidden in the background task actions (they need no window trick)' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             $keeperAction = $script:capturedActions | Where-Object { $_.Argument -match 'ensure-claude-session\.ps1' }
@@ -190,7 +211,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running a Remote Control session, and no trigger of its own' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -DistroName 'Ubuntu' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -206,7 +227,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the interactive Codex remote control launcher task with a wt.exe action running codex remote-control start, and no trigger of its own' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -DistroName 'Debian' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -227,7 +248,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'honors -CodexLauncherTaskName' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -CodexLauncherTaskName 'My Codex Tab' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -235,18 +256,22 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs both launchers and the backup task interactively (the keeper and ccstatusline tasks are the S4U ones)' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+        It 'runs only the two launchers interactively; the backup task is S4U for the current user, never SYSTEM' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # Backup + both launchers are Interactive; keeper + ccstatusline are S4U/background.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 3 -Exactly -ParameterFilter {
+            # Both launchers must show a terminal; the restic backup runs in the background.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
                 $LogonType -eq 'Interactive'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Principal.LogonType -eq 'S4U' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
 
         It 'configures the keeper task repetition interval from KeeperIntervalMinutes' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -KeeperIntervalMinutes 5
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -255,7 +280,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'creates the ccstatusline sync task with an action that references sync-ccstatusline-config.ps1 and threads DistroName' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
 
             $ccstatuslineAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-ccstatusline-config\.ps1' }
@@ -265,7 +290,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the ccstatusline task via Register-WslScheduledTask with the sync action and a once/repeating trigger at the configured interval' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -CcstatuslineIntervalMinutes 5
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -277,7 +302,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the Codex Cloud sync task with only midnight and noon triggers and no catch-up setting' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -295,7 +320,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the usage census task as a direct wsl.exe action with one daily trigger, S4U, and no catch-up setting' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -319,19 +344,19 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'builds the usage census principal for the current user, never SYSTEM, as S4U' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 4 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 5 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
 
         It 'honors -UsageCensusTime, -UsageCensusTaskName, -WslExePath and -DistroName for the usage census task' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -UsageCensusTime '03:15' `
                 -UsageCensusTaskName 'Custom Census' -WslExePath 'C:\fake\wsl.exe' -Confirm:$false
 
@@ -347,7 +372,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'sanitizes a trailing backslash in ScriptsDir so the usage census --cd argument stays well-formed' {
-            Set-WslAutomationScheduledTasks -ScriptsDir ($script:scriptsDir + '\') -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir ($script:scriptsDir + '\') -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             $censusAction = $script:capturedActions | Where-Object { $_.Argument -match 'publish-usage-census\.sh' }
@@ -358,7 +383,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the backup task without -WakeToRun by default (no scheduled wake on Modern Standby)' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             # New-ScheduledTaskSettingsSet is called for both tasks; neither may request WakeToRun
@@ -369,7 +394,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the backup task with -WakeToRun when -WakeBackupToRun is set' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -WakeBackupToRun
 
             Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
@@ -378,7 +403,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'registers the backup task with StartWhenAvailable = $false (hourly retry replaces the catch-up run)' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             # Only the backup task's Settings explicitly pins StartWhenAvailable; the other
@@ -389,23 +414,31 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'registers the backup task AC-only: DisallowStartIfOnBatteries and StopIfGoingOnBatteries both $true' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+        It 'registers the backup task to run on battery: a daily restic run takes a minute or two' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # Owner decision: no 27 GB export on battery, and no export cut off mid-way by
-            # unplugging. There is no New-ScheduledTaskSettingsSet constructor parameter for
-            # either (only -AllowStartIfOnBatteries/-DontStopIfGoingOnBatteries to request the
-            # opposite), so Set-WslAutomationScheduledTasks sets both explicitly on the resulting
-            # Settings object before registering the backup task with it.
+            # The old AC-only rule existed for a 27-65 GB export; it would now only keep a laptop
+            # that is rarely plugged in from backing up.
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'WSL Ubuntu Daily Backup' -and
-                $Settings.DisallowStartIfOnBatteries -eq $true -and $Settings.StopIfGoingOnBatteries -eq $true
+                $Settings.DisallowStartIfOnBatteries -eq $false -and $Settings.StopIfGoingOnBatteries -eq $false
+            }
+        }
+
+        It 'registers the backup task with a 2 hour limit and one instance at a time' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Settings.ExecutionTimeLimit.TotalHours -eq 2 -and $Settings.MultipleInstances -eq 'IgnoreNew' -and
+                $Settings.StartWhenAvailable -eq $false -and $Settings.WakeToRun -eq $false
             }
         }
 
         It 'builds the backup trigger with Repetition.Interval PT1H and Duration P1D by default' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -415,7 +448,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'builds the backup trigger repetition interval from -BackupRetryIntervalMinutes' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -BackupRetryIntervalMinutes 30
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -426,10 +459,10 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         It 'sanitizes a trailing backslash in BackupDir so the composed action arguments stay well-formed' {
             $backupDirWithTrailingSlash = $script:backupDir + '\'
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $backupDirWithTrailingSlash `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $backupDirWithTrailingSlash -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            $backupAction = $script:capturedActions | Where-Object { $_.Argument -match 'wsl-ubuntu-backup\.ps1' }
+            $backupAction = $script:capturedActions | Where-Object { $_.Argument -match 'wsl-restic-backup\.ps1' }
 
             # A raw trailing backslash before the closing quote (...backups\") would escape the
             # quote under native command-line parsing and swallow every argument after it,
@@ -438,29 +471,34 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $backupAction.Argument | Should -Not -Match '\\"'
             $backupAction.Argument | Should -Match '-NoPause'
         }
+
+        It 'sanitizes a trailing backslash in ResticRepoDir the same way' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                -ResticRepoDir ($script:resticRepoDir + '\') -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $backupAction = $script:capturedActions | Where-Object { $_.Argument -match 'wsl-restic-backup\.ps1' }
+
+            $backupAction.Argument | Should -Match ([regex]::Escape('-RepoDir "' + $script:resticRepoDir + '" -DistroName'))
+            $backupAction.Argument | Should -Not -Match '\\"'
+            $backupAction.Argument | Should -Match '-NoPause$'
+        }
     }
 
     Context 'when the backup task already exists' {
 
         BeforeEach {
+            # Shaped like the interactive, AC-only 'wsl --export' task this change replaces, so
+            # the tests below can tell carried-through settings from rebuilt ones.
             $script:existingBackupTask = [pscustomobject]@{
                 TaskName  = 'WSL Ubuntu Daily Backup'
-                # StartWhenAvailable = $true mirrors what a task registered before this change
-                # actually has on disk (a real Get-ScheduledTask result always carries this
-                # property) - the fixture needs it present so the implementation's in-place
-                # ".StartWhenAvailable = $false" mutation has a real property to write to,
-                # exactly as it would against a real CimInstance from Get-ScheduledTask.
-                # DisallowStartIfOnBatteries/StopIfGoingOnBatteries = $false mirrors a task
-                # registered before those were made explicit (or one hand-edited since) - the
-                # fixture needs both present so the implementation's in-place mutation of each
-                # has a real property to write to, same as StartWhenAvailable above.
                 Settings  = [pscustomobject]@{
                     ExistingSettings           = $true
                     StartWhenAvailable         = $true
-                    DisallowStartIfOnBatteries = $false
-                    StopIfGoingOnBatteries     = $false
+                    DisallowStartIfOnBatteries = $true
+                    StopIfGoingOnBatteries     = $true
+                    WakeToRun                  = $true
                 }
-                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true; LogonType = 'Interactive' }
             }
 
             Mock -ModuleName WslAutomation Get-ScheduledTask {
@@ -471,17 +509,51 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'updates it via Set-WslScheduledTask, preserving the existing Settings and Principal' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+        It 'updates it in place with the restic action and freshly rebuilt Settings and Principal' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
-                $Settings -eq $script:existingBackupTask.Settings -and $Principal -eq $script:existingBackupTask.Principal
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Action.Argument -match 'wsl-restic-backup\.ps1' -and
+                $Settings.FakeSettings -eq $true -and -not $Settings.PSObject.Properties['ExistingSettings'] -and
+                $Principal.FakePrincipal -eq $true -and -not $Principal.PSObject.Properties['ExistingPrincipal']
+            }
+        }
+
+        It 'switches the principal from Interactive to S4U for the current user' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Principal.LogonType -eq 'S4U' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            }
+        }
+
+        It 'allows battery, turns StartWhenAvailable off, and drops a carried-over WakeToRun without -WakeBackupToRun' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
+                $Settings.DisallowStartIfOnBatteries -eq $false -and $Settings.StopIfGoingOnBatteries -eq $false -and
+                $Settings.StartWhenAvailable -eq $false -and $Settings.WakeToRun -eq $false -and
+                $Settings.ExecutionTimeLimit.TotalHours -eq 2 -and $Settings.MultipleInstances -eq 'IgnoreNew'
+            }
+        }
+
+        It 'keeps WakeToRun on an existing task when -WakeBackupToRun is passed' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -WakeBackupToRun
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and $Settings.WakeToRun -eq $true
             }
         }
 
         It 'does not create a second backup task via Register-WslScheduledTask' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
@@ -490,7 +562,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'still sets exactly one daily trigger, dropping any prior logon trigger' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -500,38 +572,12 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'sets Repetition.Interval PT1H and Duration P1D on the trigger by default' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'WSL Ubuntu Daily Backup' -and
                 $Trigger[0].Repetition.Interval -eq 'PT1H' -and $Trigger[0].Repetition.Duration -eq 'P1D'
-            }
-        }
-
-        It 'forces StartWhenAvailable to $false on the carried-through Settings object while keeping the rest' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
-                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
-
-            $script:existingBackupTask.Settings.StartWhenAvailable | Should -BeFalse
-            $script:existingBackupTask.Settings.ExistingSettings | Should -BeTrue
-            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
-                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
-                $Settings.StartWhenAvailable -eq $false -and $Settings.ExistingSettings -eq $true
-            }
-        }
-
-        It 'forces DisallowStartIfOnBatteries and StopIfGoingOnBatteries to $true on the carried-through Settings object (AC-only, owner decision)' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
-                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
-
-            $script:existingBackupTask.Settings.DisallowStartIfOnBatteries | Should -BeTrue
-            $script:existingBackupTask.Settings.StopIfGoingOnBatteries | Should -BeTrue
-            $script:existingBackupTask.Settings.ExistingSettings | Should -BeTrue
-            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
-                $TaskName -eq 'WSL Ubuntu Daily Backup' -and
-                $Settings.DisallowStartIfOnBatteries -eq $true -and $Settings.StopIfGoingOnBatteries -eq $true -and
-                $Settings.ExistingSettings -eq $true
             }
         }
     }
@@ -554,7 +600,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'updates it via Set-WslScheduledTask' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -563,7 +609,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'does not create a second ccstatusline task via Register-WslScheduledTask' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
@@ -590,7 +636,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'updates it in place with a rebuilt action, settings and principal, and no trigger' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -WtPath 'C:\fake\wt.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -604,7 +650,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'does not create a second Codex remote control launcher task' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
@@ -631,7 +677,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'rebuilds settings and principal while replacing the action with the two daily triggers' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -642,7 +688,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'does not create a second Codex Cloud sync task' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
@@ -669,7 +715,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'rebuilds settings and principal while replacing the action and trigger in place' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -680,7 +726,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'does not create a second usage census task' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
@@ -700,7 +746,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Set-Content -Path $legacyPath -Value '# legacy script' -Encoding utf8
             $todaySuffix = (Get-Date).ToString('yyyyMMdd')
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($legacyPath)
 
             Should -Invoke -ModuleName WslAutomation Rename-Item -Times 1 -Exactly -ParameterFilter {
@@ -713,7 +759,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $missingPath = Join-Path $TestDrive 'does-not-exist.ps1'
 
             {
-                Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+                Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                     -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($missingPath)
             } | Should -Not -Throw
 
@@ -727,7 +773,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $existingTargetPath = "$legacyPath.superseded-$todaySuffix"
             Set-Content -Path $existingTargetPath -Value '# already archived earlier today' -Encoding utf8
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($legacyPath) -WarningVariable warnings
 
             Should -Invoke -ModuleName WslAutomation Rename-Item -Times 0 -Exactly -ParameterFilter {
@@ -748,7 +794,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $todaySuffix = (Get-Date).ToString('yyyyMMdd')
             $flattenedElement = "$legacyPathOne,$legacyPathTwo"
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($flattenedElement)
 
             Should -Invoke -ModuleName WslAutomation Rename-Item -Times 1 -Exactly -ParameterFilter {
@@ -764,7 +810,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         It 'warns when a legacy path does not exist and no .superseded-* sibling is present' {
             $missingPath = Join-Path $TestDrive 'no-sibling-yet.ps1'
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($missingPath) -WarningVariable warnings
 
             Should -Invoke -ModuleName WslAutomation Rename-Item -Times 0 -Exactly
@@ -779,7 +825,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $priorSupersededPath = "$missingPath.superseded-$todaySuffix"
             Set-Content -Path $priorSupersededPath -Value '# archived on a prior run' -Encoding utf8
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -LegacyScriptsToArchive @($missingPath) -WarningVariable warnings
 
             Should -Invoke -ModuleName WslAutomation Rename-Item -Times 0 -Exactly
@@ -794,7 +840,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'enables the log and reports Enabled when it is currently disabled' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -InformationVariable infoMessages | Out-Null
 
             $script:taskHistorySaveChangesCallCount | Should -Be 1
@@ -808,7 +854,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 } -PassThru
             }
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -InformationVariable infoMessages | Out-Null
 
             $script:taskHistorySaveChangesCallCount | Should -Be 0
@@ -816,7 +862,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
 
         It 'does not call SaveChanges under -WhatIf' {
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -WhatIf | Out-Null
 
             $script:taskHistorySaveChangesCallCount | Should -Be 0
@@ -825,7 +871,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         It 'never invokes the task-history helper when -SkipTaskHistory is passed' {
             Mock -ModuleName WslAutomation Enable-TaskSchedulerHistory { 'Enabled' }
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -SkipTaskHistory
 
             Should -Invoke -ModuleName WslAutomation Enable-TaskSchedulerHistory -Times 0 -Exactly
@@ -838,7 +884,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 } -PassThru
             }
 
-            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir `
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
 
             $warnings | Where-Object { $_ -match 'Failed to enable Task Scheduler history' } | Should -Not -BeNullOrEmpty
@@ -901,7 +947,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionScripts.Count | Should -Be 5
         @($script:actionScripts | Sort-Object) | Should -Be @(
             'ensure-claude-session.ps1', 'publish-usage-census.sh', 'sync-ccstatusline-config.ps1',
-            'sync-codex-cloud-environments.ps1', 'wsl-ubuntu-backup.ps1'
+            'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }
 
@@ -909,7 +955,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         @{ Entry = 'ensure-claude-session.ps1'; Work = 'Invoke-ClaudeSessionKeeper' },
         @{ Entry = 'sync-ccstatusline-config.ps1'; Work = 'Update-CcstatuslineConfig' },
         @{ Entry = 'sync-codex-cloud-environments.ps1'; Work = 'Invoke-CodexCloudEnvironmentSync' },
-        @{ Entry = 'wsl-ubuntu-backup.ps1'; Work = 'Invoke-WslBackup' }
+        @{ Entry = 'wsl-restic-backup.ps1'; Work = 'Invoke-WslResticBackup' }
     ) {
         $script:actionScripts | Should -Contain $Entry
         $errors = $null

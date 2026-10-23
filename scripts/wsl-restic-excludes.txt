@@ -1,0 +1,10 @@
+# /mnt/* is excluded explicitly: /mnt/wslg/distro is a bind mount of / on the same device, so --one-file-system does not skip it (verified on the owner's machine 2026-10-20).
+/mnt/*
+/home/*/.cache
+/home/*/.npm
+/home/**/node_modules
+/var/cache/apt
+/var/lib/snapd/snaps
+/tmp
+/var/log/journal
+/var/lib/docker

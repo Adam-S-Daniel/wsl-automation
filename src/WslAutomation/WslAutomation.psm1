@@ -20,6 +20,7 @@ Export-ModuleMember -Function @(
     'Remove-WslBackupLock',
     'Get-WslDistroState',
     'Invoke-WslBackup',
+    'Invoke-WslResticBackup',
     'Test-WslActivity',
     'Test-ClaudeSession',
     'Test-CodexRemoteControl',
