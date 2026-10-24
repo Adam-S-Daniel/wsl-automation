@@ -15,6 +15,8 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
 - A daily usage census publish (see "Usage census task" below).
+- An every-minute feed of the Claude Code cloud sessions waiting on you (see
+  "Waiting feed task" below).
 
 ## What this is
 
@@ -185,6 +187,7 @@ Codex Cloud sync, and usage census) first call `Update-WslAutomationRepo` for
 that same checkout. The two on-demand launcher actions invoke their CLIs
 directly and have no repo script to update. Existing task actions are unchanged;
 **no re-registration is needed** after deploying this change to the checkout.
+The every-minute waiting feed task is the exception: it runs its script as checked out, with no updater.
 
 Each run fetches `origin`, switches to `main` if necessary and the working tree
 is clean, then runs `git merge --ff-only origin/main`. The old 12-hour update
@@ -619,6 +622,86 @@ up the new PATH.
   - In WSL, `tail ~/.cache/usage-census.log`.
   - `git ls-remote https://github.com/Adam-S-Daniel/skills-evals persistent/eval-results`
     shows the branch head moving after a publish.
+
+### Waiting feed task (default name: `Claude Waiting Feed Publish`)
+
+- Runs `scripts/publish-waiting-feed.sh` inside the distro every minute,
+  indefinitely. It lists your Claude Code cloud sessions from
+  `GET https://api.anthropic.com/v1/code/sessions` (up to three pages of 100,
+  plus one call for the `hearth-thread`, `cowork-local` and `cowork-remote`
+  tags), keeps the ones waiting on you, and writes `feed.json` into a clone of
+  the private [waiting-feed](https://github.com/Adam-S-Daniel/waiting-feed)
+  repository, then commits and pushes it to `main`.
+- The action is `wsl.exe` directly, as for the census:
+
+  ```
+  C:\Windows\System32\wsl.exe --distribution Ubuntu --cd "<scripts dir>" --exec /bin/bash ./publish-waiting-feed.sh
+  ```
+
+- Runs as a background S4U task for the current Windows user (session 0).
+  Allowed on battery, 5 minute execution limit, ignores a second overlapping
+  instance, no `-StartWhenAvailable` (a missed minute is just skipped). Unlike
+  the census wrapper it does not run the Windows checkout updater: a `pwsh.exe`
+  update with a 300 second timeout is too heavy for a one-minute cadence, so it
+  runs the checked-out script as it is.
+- **It never refreshes the login.** The token comes from
+  `.claudeAiOauth.accessToken` in `~/.claude/.credentials.json` (the
+  organization from `~/.claude.json`) and is passed to curl through a private
+  headers file, never on a command line. When it has expired, the feed says so
+  until Claude Code itself renews it.
+- **What is kept.** Sessions whose `status_bucket` is `blocked` (bucket
+  `wait`) or `review_ready` (bucket `review`); archived sessions and anything
+  tagged `hearth-overview` are dropped; items are deduplicated by id and sorted
+  newest first.
+- **`feed.json`**:
+
+  ```json
+  {
+    "generated_at": "2026-10-24T15:04:05Z",
+    "ok": true,
+    "error": null,
+    "items": [
+      {
+        "id": "cse_...",
+        "link": "https://claude.ai/code/session_...",
+        "title": "...",
+        "bucket": "wait",
+        "kind": "Claude Code",
+        "updated_at": "2026-10-24T15:00:00Z",
+        "ask": "What the session is waiting for, or null",
+        "unread": true
+      }
+    ]
+  }
+  ```
+
+  `kind` is `Project thread` (tag `hearth-thread`, or origin `claude-in-hearth`),
+  `Cowork` (tags `cowork-local` or `cowork-remote`), or from the origin
+  `Claude Code`, `Desktop`, `iPhone`, `Android`, `Web`, else `Session`. `ask`
+  is the session's `needs_action`, else its `status_detail`, capped at 400
+  characters. The API exposes no project or thread ids, so `link` is always the
+  plain session page.
+- **Failures** keep the previous items and set `ok` to `false` with an `error`
+  code, and the script exits nonzero: `no_credentials` (credentials file
+  missing or unreadable), `login_expired` (token past `expiresAt`, or any HTTP
+  401), `http_<code>` (any other HTTP status), `network` (curl failed),
+  `bad_response` (the body was not the expected JSON).
+- **Publishing.** The clone is `~/.cache/waiting-feed` (`WAITING_FEED_DIR`),
+  cloned from `WAITING_FEED_URL` when missing. Nothing is committed while
+  `ok`, `error` and `items` equal the committed ones and the last commit is
+  under 15 minutes old; after that an unchanged feed is committed anyway as a
+  heartbeat so a reader can tell the publisher is alive. Commits are plain (never forced); a
+  failed push is logged and exits nonzero, and the next run tries again.
+- Output is one aggregate line per run, for example
+  `waiting feed: ok=true wait=2 review=5 published=yes`, never titles, ids or
+  tokens. The same line with a UTC time and exit code is appended to
+  `~/.cache/waiting-feed.log` (`WAITING_FEED_LOG`) only when a run published or
+  failed.
+- Dry run (fetch and report, but no write, commit or push) from inside the
+  distro: `bash scripts/publish-waiting-feed.sh --dry-run`.
+- Run it now: `Start-ScheduledTask -TaskName 'Claude Waiting Feed Publish'`;
+  check `(Get-ScheduledTaskInfo -TaskName 'Claude Waiting Feed Publish').LastTaskResult`
+  is `0` and `tail ~/.cache/waiting-feed.log` in WSL.
 
 ### Legacy scripts
 

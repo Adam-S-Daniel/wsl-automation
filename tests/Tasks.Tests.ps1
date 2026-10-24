@@ -189,13 +189,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all five background tasks as S4U in session 0, where no desktop window can flash' {
+        It 'runs all six background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The backup, keeper, ccstatusline sync, Codex Cloud sync, and usage census are
-            # windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 5 -Exactly -ParameterFilter {
+            # The backup, keeper, ccstatusline sync, Codex Cloud sync, usage census, and waiting feed
+            # publish are windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 6 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -350,7 +350,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 5 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 6 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -380,6 +380,63 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             # A raw trailing backslash before the closing quote would escape it and swallow --exec.
             $censusAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
             $censusAction.Argument | Should -Not -Match '\\"'
+        }
+
+        It 'registers the waiting feed task as a direct wsl.exe action repeating every minute indefinitely, S4U, IgnoreNew' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Waiting Feed Publish' -and
+                $Action.Execute -like '*wsl.exe' -and
+                @($Trigger).Count -eq 1 -and $Trigger.IsOnce -eq $true -and
+                $Trigger.Repetition.Interval -eq 'PT1M' -and $null -eq $Trigger.Repetition.Duration -and
+                $Principal.FakePrincipal -and $Principal.LogonType -eq 'S4U' -and
+                $Settings.MultipleInstances -eq 'IgnoreNew' -and -not $Settings.StartWhenAvailable
+            }
+
+            $feedAction = @($script:capturedActions | Where-Object { $_.Argument -match 'publish-waiting-feed\.sh' })
+            $feedAction.Count | Should -Be 1
+            $feedAction[0].Argument | Should -Match '--distribution Ubuntu'
+            $feedAction[0].Argument.Contains('--cd "' + $script:scriptsDir + '"') | Should -BeTrue
+            $feedAction[0].Argument | Should -Match '--exec /bin/bash \./publish-waiting-feed\.sh$'
+            $feedAction[0].Argument | Should -Not -Match 'pwsh'
+        }
+
+        It 'builds the waiting feed principal for the current user, never SYSTEM, as S4U' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Waiting Feed Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            }
+        }
+
+        It 'honors -WaitingFeedTaskName, -WslExePath and -DistroName for the waiting feed task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -WaitingFeedTaskName 'Custom Feed' `
+                -WslExePath 'C:\fake\wsl.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Feed' -and
+                $Action.Execute -eq 'C:\fake\wsl.exe' -and
+                $Action.Argument -match '--distribution Debian' -and
+                $Action.Argument -match 'publish-waiting-feed\.sh'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Waiting Feed Publish'
+            }
+        }
+
+        It 'sanitizes a trailing backslash in ScriptsDir so the waiting feed --cd argument stays well-formed' {
+            Set-WslAutomationScheduledTasks -ScriptsDir ($script:scriptsDir + '\') -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $feedAction = $script:capturedActions | Where-Object { $_.Argument -match 'publish-waiting-feed\.sh' }
+
+            # A raw trailing backslash before the closing quote would escape it and swallow --exec.
+            $feedAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
+            $feedAction.Argument | Should -Not -Match '\\"'
         }
 
         It 'registers the backup task without -WakeToRun by default (no scheduled wake on Modern Standby)' {
@@ -735,6 +792,32 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the waiting feed task already exists' {
+
+        BeforeEach {
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Claude Waiting Feed Publish') {
+                    return [pscustomobject]@{ TaskName = 'Claude Waiting Feed Publish' }
+                }
+                return $null
+            }
+        }
+
+        It 'updates the task in place and does not create a second one' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Waiting Feed Publish' -and
+                $Action.Argument -match 'publish-waiting-feed\.sh' -and
+                $Trigger.Repetition.Interval -eq 'PT1M' -and $Settings.FakeSettings -and $Principal.FakePrincipal
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Waiting Feed Publish'
+            }
+        }
+    }
+
     Context 'legacy script archiving' {
 
         BeforeEach {
@@ -919,6 +1002,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
             }
             foreach ($expanded in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) {
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-usage-census.sh')) { 'publish-usage-census.sh' }
+                if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-waiting-feed.sh')) { 'publish-waiting-feed.sh' }
             }
             foreach ($variable in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
                 $name = $variable.VariablePath.UserPath
@@ -942,12 +1026,12 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all five script actions among seven registered task actions' {
-        $script:actionCount | Should -Be 7
-        $script:actionScripts.Count | Should -Be 5
+    It 'covers all six script actions among eight registered task actions' {
+        $script:actionCount | Should -Be 8
+        $script:actionScripts.Count | Should -Be 6
         @($script:actionScripts | Sort-Object) | Should -Be @(
-            'ensure-claude-session.ps1', 'publish-usage-census.sh', 'sync-ccstatusline-config.ps1',
-            'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
+            'ensure-claude-session.ps1', 'publish-usage-census.sh', 'publish-waiting-feed.sh',
+            'sync-ccstatusline-config.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }
 

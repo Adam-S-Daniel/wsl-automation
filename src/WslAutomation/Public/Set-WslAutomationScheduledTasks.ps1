@@ -5,10 +5,10 @@ function Set-WslAutomationScheduledTasks {
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
         session keeper and its two launchers, ccstatusline config sync, Codex Cloud environment
-        sync, and the daily usage census publish.
+        sync, the daily usage census publish, and the every-minute waiting feed publish.
 
     .DESCRIPTION
-        Creates seven Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates eight Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
         running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
@@ -18,14 +18,16 @@ function Set-WslAutomationScheduledTasks {
         on its own short repeating interval; and a Codex Cloud environment sync task that runs
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
-        distro once a day, calling wsl.exe directly so no pwsh is involved.
+        distro once a day, calling wsl.exe directly so no pwsh is involved; and a waiting feed
+        publish task that runs scripts/publish-waiting-feed.sh inside the distro every minute, the
+        same way.
 
         The backup, keeper and ccstatusline tasks run as background S4U tasks (session 0), so
         they never flash a console window on the desktop; both launchers are interactive (they
         must show a terminal) and on-demand (no trigger). The three pwsh-based S4U tasks require
         an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath and
-        scripts/grant-keeper-batch-logon.ps1. The usage census task is S4U too, but its action
-        is wsl.exe itself, so it needs no pwsh at all.
+        scripts/grant-keeper-batch-logon.ps1. The usage census and waiting feed tasks are S4U too, but
+        their action is wsl.exe itself, so they need no pwsh at all.
 
         Every task's Settings and Principal are always (re)built fresh from this function's
         parameters, whether the task already exists or not, so their battery/idle behavior stays
@@ -33,7 +35,7 @@ function Set-WslAutomationScheduledTasks {
         That now includes the backup task, which used to keep an existing task's Settings and
         Principal: re-running this function is what switches an existing backup task from the
         interactive 'wsl --export' backup to the background restic one in place. Re-running
-        this function is idempotent for all seven tasks.
+        this function is idempotent for all eight tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -52,7 +54,7 @@ function Set-WslAutomationScheduledTasks {
         Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
         wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
         sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and
-        publish-usage-census.sh.
+        publish-usage-census.sh and publish-waiting-feed.sh.
 
     .PARAMETER BackupDir
         The OneDrive-synced directory the backup task copies the restic repository into (its
@@ -133,8 +135,13 @@ function Set-WslAutomationScheduledTasks {
         the laptop is usually awake at midday, and :37 is well clear of the backup's :00 hourly
         retries.
 
+    .PARAMETER WaitingFeedTaskName
+        Name of the scheduled task that publishes the waiting feed (the Claude Code cloud
+        sessions waiting on the owner) from WSL every minute. Defaults to
+        'Claude Waiting Feed Publish'.
+
     .PARAMETER WslExePath
-        Path to wsl.exe used as the usage census task's action. Defaults to
+        Path to wsl.exe used as the usage census and waiting feed tasks' action. Defaults to
         %SystemRoot%\System32\wsl.exe.
 
     .PARAMETER PwshPath
@@ -167,9 +174,9 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
-        Registers (or updates) all seven scheduled tasks using default names, backup time, and
+        Registers (or updates) all eight scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
-        daily usage census publish.
+        daily usage census publish, and the every-minute waiting feed publish.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
@@ -218,6 +225,8 @@ function Set-WslAutomationScheduledTasks {
         [string]$UsageCensusTaskName = 'Usage Census Publish',
 
         [string]$UsageCensusTime = '12:37',
+
+        [string]$WaitingFeedTaskName = 'Claude Waiting Feed Publish',
 
         [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
 
@@ -529,6 +538,35 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Waiting feed publish: every minute, wsl.exe as the action ----------
+    # Same shape as the usage census (wsl.exe directly, S4U, session 0), but repeating every
+    # minute with the indefinite-repetition construction the keeper trigger documents above
+    # (-Once + creation-time -RepetitionInterval, no -RepetitionDuration). The script is cheap
+    # when nothing changed, so a 5 minute limit is generous; IgnoreNew keeps a slow run (a hung
+    # push) from stacking up behind itself. No StartWhenAvailable: the feed is a live view, so a
+    # missed minute is just skipped.
+    $waitingFeedArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-waiting-feed.sh"
+    $waitingFeedAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $waitingFeedArguments
+    $waitingFeedTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $waitingFeedSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+    $waitingFeedPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingWaitingFeedTask = Get-ScheduledTask -TaskName $WaitingFeedTaskName -ErrorAction SilentlyContinue
+    if ($existingWaitingFeedTask) {
+        if ($PSCmdlet.ShouldProcess($WaitingFeedTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $WaitingFeedTaskName -Action $waitingFeedAction -Trigger $waitingFeedTrigger `
+                -Settings $waitingFeedSettings -Principal $waitingFeedPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($WaitingFeedTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $WaitingFeedTaskName -Action $waitingFeedAction -Trigger $waitingFeedTrigger `
+                -Settings $waitingFeedSettings -Principal $waitingFeedPrincipal
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -622,5 +660,6 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue
+    Write-Information -MessageData "Waiting feed task '$WaitingFeedTaskName' (background/S4U): $WslExePath $waitingFeedArguments (repeats every 1 min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $taskHistoryResult" -InformationAction Continue
 }
