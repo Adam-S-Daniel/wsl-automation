@@ -9,8 +9,15 @@
 # reported as login_expired and the previous items are kept.
 #
 # Unlike publish-usage-census.sh this does not bootstrap a Windows checkout
-# update (a pwsh.exe updater with a 300 s timeout is far too heavy for a
-# 1-minute cadence); the script is just the checked-out file.
+# update itself (a pwsh.exe updater with a 300 s timeout is far too heavy for a
+# 1-minute cadence). It still runs from the shared task checkout, which the
+# other tasks fast-forward to origin/main, so whatever lands on main runs here
+# with the Claude login and the git credential in reach.
+#
+# The feed repository is output only and keeps exactly one commit: each publish
+# replaces it (force-with-lease), so session titles and asks from earlier
+# minutes are not kept in its history. Titles are capped and obvious secret
+# shapes (API keys, tokens) are masked before anything is written.
 #
 # Output is one aggregate-only line per run: counts, never titles, ids or
 # tokens. The same line, with a UTC timestamp and the exit code, is appended to
@@ -28,7 +35,11 @@
 #   WAITING_FEED_LOG          log file (default ~/.cache/waiting-feed.log)
 set -euo pipefail
 
+# Never wait on a credential prompt: the task runs with no one to answer it.
+export GIT_TERMINAL_PROMPT=0
+
 readonly max_pages=3
+readonly log_max_lines=2000
 readonly heartbeat_seconds=900
 readonly tagged_query='limit=100&tags=hearth-thread&tags=cowork-local&tags=cowork-remote'
 
@@ -50,14 +61,20 @@ feed_url=${WAITING_FEED_URL:-https://github.com/Adam-S-Daniel/waiting-feed.git}
 log_file=${WAITING_FEED_LOG:-$HOME/.cache/waiting-feed.log}
 now=${WAITING_FEED_NOW:-$(date +%s)}
 
-for dependency in curl jq flock git mktemp; do
+for dependency in curl jq flock git mktemp timeout; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
         printf 'missing dependency: %s\n' "$dependency" >&2
         exit 1
     fi
 done
 
-runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+# Prefer the per-user tmpfs, so a request headers file left by a killed run
+# does not outlive a reboot.
+runtime_dir="${XDG_RUNTIME_DIR:-}"
+if [[ -z $runtime_dir && -d /run/user/$UID && -w /run/user/$UID ]]; then
+    runtime_dir="/run/user/$UID"
+fi
+runtime_dir="${runtime_dir:-/tmp}"
 if [[ ! -d $runtime_dir || ! -w $runtime_dir ]]; then
     printf '%s\n' 'no writable per-user runtime directory' >&2
     exit 1
@@ -80,12 +97,16 @@ timestamp=$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)
 log_line() {
     mkdir -p -- "$(dirname -- "$log_file")"
     printf '%s exit=%s %s\n' "$timestamp" "$2" "$1" >>"$log_file"
+    # A long outage logs every minute; keep only the most recent lines.
+    if (($(wc -l <"$log_file") > log_max_lines)); then
+        tail -n "$((log_max_lines / 2))" -- "$log_file" >"$log_file.tmp" && mv -f -- "$log_file.tmp" "$log_file"
+    fi
 }
 
 # The clone is the only state: its HEAD is the previous feed.
 if [[ ! -d $feed_dir/.git ]]; then
     mkdir -p -- "$(dirname -- "$feed_dir")"
-    if ! git clone --quiet -- "$feed_url" "$feed_dir" >/dev/null 2>&1; then
+    if ! timeout 60 git clone --quiet -- "$feed_url" "$feed_dir" >/dev/null 2>&1; then
         line='waiting feed: could not clone the feed repository'
         printf '%s\n' "$line"
         log_line "$line" 1
@@ -93,6 +114,24 @@ if [[ ! -d $feed_dir/.git ]]; then
     fi
 fi
 git_feed=(git -C "$feed_dir")
+# Only ever push to the feed repository this script was configured with
+# (compared without a trailing .git or slash).
+same_repo() {
+    local a=${1%/} b=${2%/}
+    [[ ${a%.git} == "${b%.git}" ]]
+}
+if ! same_repo "$("${git_feed[@]}" remote get-url origin 2>/dev/null || true)" "$feed_url"; then
+    line='waiting feed: the clone does not point at the feed repository'
+    printf '%s\n' "$line"
+    log_line "$line" 1
+    exit 1
+fi
+# The remote is the source of truth: anything committed there by hand (or a
+# replaced commit) must not wedge every later push as a non-fast-forward.
+if timeout 60 "${git_feed[@]}" fetch --quiet origin >/dev/null 2>&1 &&
+    remote_head=$("${git_feed[@]}" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null); then
+    "${git_feed[@]}" reset --quiet --hard "$remote_head" >/dev/null 2>&1 || true
+fi
 prev_head=$("${git_feed[@]}" rev-parse -q --verify HEAD 2>/dev/null || true)
 committed_file="$temporary_dir/committed.json"
 if [[ -n $prev_head ]] && "${git_feed[@]}" show HEAD:feed.json >"$committed_file" 2>/dev/null &&
@@ -113,7 +152,8 @@ header_file="$temporary_dir/request-headers"
 # Fetch one page of the listing ($1 = query string) and append its items.
 fetch_page() {
     local status
-    if ! status=$(curl -sS --max-time 30 -o "$body_file" -w '%{http_code}' \
+    # -q: ignore ~/.curlrc (a trace option there would log the token).
+    if ! status=$(curl -q -sS --proto '=https' --max-time 30 -o "$body_file" -w '%{http_code}' \
         -H "@$header_file" "$api_base/v1/code/sessions?$1" 2>/dev/null); then
         err=network
         return 0
@@ -157,7 +197,7 @@ collect() {
     # The token goes to curl through a private headers file, never argv.
     (
         umask 077
-        printf 'Authorization: Bearer %s\nanthropic-version: 2023-06-01\nx-organization-uuid: %s\nContent-Type: application/json\nUser-Agent: claude-cli\n' \
+        printf 'Authorization: Bearer %s\nanthropic-version: 2023-06-01\nx-organization-uuid: %s\nContent-Type: application/json\nUser-Agent: waiting-feed-publisher/1\n' \
             "$token" "$org" >"$header_file"
     )
 
@@ -177,6 +217,8 @@ collect() {
     return 0
 }
 collect
+# Done with the token: don't leave it on disk for the rest of the run.
+rm -f -- "$header_file"
 
 # --- Build the new feed ---------------------------------------------------
 if [[ -z $err ]]; then
@@ -198,12 +240,17 @@ if [[ -z $err ]]; then
                   else "Session" end
             end;
         def nonempty: strings | select(length > 0);
+        # Session text is copied to GitHub, so mask obvious credential shapes.
+        def redact:
+            gsub("(?<k>sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abposr]-|AKIA|ASIA|AIza)[A-Za-z0-9_\\-]{8,}"; "\(.k)[redacted]")
+            | gsub("(?i)(?<k>bearer\\s+)[A-Za-z0-9._~+/=-]{16,}"; "\(.k)[redacted]");
         def ask:
             (.external_metadata.post_turn_summary? // {}) as $s
             | ((($s.needs_action? | nonempty) // ($s.status_detail? | nonempty)) // null)
-            | if . == null then null else .[0:400] end;
+            | if . == null then null else (redact | .[0:400]) end;
+        def short_title: if type == "string" then (redact | .[0:200]) else null end;
         [ .[]
-          | select(type == "object" and (.id | type == "string"))
+          | select(type == "object" and (.id | type == "string") and (.id | test("^cse_[A-Za-z0-9_-]+$")))
         ]
         | group_by(.id) | map(.[0])
         | map(select(
@@ -214,7 +261,7 @@ if [[ -z $err ]]; then
         | map({
               id,
               link: link,
-              title,
+              title: (.title | short_title),
               bucket: (if .status_bucket == "blocked" then "wait" else "review" end),
               kind: kind,
               updated_at,
@@ -260,17 +307,22 @@ if $dry_run; then
     published=dry-run
 elif $publish; then
     cp -- "$new_feed" "$feed_dir/feed.json"
-    identity=()
-    if [[ -z $("${git_feed[@]}" config user.name 2>/dev/null || true) ]]; then
-        identity+=(-c user.name='Adam Daniel')
+    # A fixed noreply identity and a UTC date, whatever the machine's git config.
+    export GIT_AUTHOR_NAME='Adam Daniel' GIT_COMMITTER_NAME='Adam Daniel'
+    export GIT_AUTHOR_EMAIL=4205216+Adam-S-Daniel@users.noreply.github.com
+    export GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
+    export GIT_AUTHOR_DATE="$now +0000" GIT_COMMITTER_DATE="$now +0000"
+    # One parentless commit replaces the branch, so the history holds only the
+    # current feed. The lease refuses the push if the remote moved since fetch.
+    lease=(--force-with-lease=main:)
+    if [[ -n $prev_head ]]; then
+        lease=(--force-with-lease=main:"$prev_head")
     fi
-    if [[ -z $("${git_feed[@]}" config user.email 2>/dev/null || true) ]]; then
-        identity+=(-c user.email=4205216+Adam-S-Daniel@users.noreply.github.com)
-    fi
-    # Plain commits and a plain push: never force.
     if "${git_feed[@]}" add feed.json &&
-        "${git_feed[@]}" "${identity[@]}" commit --quiet -m "$message" >/dev/null 2>&1 &&
-        "${git_feed[@]}" push --quiet origin HEAD:main >/dev/null 2>&1; then
+        tree=$("${git_feed[@]}" write-tree) &&
+        new_head=$("${git_feed[@]}" commit-tree "$tree" -m "$message" 2>/dev/null) &&
+        timeout 60 "${git_feed[@]}" push --quiet "${lease[@]}" origin "$new_head:refs/heads/main" >/dev/null 2>&1; then
+        "${git_feed[@]}" reset --quiet --hard "$new_head" >/dev/null 2>&1 || true
         published=yes
     else
         push_failed=true

@@ -52,7 +52,8 @@ while (($#)); do
             if [[ $2 == @* ]]; then headers=${2#@}; fi
             shift 2
             ;;
-        -sS) shift ;;
+        -sS | -q) shift ;;
+        --proto) printf '%s\n' "proto=$2" >>"$CURL_ARGV.flags"; shift 2 ;;
         *) url=$1; shift ;;
     esac
 done
@@ -109,13 +110,20 @@ page p2 "$a1" \
     "$(item a3 archived blocked 20 '[]' claude_code_cli 'archived' '')" \
     "$(item a4 active blocked 21 '["hearth-overview"]' claude_code_cli 'overview' '')" \
     "$(item a5 active working 22 '[]' claude_code_cli 'working' '')" \
-    "$(item a6 active completed 23 '[]' claude_code_cli 'done' '')" >"$FX/page1.json"
+    "$(item a6 active completed 23 '[]' claude_code_cli 'done' '')" \
+    "$(jq -c '.id = "cse_../../new?q=x"' <<<"$(item zz active blocked 25 '[]' claude_code_cli 'bad id' '')")" >"$FX/page1.json"
 page p3 \
     "$(item b1 active blocked 5 '[]' desktop_app "$long_ask" '')" \
     "$(item b2 active review_ready 3 '[]' web_claude_ai '' '')" \
     "$(item b3 active blocked 4 '[]' '' 'Which one?' '')" \
     "$(item b4 active blocked 6 '[]' claude-in-hearth '' 'Waiting on you')" \
     "$(item b5 active review_ready 11 '[]' android '' '')" >"$FX/page2.json"
+# b2 gets a long title with a token in it, b3 an ask with credentials in it.
+jq --arg t "SECRETTITLE-cse_b2 ghp_abcdefghijklmnop0123 $(printf 'y%.0s' {1..300})" \
+    '(.data[] | select(.id == "cse_b2") | .title) = $t
+     | (.data[] | select(.id == "cse_b3") | .external_metadata) =
+       {post_turn_summary: {needs_action: "Use sk-ant-api03-ABCDEFGH12345678 and Bearer abcdefghijklmnopqrstuvwxyz0123"}}' \
+    "$FX/page2.json" >"$FX/page2.tmp" && mv "$FX/page2.tmp" "$FX/page2.json"
 page p4 "$(item c1 active blocked 7 '[]' claude_code_mcp_seed '' '')" >"$FX/page3.json"
 page '' "$(item d1 active blocked 24 '[]' claude_code_cli 'past the page limit' '')" >"$FX/page4.json"
 page '' \
@@ -158,6 +166,7 @@ reset_calls() { rm -f -- "$CURL_ARGV" "$CURL_ARGV.auth" "$CURL_ARGV.flags"; }
 call_count() { if [[ -f $CURL_ARGV ]]; then wc -l <"$CURL_ARGV" | tr -d ' '; else echo 0; fi; }
 log_count() { if [[ -f $WAITING_FEED_LOG ]]; then wc -l <"$WAITING_FEED_LOG" | tr -d ' '; else echo 0; fi; }
 commit_count() { git --git-dir="$remote" rev-list --count main 2>/dev/null || echo 0; }
+remote_head() { git --git-dir="$remote" rev-parse main 2>/dev/null || echo none; }
 remote_feed() { git --git-dir="$remote" show main:feed.json; }
 remote_jq() { remote_feed | jq -r "$1"; }
 
@@ -177,6 +186,7 @@ assert_eq "$(remote_jq '.items[0] | keys_unsorted | join(",")')" 'id,link,title,
 # and the item present in both the paged and the tagged call listed once.
 assert_eq "$(remote_jq '[.items[].id] | join(" ")')" \
     'cse_b5 cse_t3 cse_t2 cse_t1 cse_c1 cse_b4 cse_b1 cse_b3 cse_b2 cse_a2 cse_a1' 'filtered, deduplicated, newest-first ids'
+assert_eq "$(remote_jq '[.items[].id] | any(contains("/"))')" false 'an id outside the cse_ form is dropped'
 assert_eq "$(remote_jq '[.items[] | select(.id == "cse_a1")] | length')" 1 'duplicate across paged and tagged calls appears once'
 assert_eq "$(remote_jq '[.items[].id] | any(. == "cse_d1")')" false 'page 4 is never fetched'
 assert_eq "$(remote_jq '.items | map(.bucket) | unique | join(",")')" 'review,wait' 'buckets are wait and review only'
@@ -205,6 +215,10 @@ ask_of() { remote_jq ".items[] | select(.id == \"cse_$1\") | .ask"; }
 assert_eq "$(ask_of a1)" 'Approve the plan?' 'needs_action is the ask'
 assert_eq "$(ask_of a2)" 'Review the diff' 'status_detail is the fallback when needs_action is empty'
 assert_eq "$(ask_of b2)" null 'no summary gives a null ask'
+assert_eq "$(ask_of b3)" 'Use sk-ant-[redacted] and Bearer [redacted]' 'credential shapes in the ask are masked'
+assert_eq "$(remote_jq '.items[] | select(.id == "cse_b2") | .title | length')" 200 'a long title is capped at 200 characters'
+assert_match "$(remote_jq '.items[] | select(.id == "cse_b2") | .title')" '^SECRETTITLE-cse_b2 ghp_\[redacted\] y' 'credential shapes in the title are masked'
+assert_no_match "$(remote_feed)" 'ghp_abcdefghijklmnop0123|sk-ant-api03|abcdefghijklmnopqrstuvwxyz0123' 'no credential reaches the feed'
 assert_eq "$(remote_jq '.items[] | select(.id == "cse_b1") | .ask | length')" 400 'a long ask is capped at 400 characters'
 assert_eq "$(remote_jq '.items[] | select(.id == "cse_a1") | .unread')" true 'unread is carried'
 
@@ -215,14 +229,17 @@ assert_match "$(sed -n 2p "$CURL_ARGV")" 'limit=100&cursor=p2$' 'second call fol
 assert_match "$(sed -n 3p "$CURL_ARGV")" 'limit=100&cursor=p3$' 'third call follows the cursor'
 assert_match "$(sed -n 4p "$CURL_ARGV")" 'limit=100&tags=hearth-thread&tags=cowork-local&tags=cowork-remote$' 'tagged call repeats tags'
 assert_no_match "$(cat "$CURL_ARGV")" 'cursor=p4' 'no fourth page'
-assert_eq "$(wc -l <"$CURL_ARGV.flags" | tr -d ' ')" 4 'every call passes --max-time'
-assert_eq "$(sort -u "$CURL_ARGV.flags")" 'max-time=30' 'the timeout is 30 seconds'
+assert_eq "$(grep -c '^max-time=' "$CURL_ARGV.flags")" 4 'every call passes --max-time'
+assert_eq "$(grep '^max-time=' "$CURL_ARGV.flags" | sort -u)" 'max-time=30' 'the timeout is 30 seconds'
+assert_eq "$(grep '^proto=' "$CURL_ARGV.flags" | sort -u)" 'proto==https' 'every call is limited to https'
+assert_eq "$(awk '{print $1}' "$CURL_ARGV" | sort -u)" '-q' 'curl ignores ~/.curlrc (-q comes first)'
 
 # The token and the organization travel only in the private headers file.
 assert_eq "$(wc -l <"$CURL_ARGV.auth" | tr -d ' ')" 4 'the headers file carried the token, org and version on every call'
 assert_no_match "$(cat "$CURL_ARGV")" "$TEST_TOKEN" 'the token never appears in curl argv'
 assert_no_match "$(cat "$CURL_ARGV")" 'org-uuid-test' 'the organization never appears in curl argv'
 assert_match "$(sed -n 1p "$CURL_ARGV")" '-H @' 'headers are passed as a file'
+assert_eq "$(find "$XDG_RUNTIME_DIR" -name request-headers | wc -l | tr -d ' ')" 0 'no headers file is left behind'
 
 # Output and log carry counts only.
 assert_no_match "$out" 'SECRETTITLE|cse_|TESTTOKEN' 'output has no titles, ids or tokens'
@@ -234,6 +251,7 @@ assert_eq "$(git --git-dir="$remote" log -1 --format=%s main)" 'Update waiting f
 
 # --- Unchanged within 900 s: nothing happens -------------------------------------
 head_before=$(git -C "$WAITING_FEED_DIR" rev-parse HEAD)
+remote_before=$(remote_head)
 feed_before=$(cat "$WAITING_FEED_DIR/feed.json")
 WAITING_FEED_NOW=$((now + 60)) run_feed
 assert_eq "$rc" 0 'unchanged run exits 0'
@@ -248,27 +266,32 @@ assert_eq "$(log_count)" 1 'a quiet minute adds no log line'
 WAITING_FEED_NOW=$((now + 900)) run_feed
 assert_eq "$rc" 0 'heartbeat run exits 0'
 assert_eq "$out" 'waiting feed: ok=true wait=7 review=4 published=yes' 'heartbeat output'
-assert_eq "$(commit_count)" 2 'heartbeat commit is pushed'
+assert_eq "$(commit_count)" 1 'heartbeat replaces the single commit'
+assert_no_match "$(remote_head)" "^$remote_before\$" 'heartbeat commit is pushed'
 assert_eq "$(git --git-dir="$remote" log -1 --format=%s main)" 'Update waiting feed (7 wait, 4 review) [heartbeat]' 'heartbeat commit message'
 assert_eq "$(remote_jq '.generated_at')" "$(date -u -d "@$((now + 900))" +%Y-%m-%dT%H:%M:%SZ)" 'heartbeat refreshes generated_at'
 assert_eq "$(log_count)" 2 'heartbeat is logged'
 
 # --- Changed: a new item produces a commit pushed to the remote -----------------
 t=$((now + 1000))
+remote_before=$(remote_head)
 page p2 "$a1" "$(item a7 active blocked 12 '[]' claude_code_cli 'New ask' '')" >"$FX/page1.json"
 WAITING_FEED_NOW=$t run_feed
 assert_eq "$out" 'waiting feed: ok=true wait=8 review=3 published=yes' 'changed output'
-assert_eq "$(commit_count)" 3 'a changed feed is committed and pushed'
+assert_eq "$(commit_count)" 1 'the remote keeps one commit'
+assert_no_match "$(remote_head)" "^$remote_before\$" 'a changed feed is committed and pushed'
+assert_eq "$(git --git-dir="$remote" rev-list --max-parents=0 main)" "$(remote_head)" 'the commit has no parent'
 assert_eq "$(git -C "$WAITING_FEED_DIR" rev-parse HEAD)" "$(git --git-dir="$remote" rev-parse main)" 'remote head equals the clone head'
 assert_eq "$(remote_jq '.items[0].id')" cse_a7 'new item is first'
 assert_eq "$(git --git-dir="$remote" log -1 --format=%s main)" 'Update waiting feed (8 wait, 3 review)' 'changed commit message has no heartbeat tag'
 
 # --- --dry-run writes, commits and pushes nothing -------------------------------
 page p2 "$a1" >"$FX/page1.json"
+dry_before=$(remote_head)
 WAITING_FEED_NOW=$((t + 60)) run_feed --dry-run
 assert_eq "$rc" 0 'dry run exits 0'
 assert_match "$out" 'published=dry-run$' 'dry run output'
-assert_eq "$(commit_count)" 3 'dry run pushes nothing'
+assert_eq "$(remote_head)" "$dry_before" 'dry run pushes nothing'
 assert_eq "$(git -C "$WAITING_FEED_DIR" status --short)" '' 'dry run leaves the clone clean'
 assert_eq "$(log_count)" 3 'dry run is not logged'
 
@@ -290,12 +313,12 @@ assert_match "$(git --git-dir="$remote" log -1 --format=%s main)" '\[ok=false: l
 assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" 'exit=1 waiting feed: ok=false error=login_expired ' 'failure is logged with exit 1'
 
 # The same failure again, within 900 s: no new commit, but still nonzero and logged.
-commits=$(commit_count)
+commits=$(remote_head)
 logs=$(log_count)
 WAITING_FEED_NOW=$((t + 60)) run_feed
 assert_eq "$rc" 1 'a repeated failure still exits nonzero'
 assert_match "$out" 'published=no$' 'a repeated failure is not republished'
-assert_eq "$(commit_count)" "$commits" 'a repeated failure adds no commit'
+assert_eq "$(remote_head)" "$commits" 'a repeated failure adds no commit'
 assert_eq "$(log_count)" $((logs + 1)) 'a repeated failure is logged'
 
 # Recovery.
@@ -329,19 +352,52 @@ failure_case no_credentials WAITING_FEED_CREDENTIALS="$test_root/missing.json"
 # --- A push that fails exits nonzero and is retried on the next run --------------
 t=$((t + 5000))
 page p2 "$a1" "$(item a8 active blocked 13 '[]' claude_code_cli 'Another ask' '')" >"$FX/page1.json"
-good_url=$(git -C "$WAITING_FEED_DIR" remote get-url origin)
-git -C "$WAITING_FEED_DIR" remote set-url origin "file://$test_root/no-such-remote.git"
-commits=$(commit_count)
+printf '#!/bin/sh\nexit 1\n' >"$remote/hooks/pre-receive"
+chmod +x "$remote/hooks/pre-receive"
+commits=$(remote_head)
 WAITING_FEED_NOW=$t run_feed
 assert_eq "$rc" 1 'a failed push exits nonzero'
 assert_match "$out" 'published=failed$' 'a failed push is reported'
-assert_eq "$(commit_count)" "$commits" 'a failed push adds nothing to the remote'
+assert_eq "$(remote_head)" "$commits" 'a failed push adds nothing to the remote'
 assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" 'exit=1 .*published=failed$' 'a failed push is logged'
-git -C "$WAITING_FEED_DIR" remote set-url origin "$good_url"
+rm -f -- "$remote/hooks/pre-receive"
 WAITING_FEED_NOW=$((t + 30)) run_feed
 assert_eq "$rc" 0 'the next run publishes the change'
 assert_match "$out" 'published=yes$' 'the change is retried'
-assert_eq "$(commit_count)" $((commits + 1)) 'the retried change is pushed once'
+assert_no_match "$(remote_head)" "^$commits\$" 'the retried change is pushed'
+assert_eq "$(commit_count)" 1 'the retried change still leaves one commit'
 assert_eq "$(remote_jq '.items[0].id')" cse_a8 'the retried item is in the remote feed'
+
+# --- A clone pointing anywhere else is refused before anything is sent ---------
+good_url=$(git -C "$WAITING_FEED_DIR" remote get-url origin)
+git -C "$WAITING_FEED_DIR" remote set-url origin "file://$test_root/elsewhere.git"
+reset_calls
+WAITING_FEED_NOW=$((t + 60)) run_feed
+assert_eq "$rc" 1 'a foreign remote exits nonzero'
+assert_eq "$out" 'waiting feed: the clone does not point at the feed repository' 'a foreign remote is reported'
+assert_eq "$(call_count)" 0 'a foreign remote makes no API call'
+git -C "$WAITING_FEED_DIR" remote set-url origin "$good_url"
+
+# --- A commit made on the remote by hand does not wedge later pushes ------------
+other="$test_root/other"
+git clone --quiet "file://$remote" "$other"
+printf '%s\n' 'hand edit' >"$other/NOTE"
+git -C "$other" add NOTE
+git -C "$other" -c user.name=x -c user.email=x@example.com commit --quiet -m 'hand edit'
+git -C "$other" push --quiet origin HEAD:main
+t=$((t + 5000))
+page p2 "$a1" "$(item a9 active blocked 14 '[]' claude_code_cli 'Yet another' '')" >"$FX/page1.json"
+WAITING_FEED_NOW=$t run_feed
+assert_eq "$rc" 0 'a run after an outside commit exits 0'
+assert_match "$out" 'published=yes$' 'a run after an outside commit publishes'
+assert_eq "$(remote_jq '.items[0].id')" cse_a9 'the new feed replaced the outside commit'
+assert_eq "$(commit_count)" 1 'history is back to one commit'
+
+# --- The log is trimmed once it grows past its limit ----------------------------
+for _ in $(seq 2100); do printf '%s\n' 'old line'; done >"$WAITING_FEED_LOG"
+WAITING_FEED_NOW=$((t + 30)) CURL_STATUS=500 run_feed
+assert_eq "$rc" 1 'a failure run for the log check exits 1'
+assert_eq "$(log_count)" 1000 'the log is cut to its most recent half'
+assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" 'error=http_500' 'the newest line is kept'
 
 printf 'PASS: %s assertions\n' "$passed"

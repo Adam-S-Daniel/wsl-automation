@@ -187,7 +187,10 @@ Codex Cloud sync, and usage census) first call `Update-WslAutomationRepo` for
 that same checkout. The two on-demand launcher actions invoke their CLIs
 directly and have no repo script to update. Existing task actions are unchanged;
 **no re-registration is needed** after deploying this change to the checkout.
-The every-minute waiting feed task is the exception: it runs its script as checked out, with no updater.
+The every-minute waiting feed task does not call the updater itself, but it runs
+from the same checkout, so the other tasks' updates reach it too: whatever lands
+on `main` runs every minute with the Claude login and the git credential in
+reach. Keep `main` protected.
 
 Each run fetches `origin`, switches to `main` if necessary and the working tree
 is clean, then runs `git merge --ff-only origin/main`. The old 12-hour update
@@ -643,16 +646,22 @@ up the new PATH.
   instance, no `-StartWhenAvailable` (a missed minute is just skipped). Unlike
   the census wrapper it does not run the Windows checkout updater: a `pwsh.exe`
   update with a 300 second timeout is too heavy for a one-minute cadence, so it
-  runs the checked-out script as it is.
+  runs the checked-out script as it is (which the other tasks keep at
+  `origin/main`).
 - **It never refreshes the login.** The token comes from
   `.claudeAiOauth.accessToken` in `~/.claude/.credentials.json` (the
   organization from `~/.claude.json`) and is passed to curl through a private
-  headers file, never on a command line. When it has expired, the feed says so
-  until Claude Code itself renews it.
+  headers file, never on a command line; the file is deleted as soon as the
+  API calls finish, and lives under `$XDG_RUNTIME_DIR` (else `/run/user/<uid>`,
+  else `/tmp`). curl runs with `-q` (no `~/.curlrc`) and `--proto =https`, and
+  identifies itself as `waiting-feed-publisher/1`. When the token has expired,
+  the feed says so until Claude Code itself renews it.
+- **The endpoint is undocumented.** It is the one the Claude Code CLI uses; it
+  can change or be refused without notice.
 - **What is kept.** Sessions whose `status_bucket` is `blocked` (bucket
   `wait`) or `review_ready` (bucket `review`); archived sessions and anything
   tagged `hearth-overview` are dropped; items are deduplicated by id and sorted
-  newest first.
+  newest first. Items whose id is not of the `cse_` form are dropped.
 - **`feed.json`**:
 
   ```json
@@ -679,7 +688,9 @@ up the new PATH.
   `Cowork` (tags `cowork-local` or `cowork-remote`), or from the origin
   `Claude Code`, `Desktop`, `iPhone`, `Android`, `Web`, else `Session`. `ask`
   is the session's `needs_action`, else its `status_detail`, capped at 400
-  characters. The API exposes no project or thread ids, so `link` is always the
+  characters; `title` is capped at 200. Both are session text copied to
+  GitHub, so obvious credential shapes in them (`sk-`, `ghp_`, `github_pat_`,
+  `AKIA`, Slack tokens, `Bearer ...`) are replaced with `[redacted]` first. The API exposes no project or thread ids, so `link` is always the
   plain session page.
 - **Failures** keep the previous items and set `ok` to `false` with an `error`
   code, and the script exits nonzero: `no_credentials` (credentials file
@@ -687,16 +698,24 @@ up the new PATH.
   401), `http_<code>` (any other HTTP status), `network` (curl failed),
   `bad_response` (the body was not the expected JSON).
 - **Publishing.** The clone is `~/.cache/waiting-feed` (`WAITING_FEED_DIR`),
-  cloned from `WAITING_FEED_URL` when missing. Nothing is committed while
+  cloned from `WAITING_FEED_URL` when missing; a clone whose `origin` is any
+  other repository is refused. Each run first fetches and resets the clone to
+  `origin/main`, so a commit made there by hand can't block later pushes.
+  Nothing is committed while
   `ok`, `error` and `items` equal the committed ones and the last commit is
   under 15 minutes old; after that an unchanged feed is committed anyway as a
-  heartbeat so a reader can tell the publisher is alive. Commits are plain (never forced); a
-  failed push is logged and exits nonzero, and the next run tries again.
+  heartbeat so a reader can tell the publisher is alive. The repository keeps
+  exactly one commit: each publish pushes a new parentless commit with
+  `--force-with-lease`, so earlier titles and asks are not kept in its history
+  (GitHub may still hold replaced commits by hash for a while). Commits use the
+  noreply identity and a UTC date. Clone, fetch and push each time out after 60
+  seconds and never prompt for credentials. A failed push is logged and exits
+  nonzero, and the next run tries again.
 - Output is one aggregate line per run, for example
   `waiting feed: ok=true wait=2 review=5 published=yes`, never titles, ids or
   tokens. The same line with a UTC time and exit code is appended to
   `~/.cache/waiting-feed.log` (`WAITING_FEED_LOG`) only when a run published or
-  failed.
+  failed; past 2,000 lines the log is cut to its newest 1,000.
 - Dry run (fetch and report, but no write, commit or push) from inside the
   distro: `bash scripts/publish-waiting-feed.sh --dry-run`.
 - Run it now: `Start-ScheduledTask -TaskName 'Claude Waiting Feed Publish'`;
