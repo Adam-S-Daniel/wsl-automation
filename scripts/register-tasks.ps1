@@ -14,26 +14,30 @@
     during a dry run.
 
 .PARAMETER ScriptsDir
-    Directory containing wsl-ubuntu-backup.ps1, ensure-claude-session.ps1, and
+    Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
+    wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
     sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and publish-usage-census.sh.
     Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
-    Directory the backup task writes exported WSL archives to.
+    The OneDrive-synced directory the backup task copies the restic repository into (its
+    'restic' subdirectory) and writes its log to.
+
+.PARAMETER ResticRepoDir
+    The restic repository on a local Windows drive, for example 'D:\Backups\wsl-restic'. Must
+    be a drive-letter path; the distro reaches it at /mnt/<drive>/... . See README.md for the
+    one-time restic setup.
 
 .PARAMETER DistroName
     Name of the WSL distro to back up and to keep a Claude Code session alive in. Defaults to
     'Ubuntu'.
 
-.PARAMETER Format
-    Backup format passed through to wsl-ubuntu-backup.ps1: 'tar' or 'vhdx'. Defaults to 'tar'.
-
 .PARAMETER WakeBackupToRun
     Register the backup task with -WakeToRun so Windows wakes the machine from sleep to run it.
     Off by default: on Modern Standby (S0 low-power idle) laptops a scheduled wake can hang the
-    machine in a half-woken state, so the backup instead catches up via -StartWhenAvailable the
-    next time the machine is awake. Enable only on hardware where scheduled wake is reliable
-    (for example an S3-capable desktop).
+    machine in a half-woken state, so the backup instead catches up via the trigger's hourly
+    retries (-BackupRetryIntervalMinutes) the next time the machine is awake. Enable only on
+    hardware where scheduled wake is reliable (for example an S3-capable desktop).
 
 .PARAMETER BackupTaskName
     Name of the scheduled task that runs the backup. Defaults to 'WSL Ubuntu Daily Backup'.
@@ -47,8 +51,8 @@
 
 .PARAMETER BackupRetryIntervalMinutes
     How often, in minutes, the backup task's trigger repeats over the day following -BackupTime,
-    so a run Invoke-WslBackup itself deferred (recent wake, or WSL busy) - or one simply missed
-    because the machine was asleep - gets retried without -StartWhenAvailable. Defaults to 60.
+    so a run Invoke-WslResticBackup itself deferred (recent wake) - or one simply missed because
+    the machine was asleep - gets retried without -StartWhenAvailable. Defaults to 60.
 
 .PARAMETER KeeperIntervalMinutes
     How often, in minutes, the keeper task repeats indefinitely. Defaults to 5.
@@ -78,7 +82,7 @@
 .PARAMETER PwshPath
     Path to pwsh.exe used as the action executable for all the tasks. Defaults to an MSI install
     of PowerShell 7 (C:\Program Files\PowerShell\7\pwsh.exe) when present - required for the S4U
-    background keeper and ccstatusline tasks, which run in session 0 where a Store-packaged pwsh
+    background backup, keeper and ccstatusline tasks, which run in session 0 where a Store-packaged pwsh
     cannot launch - then the per-user WindowsApps alias, then the pwsh.exe found on PATH.
 
 .PARAMETER LegacyScriptsToArchive
@@ -97,13 +101,13 @@
     README.md's "Task history" section for what the log records and how to read it.
 
 .EXAMPLE
-    ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL'
+    ./register-tasks.ps1 -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
     Registers (or updates) all the scheduled tasks from an elevated prompt, using default names,
     backup time, and intervals.
 
 .EXAMPLE
-    ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL' -WhatIf
+    ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
 
     Shows what would change without actually registering, updating, or renaming anything.
 #>
@@ -114,10 +118,10 @@ param(
     [Parameter(Mandatory)]
     [string]$BackupDir,
 
-    [string]$DistroName = 'Ubuntu',
+    [Parameter(Mandatory)]
+    [string]$ResticRepoDir,
 
-    [ValidateSet('tar', 'vhdx')]
-    [string]$Format = 'tar',
+    [string]$DistroName = 'Ubuntu',
 
     [switch]$WakeBackupToRun,
 
@@ -182,8 +186,8 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..' 'src' 'WslAutomation') -Force
 
 try {
-    Set-WslAutomationScheduledTasks -ScriptsDir $ScriptsDir -BackupDir $BackupDir -DistroName $DistroName `
-        -Format $Format -WakeBackupToRun:$WakeBackupToRun -BackupTaskName $BackupTaskName `
+    Set-WslAutomationScheduledTasks -ScriptsDir $ScriptsDir -BackupDir $BackupDir -ResticRepoDir $ResticRepoDir `
+        -DistroName $DistroName -WakeBackupToRun:$WakeBackupToRun -BackupTaskName $BackupTaskName `
         -KeeperTaskName $KeeperTaskName -BackupTime $BackupTime `
         -BackupRetryIntervalMinutes $BackupRetryIntervalMinutes `
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `

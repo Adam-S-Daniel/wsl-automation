@@ -2,7 +2,10 @@
 
 PowerShell automation for a WSL2 Ubuntu distro on Windows:
 
-- A staged, atomic-ish backup of the distro (`tar` or `vhdx`) with retention.
+- A daily live backup of the running distro with restic, copied one way into a
+  OneDrive-synced folder. It never stops the distro, so running Claude Code
+  sessions survive it. The older staged `wsl --export` backup (`tar` or
+  `vhdx`, with retention) stays available as a manual command.
 - A "keeper" that makes sure a Claude Code session with Remote Control
   enabled is running in the distro, coordinating with the backup via a lock
   file so the two never collide. It also resumes the Claude Code sessions
@@ -19,8 +22,10 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
 handful of thin wrapper scripts meant to be run directly or from Windows
 Task Scheduler. It covers three jobs:
 
-1. **Backup** - export a WSL distro (`wsl --export`) on a schedule, with
-   staging, retention, and a log in the historical format.
+1. **Backup** - back up the running distro with restic every day, from inside
+   it, into a repository on a local disk, then copy that repository into a
+   OneDrive-synced folder. A full `wsl --export` (with staging, retention, and
+   a log in the historical format) is still available on demand.
 2. **Session keeper** - periodically check whether a Claude Code session with
    Remote Control enabled is running inside the distro, and launch one (in a
    Windows Terminal tab) if not - but only after waiting for any in-progress
@@ -30,6 +35,10 @@ Task Scheduler. It covers three jobs:
    idempotently, and archive any legacy ad-hoc scripts they replace.
 
 ## Why staging
+
+This applies to the manual `wsl --export` backup (`Invoke-WslBackup`); the
+scheduled restic backup writes to a local repository and copies it into the
+synced folder in a fixed order instead (see the backup task below).
 
 Exporting a large distro (tens of GB) directly into a folder that a sync
 client (OneDrive or similar) is watching causes the sync client to see the
@@ -52,9 +61,11 @@ partially-written file at the name it actually watches.
 
 ## Lock protocol
 
-The backup and the session keeper share a simple JSON lock file so the
-keeper never launches a session while a backup export is in flight (and
-vice versa, if you choose to gate the backup on session activity too).
+The manual export backup and the session keeper share a simple JSON lock file
+so the keeper never launches a session while a backup export is in flight
+(and vice versa, if you choose to gate the backup on session activity too).
+The scheduled restic backup does **not** take this lock: it stops nothing, so
+there is nothing for the keeper to wait out.
 
 - **Default path**: `%LOCALAPPDATA%\wsl-automation\backup.lock`
   (override with `-LockPath` on any function that accepts it).
@@ -110,20 +121,58 @@ vice versa, if you choose to gate the backup on session activity too).
      .\scripts\grant-keeper-batch-logon.ps1
      ```
 
-3. Open an elevated PowerShell 7.6+ prompt (scheduled task registration
+3. **restic (once per machine).** The daily backup runs restic as root
+   inside the distro. In the distro:
+
+   - Install a pinned restic release to `/usr/local/bin` (pick a release at
+     least a week old; check it against the release's `SHA256SUMS`):
+
+     ```bash
+     ver=0.19.1
+     base=https://github.com/restic/restic/releases/download/v$ver
+     curl -fsSLO "$base/restic_${ver}_linux_amd64.bz2" -O "$base/SHA256SUMS"
+     sha256sum --ignore-missing -c SHA256SUMS
+     bunzip2 "restic_${ver}_linux_amd64.bz2"
+     sudo install -m 0755 "restic_${ver}_linux_amd64" /usr/local/bin/restic
+     restic version
+     ```
+
+   - Create the repository password file, readable by root only, and
+     **escrow a copy in your password manager** - without it the backup
+     cannot be restored:
+
+     ```bash
+     sudo install -d -m 0700 /root/.config/restic
+     sudo sh -c 'umask 077; head -c 32 /dev/urandom | base64 > /root/.config/restic/password'
+     sudo cat /root/.config/restic/password   # copy into the password manager
+     ```
+
+   - Initialize the repository on a **local** disk (not the OneDrive folder;
+     the task copies it there):
+
+     ```bash
+     sudo restic init -r /mnt/d/Backups/wsl-restic --password-file /root/.config/restic/password
+     ```
+
+   - After the first run creates `<BackupDir>\restic`, right-click it in
+     File Explorer and choose **Always keep on this device**, so OneDrive
+     never turns the copy into download-on-demand placeholders.
+
+4. Open an elevated PowerShell 7.6+ prompt (scheduled task registration
    needs administrator rights) and run the task installer, pointing it at
-   where you want backups written:
+   the OneDrive-synced folder for the backup copy and log, and at the local
+   restic repository:
 
    ```powershell
    cd C:\Users\<you>\repos\wsl-automation
-   .\scripts\register-tasks.ps1 -BackupDir 'D:\Backups\wsl'
+   .\scripts\register-tasks.ps1 -BackupDir 'C:\Users\<you>\OneDrive\Backups\wsl' -ResticRepoDir 'D:\Backups\wsl-restic'
    ```
 
    This creates/updates the scheduled tasks described below. Re-running it is
    safe and idempotent - it will update the existing tasks in place rather
    than duplicating them.
 
-4. **Windows ccstatusline runtime (once per machine).** Run
+5. **Windows ccstatusline runtime (once per machine).** Run
    `.\scripts\install-ccstatusline.ps1` from a normal PowerShell 7 prompt; see
    [Windows runtime (one-time)](#windows-runtime-one-time).
 
@@ -173,41 +222,100 @@ older or local code until their warning is resolved.
 
 ### Backup task (default name: `WSL Ubuntu Daily Backup`)
 
-`wsl --export` stops the distro it exports - tar or vhdx, in use or not (see
-AGENTS.md's "wsl --export stops the running distro" section) - so this task
-is built around not exporting out from under a live session, and around
-retrying rather than waking straight into WSL's own post-wake transition
-window.
+The daily backup is a **live restic backup** run inside the running distro
+(`Invoke-WslResticBackup`). `wsl --export` always stops the distro it exports
+(see AGENTS.md), which killed running Claude Code sessions every night; restic
+reads the live filesystem and stops nothing. Re-running `register-tasks.ps1`
+switches an existing task to it in place - the task keeps its name.
 
-- Runs `scripts\wsl-ubuntu-backup.ps1` daily at a fixed time (default 02:00),
+- Runs `scripts\wsl-restic-backup.ps1` daily at a fixed time (default 02:00),
   then **retries every `-BackupRetryIntervalMinutes` (default 60 minutes) for
   the following day** if that run didn't complete - any pre-existing logon or
-  other triggers on the task are replaced with just this one. This replaces
-  the previous `-StartWhenAvailable` catch-up, which used to fire a missed
-  run the instant the machine came back from sleep, before `Invoke-WslBackup`
-  had a chance to check anything.
-- Settings: does **not** wake the machine to run (`-WakeToRun` is off by
-  default) and does **not** use `-StartWhenAvailable` - the hourly retry
-  above is what catches up a missed run instead. Has a 4 hour execution time
-  limit and will not start a second instance while one is already running
-  (`-MultipleInstances IgnoreNew`). Pass `-WakeBackupToRun` to register a
-  *fresh* task with `-WakeToRun`; waking is off by default because on Modern
-  Standby (S0 low-power idle) laptops a scheduled wake can hang the machine
-  in a half-woken state - enable it only on hardware where scheduled wake is
-  reliable, such as an S3-capable desktop. Re-running the installer against
-  an *existing* backup task always forces `StartWhenAvailable` back to
-  `$false` while leaving everything else on it (including `WakeToRun`) as it
-  already was.
-- **The backup task runs on AC power only** (`DisallowStartIfOnBatteries` and
-  `StopIfGoingOnBatteries`, both explicitly forced `$true`, on a fresh
-  registration and on every re-run against an existing task) - an owner
-  decision, not just a default: no multi-gigabyte export drains a laptop
-  battery, and none is cut off mid-way by unplugging. A retry due while the
-  machine is on battery simply doesn't start; the task waits for AC, and even
-  `-ForceAfterDays` can't override this, because the task never starts to
-  reach it.
-- Runs the backup interactively as the current user (needed for `wsl.exe`
-  to reach the right WSL session).
+  other triggers on the task are replaced with just this one. Once a run
+  succeeds, the remaining retries that day return `Skipped` with **no log
+  line at all** (the date of the last success is kept in
+  `%LOCALAPPDATA%\wsl-automation\restic-last-success.txt`).
+- Runs as a **background (S4U) task in session 0** for the current user, like
+  the keeper, so it never opens a window. It needs the same MSI pwsh and
+  batch-logon right (see the prerequisites above).
+- Settings: **allowed on battery** and not stopped when unplugged (a daily
+  restic run takes a minute or two; the old AC-only rule was for a 27-65 GB
+  export), 2 hour execution time limit, one instance at a time
+  (`-MultipleInstances IgnoreNew`), no `-StartWhenAvailable` (the hourly retry
+  catches up a missed run instead of firing straight into WSL's post-wake
+  transition window). Does **not** wake the machine to run unless you pass
+  `-WakeBackupToRun` - on Modern Standby (S0 low-power idle) laptops a
+  scheduled wake can hang the machine in a half-woken state, so enable it only
+  on hardware where scheduled wake is reliable, such as an S3-capable desktop.
+  Settings and principal are rebuilt on every run of the installer, for a new
+  or an existing task.
+- **Wake guard.** Fewer than `-MinMinutesSinceWake` (default 10) minutes after
+  a boot or a resume from sleep, the run is deferred (`DeferredRecentWake`)
+  with one log line, and the next hourly retry tries again.
+- **The backup itself** runs `scripts/wsl-restic-backup.sh` as root in the
+  distro:
+
+  ```
+  wsl.exe -d Ubuntu -u root --cd "<scripts dir>" --exec /bin/bash ./wsl-restic-backup.sh /mnt/d/Backups/wsl-restic /root/.config/restic/password ./wsl-restic-excludes.txt none
+  ```
+
+  It clears stale locks (`restic unlock`), backs up `/` with
+  `--one-file-system --exclude-caches` and the patterns in
+  `scripts/wsl-restic-excludes.txt` at the lowest CPU and I/O priority, then
+  keeps 7 daily, 4 weekly and 3 monthly snapshots (`restic forget`) and checks
+  the repository (`restic check`). On `-WeeklyMaintenanceDay` (default
+  Sunday) it also prunes (`--prune`) and reads a 5% sample of the data
+  (`--read-data-subset=5%`). `/mnt/*` is excluded explicitly because
+  `/mnt/wslg/distro` is a bind mount of `/` on the same device, which
+  `--one-file-system` does not skip.
+- **Exit codes** (logged with their meaning): `0` OK; `10` partial - a
+  snapshot was saved but some files were unreadable (the task still
+  succeeds); `20` restic not installed; `21` password file or repository
+  missing; `30` backup failed; `40` forget/prune failed; `50` check failed.
+  Anything but `0` or `10` fails the run.
+- **What is logged** to `wsl-<distro>-backup.log` in `-BackupDir`: the start
+  line, the exit code, restic's two summary lines (`Added to the repository:
+  ...`, `processed ... files ...`) and the count of unreadable files
+  (`errors=<n>`). Never a file path, a user name or the password.
+- **One-way copy into the OneDrive folder** (`<BackupDir>\restic`) with
+  robocopy, in an order that never lets OneDrive see a snapshot whose data
+  has not arrived yet:
+  1. everything except `snapshots\` (`/E`, never deletes);
+  2. `snapshots\` (`/MIR`, so forgotten snapshots go too);
+  3. on the weekly maintenance run only, which pruned: `index\`, then
+     `data\` (`/MIR`).
+
+  A robocopy exit code of 8 or more fails the run (robocopy's own output is
+  never logged).
+- **No backup lock.** The keeper waits on `backup.lock` so it doesn't launch
+  a session into a distro an export is about to stop. restic stops nothing,
+  so this backup doesn't take the lock.
+- **Restore.** The whole distro, as a new distro, from the latest snapshot:
+
+  ```
+  restic -r <repo> --password-file <file> dump latest / --archive tar | wsl --import <name> <dir> -
+  ```
+
+  Verified 2026-10-20: the imported distro booted with file ownership, setuid
+  bits and file capabilities intact. Single files or directories come back
+  with `restic restore`, for example
+  `restic -r <repo> --password-file <file> restore latest --target /tmp/restore --include /home/<you>/<path>`.
+  Either works against the local repository or its OneDrive copy.
+
+### Manual full export (`Invoke-WslBackup`)
+
+`scripts\wsl-ubuntu-backup.ps1` (`Invoke-WslBackup`) is no longer scheduled
+but stays available to run by hand, for example to take a `wsl --export`
+image before a risky upgrade:
+
+```powershell
+.\scripts\wsl-ubuntu-backup.ps1 -BackupDir 'D:\Backups\wsl'
+```
+
+`wsl --export` stops the distro it exports - tar or vhdx, in use or not (see
+AGENTS.md's "wsl --export stops the running distro" section) - so this
+command is built around not exporting out from under a live session.
+
 - **Before every export**, `Invoke-WslBackup` runs three checks, in order:
   1. **Wake guard.** If fewer than `-MinMinutesSinceWake` (default 10)
      minutes have passed since the machine last booted or resumed from
@@ -234,8 +342,7 @@ window.
 
   A run that finds today's backup file already present returns `Skipped`
   with **no log line at all** - unlike the deferrals above, which do log one
-  line each - since the hourly retry would otherwise add up to 23 identical
-  "already exists" lines to the shared log every day.
+  line each.
 - **What counts as activity** (`Test-WslActivity`, via `ps` inside the
   distro): a `pts/*` pty (a real console tty, `console`, and no-tty `?` are
   always infrastructure, never counted) that carries at least one process
@@ -312,7 +419,7 @@ window.
   cwd, kind and whether it is mid-turn, never its name) in `%LOCALAPPDATA%\wsl-automation\agents-snapshot.json`
   (`-SessionSnapshotPath`), written atomically and never overwritten when the
   list could not be read. A run that finds the server dead - you quit it, or a
-  backup's `wsl --export` stopped the distro - launches a new one and then
+  manual export's `wsl --export` stopped the distro - launches a new one and then
   resumes every snapshotted session that is no longer listed, from its own
   cwd, with `claude --bg --resume <session-id>`, the same command that
   restores one by hand. A session that was mid-turn is resumed with a prompt
@@ -320,8 +427,8 @@ window.
   Sessions still listed are skipped, so a repeated restore is harmless. If the list can't be read in that run (typically the
   distro is still stopped while the launcher boots it), the snapshot is marked
   `restorePending` and the next run restores before it refreshes anything.
-  The backup writes that same restore-pending snapshot itself, right before it
-  stops the distro (see above), because the keeper's refresh fires at the same
+  The manual export backup writes that same restore-pending snapshot itself,
+  right before it stops the distro (see above), because the keeper's refresh fires at the same
   minute as the backup and can miss a session that was busy; the refresh never
   overwrites a restore-pending snapshot and skips its write while a fresh
   backup lock is held. The keeper log records session ids and counts, never a
@@ -668,9 +775,11 @@ Tests are written in Pester v5 syntax and are compatible with both Pester
 Invoke-Pester ./tests
 ```
 
-No test invokes real `wsl.exe` - every test mocks the module's
-`Invoke-WslExe` seam - and all filesystem paths used by the tests live
-under Pester's `TestDrive:`.
+No test invokes real `wsl.exe` or `robocopy.exe` - every test mocks the
+module's `Invoke-WslExe` and `Invoke-RobocopyExe` seams - and all filesystem
+paths used by the tests live under Pester's `TestDrive:`. The bash scripts have
+their own tests (`bash tests/<name>.test.sh`), which put stubs on `PATH`
+instead of running `restic`, `git` or Windows programs.
 
 ## Requirements
 
@@ -683,6 +792,8 @@ under Pester's `TestDrive:`.
 - The "Log on as a batch job" right for the account running the keeper (see
   `scripts\grant-keeper-batch-logon.ps1`).
 - WSL2 with the distro you want to back up / keep alive already installed.
+- For the daily backup: restic in that distro, its password file and an
+  initialized repository on a local drive (see "Install" step 3).
 - `winget` (for the one-time ccstatusline runtime install).
 - For Codex Cloud synchronization: authenticated Codex and GitHub CLIs, plus
   `curl`, `jq`, `flock`, and `mktemp` in that distro.

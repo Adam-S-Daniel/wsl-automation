@@ -47,7 +47,10 @@ function Update-WslAutomationRepo {
         }
         $branch = Invoke-GitExe @gitParams -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
         $status = Invoke-GitExe @gitParams -Arguments @('status', '--porcelain')
-        if ($branch.ExitCode -ne 0 -or $status.ExitCode -ne 0) { throw 'cannot inspect checkout' }
+        if ($branch.ExitCode -ne 0 -or $status.ExitCode -ne 0) {
+            $result.Status = 'InspectFailed'
+            throw 'cannot inspect checkout'
+        }
         if (@($status.Output).Count -gt 0) {
             $result.Status = 'WorkingTreeDirty'
             throw 'working tree is dirty; leaving it untouched'
@@ -57,17 +60,27 @@ function Update-WslAutomationRepo {
             if (($branch.Output | Select-Object -First 1) -ne 'main') {
                 $writeAttempted = $true
                 $switch = Invoke-GitExe @gitParams -Arguments @('switch', 'main')
-                if ($switch.ExitCode -ne 0) { throw 'cannot switch to main' }
+                if ($switch.ExitCode -ne 0) {
+                    # For example, main is already checked out in another worktree.
+                    $result.Status = 'SwitchFailed'
+                    throw 'cannot switch to main'
+                }
             }
             $ancestor = Invoke-GitExe @gitParams -Arguments @('merge-base', '--is-ancestor', 'HEAD', 'origin/main')
             if ($ancestor.ExitCode -eq 1) {
                 $result.Status = 'Diverged'
                 throw 'main has local commits; skipping fast-forward'
             }
-            if ($ancestor.ExitCode -ne 0) { throw 'cannot check fast-forward ancestry' }
+            if ($ancestor.ExitCode -ne 0) {
+                $result.Status = 'AncestryCheckFailed'
+                throw 'cannot check fast-forward ancestry'
+            }
             $writeAttempted = $true
             $merge = Invoke-GitExe @gitParams -Arguments @('merge', '--ff-only', 'origin/main')
-            if ($merge.ExitCode -ne 0) { throw 'fast-forward failed or timed out; no regular merge attempted' }
+            if ($merge.ExitCode -ne 0) {
+                $result.Status = 'FastForwardFailed'
+                throw 'fast-forward failed or timed out; no regular merge attempted'
+            }
         }
         finally {
             # A write can move HEAD and then fail. Inspect once, before releasing the lock,
@@ -92,8 +105,10 @@ function Update-WslAutomationRepo {
     catch {
         # Git output and exception text can contain credential-bearing URLs. Log only a
         # fixed status; a failed log write must also leave the task free to continue.
-        $message = "WARNING: checkout update skipped ($($result.Status)); continuing with current code"
-        try { Write-WslAutomationLog -Message $message -LogFile $LogFile } catch { Write-Verbose 'checkout update log unavailable' }
+        # Write-Warning adds its own 'WARNING: ' prefix, and the log line's console echo is
+        # discarded so the console shows the warning once.
+        $message = "checkout update skipped ($($result.Status)); continuing with current code"
+        try { Write-WslAutomationLog -Message "WARNING: $message" -LogFile $LogFile 6>$null } catch { Write-Verbose 'checkout update log unavailable' }
         Write-Warning -Message $message
     }
     finally {
