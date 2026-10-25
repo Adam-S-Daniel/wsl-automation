@@ -41,8 +41,11 @@ The hook writes the same block to `~/.codex/AGENTS.md` whenever `~/.codex`
 exists — Codex's global **user** instructions, outside its 32 KiB
 `project_doc_max_bytes` project-doc budget. Register it once per machine with
 `scripts/register-codex-hook.sh` from an `_agent-guidance` checkout, then
-trust it in `/hooks`. `codex debug prompt-input` shows exactly what a session
-loaded; no `fleet-guidance:` line there means DEGRADED.
+trust it in `/hooks`. `codex debug prompt-input` renders instructions loaded
+from disk by its own diagnostic process; it does not run SessionStart hooks
+or inspect an existing session or daemon. Verify delivery in the launched
+session's initial instructions and verdict; see the
+[2026-10-04 evidence](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/codex-trust-and-daemon-0160.md#prompt-debugging-source-read-2026-10-04-cli-01600-rust-v01600).
 
 For Codex Cloud, use **Manual** environment setup with persistent
 `CODEX_HOME=/opt/codex`. Preserve the repository's dependency setup and run
@@ -62,9 +65,12 @@ session that lost the guidance must not also lose these.
 - **Branch protection is real.** Fleet repos are PR-only on their default
   branch; a direct push is rejected (GH013), even from the repo's own
   workflows. Never design a bot that pushes to a protected default branch.
-- **Every `uses:` is pinned to a full 40-character commit SHA, with no
-  trailing version comment.** The one carve-out is a ref into this account's
-  own `cms-platform`, which stays on its release tag.
+- **Every `uses:` is pinned: an exact tag locked in
+  `.github/workflows/actions.lock` and checked by a required
+  `gh actions-lock --verify` failing on any pin finding, or a full
+  40-character commit SHA with no trailing version comment.** Cross-repo
+  reusable workflows take a full SHA either way. The one carve-out is a ref
+  into this account's own `cms-platform`, which stays on its release tag.
 - **Never commit secrets or `.env` files, and never print personal data to a
   CI log** — logs, artifacts and git history on a public repo are public.
 - **A successful `git push` does not mean your commit exists.** A refused
@@ -138,9 +144,35 @@ time is still the mechanism.
 `-StartWhenAvailable`.** `-StartWhenAvailable` used to fire a missed run the
 instant the machine came back — which is exactly the wrong moment twice over:
 it lands inside the WSL post-wake transition window (see below), and it gives
-`Invoke-WslBackup`'s own wake guard and activity gate (`Test-WslActivity`) no
-chance to defer first. An hourly retry still catches up a missed day within
-the same day, without racing the wake.
+the backup's own wake guard (`Invoke-WslResticBackup`, and the manual
+`Invoke-WslBackup`'s activity gate too) no chance to defer first. An hourly
+retry still catches up a missed day within the same day, without racing the
+wake; once a run succeeds, the rest of the day's retries skip silently.
+
+### The daily backup is a live restic backup, not `wsl --export`
+
+The `WSL Ubuntu Daily Backup` task runs `Invoke-WslResticBackup`: restic as
+root inside the running distro, into a repository on a local disk, then a
+one-way robocopy into the OneDrive-synced backup dir. `Invoke-WslBackup`
+(`wsl --export`) stays in the module as a manual-only command.
+
+- **Why.** `wsl --export` always stops the distro (next section), so every
+  nightly backup killed the running Claude Code sessions. That is not a flag
+  away: in the WSL source, `ExportDistribution` calls `_ConversionBegin`, which
+  calls `_TerminateInstanceInternal`. Don't look for an export mode that
+  leaves the distro running.
+- **`/mnt/*` is excluded on purpose.** `/mnt/wslg/distro` is a bind mount of
+  `/` on the same device, so `--one-file-system` does not skip it and the
+  backup would read the root filesystem twice (verified on the owner's machine
+  2026-10-20). Keep the line in `scripts/wsl-restic-excludes.txt`.
+- **It takes no `backup.lock`.** The lock exists so the keeper waits instead of
+  launching a session into a distro an export is about to stop. restic stops
+  nothing, so holding it would only delay the keeper.
+- **The OneDrive copy order is load-bearing.** Everything but `snapshots\`
+  first (`/E`, no deletes), then `snapshots\` (`/MIR`), and only on the weekly
+  prune run `index\` then `data\` (`/MIR`). OneDrive can upload at any instant;
+  in this order it never holds a snapshot whose packs have not arrived, and
+  never loses a pack a surviving snapshot still needs.
 
 ### `wsl --export` stops the running distro
 
@@ -288,8 +320,8 @@ hardest: one hung instance suppresses every subsequent interval for the whole
 execution-time limit, not just the next one.
 
 **Recognising it:** the run starts on time, the log stops a few seconds in, and
-Task Scheduler Id 329 terminates it at *exactly* `ExecutionTimeLimit` later (4h
-for the backup, 2h for the keeper, 5 min for ccstatusline).
+Task Scheduler Id 329 terminates it at *exactly* `ExecutionTimeLimit` later (2h
+for the backup and the keeper, 5 min for ccstatusline).
 `LastTaskResult=267014` (`0x41306`, `SCHED_S_TASK_TERMINATED`) is the signature
 — a stuck prompt, not a slow export. Note it is a *terminated* result, not an
 error one, so failure-only alerting will not see it.
@@ -336,9 +368,9 @@ Windows user account*. A task running as SYSTEM sees no distro at all, so every
 `wsl.exe` call against it is meaningless. It registers cleanly, runs on
 schedule, exits, and backs up nothing — no error to notice.
 
-The accepted cost of a user principal is that these tasks cannot run before
-someone has logged on. That is expected; `-StartWhenAvailable` covers it for the
-backup.
+The accepted cost of a user principal is that the interactive tasks cannot run
+before someone has logged on. That is expected. The S4U tasks, the backup among
+them, run either way, and the backup's hourly retry covers a missed run.
 
 ### `wsl --export --vhd` and throwaway distros
 
@@ -403,3 +435,33 @@ change their own linger) and starts the manager.
 - **Linger is intentionally enabled on this machine.** Do not turn it off to
   "clean up"; the keeper's repair and the user's own recovery both rely on it.
 - The manager is addressed by numeric uid, so no user name reaches a log.
+
+### CI: three required checks that always run
+
+`.github/workflows/ci.yml` has three jobs, `shell` (ubuntu), `test` (windows)
+and `test-linux` (ubuntu), intended as required status checks; they are made
+required in repo-settings' `fleet.yml` after this lands. A required check
+cannot use `on.paths` (a skipped check blocks the merge), so all three run on
+every pull request and skip early instead: each job's `salient` step diffs the
+pull request's base and head and gates every later step on it, and a final
+step reports success when nothing salient changed. The salient paths are
+`src/**`, `scripts/**`, `tests/**`, `.github/workflows/ci.yml`,
+`.github/workflows/actions.lock` and `PSScriptAnalyzerSettings.psd1`. On any
+other event, or when the changed files cannot be determined, the job runs in
+full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;
+`tests/CiWorkflow.Tests.ps1` enforces that shape.
+
+**Action pins.** Workflows name actions by release tag, locked to a commit in
+`.github/workflows/actions.lock`
+([ADR 0024](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0024-actions-pin-through-lockfiles.md)).
+
+- The `shell` job runs the shared
+  [`Adam-S-Daniel/verify-actions-lock`](https://github.com/Adam-S-Daniel/verify-actions-lock)
+  check, which verifies the lockfile only when a pull request touches workflow
+  dependencies.
+- After changing a `uses:`, regenerate with `gh actions-lock --no-narrow`.
+- A moved or unreachable pin: find out why first, then recover with
+  `gh actions-lock --accept-moved`.
+- `reachability-unknown` means GitHub's API was unreachable; re-run the job.
+- Cross-repo reusable workflows (`jobs.<id>.uses`) are not covered by the
+  lockfile and take a full 40-character commit SHA.
