@@ -214,7 +214,7 @@ Describe 'Invoke-WslResticBackup' {
             Invoke-WslResticBackup @script:baseParams | Out-Null
 
             $copyDir = Join-Path $script:backupDir 'restic'
-            $options = '/R:2|/W:5|/NP|/NFL|/NDL|/NJH|/NJS'
+            $options = '/COPY:DT|/DCOPY:T|/R:2|/W:5|/NP|/NFL|/NDL|/NJH|/NJS'
             $script:robocopyCalls.Count | Should -Be 2
             ($script:robocopyCalls[0] -join '|') | Should -Be "$($script:repoDir)|$copyDir|/E|/XD|$($script:repoDir)\snapshots|$($script:repoDir)\locks|$options"
             ($script:robocopyCalls[1] -join '|') | Should -Be "$($script:repoDir)\snapshots|$copyDir\snapshots|/MIR|$options"
@@ -234,7 +234,7 @@ Describe 'Invoke-WslResticBackup' {
             ($script:robocopyCalls[2][0..2] -join '|') | Should -Be "$($script:repoDir)\index|$copyDir\index|/MIR"
             ($script:robocopyCalls[3][0..2] -join '|') | Should -Be "$($script:repoDir)\data|$copyDir\data|/MIR"
             foreach ($call in $script:robocopyCalls) {
-                ($call[-7..-1] -join '|') | Should -Be '/R:2|/W:5|/NP|/NFL|/NDL|/NJH|/NJS'
+                ($call[-9..-1] -join '|') | Should -Be '/COPY:DT|/DCOPY:T|/R:2|/W:5|/NP|/NFL|/NDL|/NJH|/NJS'
             }
         }
 

@@ -206,7 +206,10 @@ function Invoke-WslResticBackup {
     # path never ends in one inside robocopy's quoted arguments.
     $repoRoot = $RepoDir.TrimEnd('\')
     $copyDir = Join-Path $BackupDir 'restic'
-    $robocopyOptions = @('/R:2', '/W:5', '/NP', '/NFL', '/NDL', '/NJH', '/NJS')
+    # /COPY:DT and /DCOPY:T copy data and timestamps only, never attributes. Robocopy's
+    # defaults (/COPY:DAT, /DCOPY:DA) copy the local repo's attributes onto the OneDrive copy,
+    # which cleared its "Always keep on this device" pin on the first real run (2026-10-23).
+    $robocopyOptions = @('/COPY:DT', '/DCOPY:T', '/R:2', '/W:5', '/NP', '/NFL', '/NDL', '/NJH', '/NJS')
     $copySteps = @(
         @{ Name = 'repository (except snapshots)'; Arguments = @($repoRoot, $copyDir, '/E', '/XD', "$repoRoot\snapshots", "$repoRoot\locks") },
         @{ Name = 'snapshots'; Arguments = @("$repoRoot\snapshots", (Join-Path $copyDir 'snapshots'), '/MIR') }

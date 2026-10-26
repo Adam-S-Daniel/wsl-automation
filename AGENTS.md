@@ -173,6 +173,10 @@ one-way robocopy into the OneDrive-synced backup dir. `Invoke-WslBackup`
   prune run `index\` then `data\` (`/MIR`). OneDrive can upload at any instant;
   in this order it never holds a snapshot whose packs have not arrived, and
   never loses a pack a surviving snapshot still needs.
+- **The copy never carries attributes** (`/COPY:DT /DCOPY:T`). Robocopy's
+  defaults copy the local folder's attributes over the OneDrive folder's and
+  cleared its "Always keep on this device" pin on the first real run
+  (2026-10-23).
 
 ### `wsl --export` stops the running distro
 
