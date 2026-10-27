@@ -239,8 +239,8 @@ Observed live 2026-09-27: a second interactive Claude Code session
 (`claude --resume <id>`, left open in a terminal alongside its npm/node MCP
 child processes) deferred the backup 13 consecutive daily runs with
 `Deferred: WSL in use (... claude, npm, node)`. Only the `-ForceAfterDays`
-override (9 days when this was observed; 3 now, in-window only) would ever have let a backup
-through — people routinely leave Claude sessions open, so this defeated the
+override (9 days when this was observed; the default is `-ForceAfterDays 3`, in-window
+only) would ever have let a backup through — people routinely leave Claude sessions open, so this defeated the
 activity gate's whole point. Don't re-treat a `claude` process as activity on
 sight; it isn't one.
 
@@ -317,8 +317,9 @@ tab could relaunch it every interval. Keep it that way. The daemon has no pty, s
 script runs unattended. A scheduled task has no console to answer them, so the
 run does not fail — it **hangs until `ExecutionTimeLimit` kills it**.
 
-This is why `wsl-ubuntu-backup.ps1` keeps its `Read-Host` behind `-NoPause` and
-why the registered action must always pass it. Every new script wired into a
+This is why `wsl-restic-backup.ps1`, the script the registered backup task runs,
+keeps its `Read-Host` behind `-NoPause` and why the registered action must always
+pass it. Every new script wired into a
 task needs the same treatment — and the short-interval tasks (keeper,
 ccstatusline sync, both `-MultipleInstances IgnoreNew`) are where it bites
 hardest: one hung instance suppresses every subsequent interval for the whole
@@ -390,8 +391,9 @@ when `-Format vhdx`) and no test exercises it for real — every test mocks the
 `Invoke-WslExe` seam. Real, previously-booted distros export to vhdx fine.
 
 Expect the vhdx to run roughly twice the size of the tar for the same distro,
-and the export to take proportionally longer — worth checking against the backup
-task's 4h `ExecutionTimeLimit` before switching a machine to `-Format vhdx`.
+and the export to take proportionally longer — worth planning for before running a
+manual `-Format vhdx` export; no scheduled task runs it (the daily backup task has a
+2h `ExecutionTimeLimit` and runs restic).
 
 ### PowerShell invoked from WSL is never elevated
 
@@ -413,11 +415,11 @@ section keeps only what is specific to this repo:
 - **Reads are the WSL-side tool.** `Get-ScheduledTask`, `Get-ScheduledTaskInfo`
   and `Export-ScheduledTask` against the tasks work from WSL; use them to
   investigate and to export what a re-registration will replace.
-- **The line to hand over is the installer, as the README's step 3 gives it:**
+- **The line to hand over is the installer, as the README's step 4 gives it:**
   from an elevated PowerShell 7.6+ prompt in the Windows checkout
   (`D:\repos\adam-s-daniel\wsl-automation`),
-  `.\scripts\register-tasks.ps1 -BackupDir '<dir>'` — re-running it updates
-  the existing tasks in place.
+  `.\scripts\register-tasks.ps1 -BackupDir '<dir>' -ResticRepoDir '<dir>'` —
+  re-running it updates the existing tasks in place.
 
 ### The keeper restarts a dead WSL user manager, and linger stays on
 
