@@ -400,4 +400,25 @@ assert_eq "$rc" 1 'a failure run for the log check exits 1'
 assert_eq "$(log_count)" 1000 'the log is cut to its most recent half'
 assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" 'error=http_500' 'the newest line is kept'
 
+# --- jq found only in ~/.local/bin (the task's non-login shell) -----------------
+# A PATH with every tool but jq, and jq only under $HOME/.local/bin.
+nojq="$test_root/nojq-bin"
+mkdir -p "$nojq" "$HOME/.local/bin"
+for tool in /usr/local/bin/* /usr/bin/* /bin/*; do
+    name=${tool##*/}
+    [[ $name == jq || -e $nojq/$name ]] || ln -s "$tool" "$nojq/$name"
+done
+ln -sf "$test_root/bin/curl" "$nojq/curl"
+ln -sf "$(command -v jq)" "$HOME/.local/bin/jq"
+t=$((t + 5000))
+rc=0
+out=$(PATH="$nojq" WAITING_FEED_NOW=$t GIT_COMMITTER_DATE="$t +0000" bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 0 'jq in ~/.local/bin is found without a login shell'
+assert_match "$out" 'published=dry-run$' 'the run with jq in ~/.local/bin completes'
+rm -f -- "$HOME/.local/bin/jq"
+rc=0
+out=$(PATH="$nojq" WAITING_FEED_NOW=$t bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 1 'no jq anywhere still fails'
+assert_eq "$out" 'missing dependency: jq' 'no jq anywhere is named'
+
 printf 'PASS: %s assertions\n' "$passed"

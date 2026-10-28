@@ -35,6 +35,10 @@
 #   WAITING_FEED_LOG          log file (default ~/.cache/waiting-feed.log)
 set -euo pipefail
 
+# The task starts a non-login shell (wsl.exe --exec), whose PATH lacks
+# ~/.local/bin, where jq may be installed. Append it so system tools still win.
+PATH="$PATH:$HOME/.local/bin"
+
 # Never wait on a credential prompt: the task runs with no one to answer it.
 export GIT_TERMINAL_PROMPT=0
 

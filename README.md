@@ -661,7 +661,8 @@ up the new PATH.
   the census wrapper it does not run the Windows checkout updater: a `pwsh.exe`
   update with a 300 second timeout is too heavy for a one-minute cadence, so it
   runs the checked-out script as it is (which the other tasks keep at
-  `origin/main`).
+  `origin/main`). `wsl.exe --exec` starts a non-login shell, so the script
+  appends `~/.local/bin` to `PATH` itself to find a user-installed `jq`.
 - **It never refreshes the login.** The token comes from
   `.claudeAiOauth.accessToken` in `~/.claude/.credentials.json` (the
   organization from `~/.claude.json`) and is passed to curl through a private
