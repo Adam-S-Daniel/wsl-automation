@@ -1035,6 +1035,35 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         )
     }
 
+    It 'bootstraps every script action, so a new task cannot skip the checkout update' {
+        # Discovered from the installer rather than listed, so a task added later fails here
+        # until its entry goes through one of the two shared bootstraps.
+        foreach ($entry in $script:actionScripts) {
+            $path = Join-Path $script:repoRoot 'scripts' $entry
+            if ($entry.EndsWith('.ps1')) {
+                $source = Get-Content $path -Raw
+                $source | Should -Match '(?m)^\. \(Join-Path \$PSScriptRoot ''update-task-checkout\.ps1''\)\r?$' -Because $entry
+                $source | Should -Match '(?m)^\$taskBootstrap = Initialize-WslAutomationTask ' -Because $entry
+                continue
+            }
+            $entry | Should -BeLike '*.sh'
+            # Before the call: only comments, set -euo pipefail, and the two lines that find
+            # and source the shared Bash bootstrap.
+            $allowed = @(
+                'set -euo pipefail',
+                'scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)',
+                '. "$scripts_dir/update-task-checkout.sh"'
+            )
+            $call = "wsl_automation_task_bootstrap `"`$scripts_dir/$entry`" "
+            $lines = @(Get-Content $path)
+            $callIndex = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].StartsWith($call)) { $i } })
+            $callIndex.Count | Should -Be 1 -Because "$entry calls the bootstrap once, for itself"
+            $lines[$callIndex[0]] | Should -Match ' \d+ \d+ "\$@"$' -Because "$entry passes its interval, deadline and arguments"
+            $before = @($lines[0..($callIndex[0] - 1)] | Where-Object { $_.Trim() -ne '' -and -not $_.StartsWith('#') })
+            $before | Should -Be $allowed -Because "$entry updates before any other work"
+        }
+    }
+
     It 'bootstraps <Entry> before importing and invoking task code' -ForEach @(
         @{ Entry = 'ensure-claude-session.ps1'; Work = 'Invoke-ClaudeSessionKeeper' },
         @{ Entry = 'sync-ccstatusline-config.ps1'; Work = 'Update-CcstatuslineConfig' },

@@ -55,10 +55,13 @@ jobs:
         uses: Adam-S-Daniel/verify-actions-lock@v1.1.0
       - name: ShellCheck
         if: steps.salient.outputs.run == 'true'
-        run: shellcheck scripts/sync-codex-cloud-environments.sh tests/sync-codex-cloud-environments.test.sh scripts/publish-usage-census.sh tests/publish-usage-census.test.sh scripts/wsl-restic-backup.sh tests/wsl-restic-backup.test.sh scripts/publish-waiting-feed.sh tests/publish-waiting-feed.test.sh
+        run: shellcheck scripts/update-task-checkout.sh tests/update-task-checkout.test.sh scripts/sync-codex-cloud-environments.sh tests/sync-codex-cloud-environments.test.sh scripts/publish-usage-census.sh tests/publish-usage-census.test.sh scripts/wsl-restic-backup.sh tests/wsl-restic-backup.test.sh scripts/publish-waiting-feed.sh tests/publish-waiting-feed.test.sh
       - name: Codex Cloud environment sync behavior test
         if: steps.salient.outputs.run == 'true'
         run: bash tests/sync-codex-cloud-environments.test.sh
+      - name: Task checkout bootstrap behavior test
+        if: steps.salient.outputs.run == 'true'
+        run: bash tests/update-task-checkout.test.sh
       - name: Usage census wrapper behavior test
         if: steps.salient.outputs.run == 'true'
         run: bash tests/publish-usage-census.test.sh
