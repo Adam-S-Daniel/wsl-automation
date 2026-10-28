@@ -406,7 +406,7 @@ nojq="$test_root/nojq-bin"
 mkdir -p "$nojq" "$HOME/.local/bin"
 for tool in /usr/local/bin/* /usr/bin/* /bin/*; do
     name=${tool##*/}
-    [[ $name == jq || -e $nojq/$name ]] || ln -s "$tool" "$nojq/$name"
+    [[ $name == jq || -e $nojq/$name || -L $nojq/$name ]] || ln -s "$tool" "$nojq/$name"
 done
 ln -sf "$test_root/bin/curl" "$nojq/curl"
 ln -sf "$(command -v jq)" "$HOME/.local/bin/jq"
