@@ -401,9 +401,9 @@ The rule itself — `powershell.exe` / `pwsh.exe` launched from WSL holds a
 filtered token, so reads succeed while elevation-requiring writes fail with
 "Access is denied", and no flag, retry or downgraded principal fixes it — and
 the hand-over procedure live in the **`windows-elevation-from-wsl`** skill
-(`adam-local` bundle in `agentskills`; `/adam-local:windows-elevation-from-wsl`),
-pointed at from the fleet guidance's "Workstation layout" section. This
-section keeps only what is specific to this repo:
+(`adam-coding-local` plugin in `adam-agentskills`;
+`/adam-coding-local:windows-elevation-from-wsl`). This section keeps only what
+is specific to this repo:
 
 - **Both writes this repo makes need elevation.** `scripts\register-tasks.ps1`
   carries `#requires -RunAsAdministrator`, so from WSL it refuses before the
