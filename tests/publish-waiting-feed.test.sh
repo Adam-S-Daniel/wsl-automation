@@ -138,8 +138,29 @@ now=1790000000
 remote="$test_root/remote.git"
 git init --quiet --bare -b main "$remote"
 export HOME="$test_root/home"
-export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
+# main stands in for a fleet repo's default branch, with files of its own.
+seed="$test_root/seed"
+GIT_CONFIG_GLOBAL=/dev/null git init --quiet -b main "$seed"
+printf '%s\n' 'fleet file' >"$seed/AGENTS.md"
+GIT_CONFIG_GLOBAL=/dev/null git -C "$seed" add AGENTS.md
+GIT_CONFIG_GLOBAL=/dev/null git -C "$seed" -c user.name=x -c user.email=x@example.com commit --quiet -m 'fleet delivery'
+GIT_CONFIG_GLOBAL=/dev/null git -C "$seed" push --quiet "$remote" HEAD:main
+main_seed=$(git --git-dir="$remote" rev-parse main)
+# Like the fleet's agent-checks pre-push hook: refuse a push to main, and a
+# push made while the index holds staged changes.
+mkdir -p "$test_root/hooks"
+cat >"$test_root/hooks/pre-push" <<'HOOK'
+#!/usr/bin/env bash
+git diff --cached --quiet || { echo 'test hook: staged index' >&2; exit 1; }
+while read -r _ _ remote_ref _; do
+    [[ $remote_ref == refs/heads/main ]] && { echo 'test hook: push to main' >&2; exit 1; }
+done
+exit 0
+HOOK
+chmod +x "$test_root/hooks/pre-push"
+printf '[core]\n\thooksPath = %s\n' "$test_root/hooks" >"$test_root/gitconfig"
+export GIT_CONFIG_GLOBAL="$test_root/gitconfig"
 export XDG_RUNTIME_DIR="$test_root/run"
 export WAITING_FEED_CREDENTIALS="$test_root/credentials.json"
 export WAITING_FEED_CLAUDE_JSON="$test_root/claude.json"
@@ -165,9 +186,10 @@ run_feed() {
 reset_calls() { rm -f -- "$CURL_ARGV" "$CURL_ARGV.auth" "$CURL_ARGV.flags"; }
 call_count() { if [[ -f $CURL_ARGV ]]; then wc -l <"$CURL_ARGV" | tr -d ' '; else echo 0; fi; }
 log_count() { if [[ -f $WAITING_FEED_LOG ]]; then wc -l <"$WAITING_FEED_LOG" | tr -d ' '; else echo 0; fi; }
-commit_count() { git --git-dir="$remote" rev-list --count main 2>/dev/null || echo 0; }
-remote_head() { git --git-dir="$remote" rev-parse main 2>/dev/null || echo none; }
-remote_feed() { git --git-dir="$remote" show main:feed.json; }
+feed_ref=persistent/waiting-feed
+commit_count() { git --git-dir="$remote" rev-list --count "$feed_ref" 2>/dev/null || echo 0; }
+remote_head() { git --git-dir="$remote" rev-parse "$feed_ref" 2>/dev/null || echo none; }
+remote_feed() { git --git-dir="$remote" show "$feed_ref:feed.json"; }
 remote_jq() { remote_feed | jq -r "$1"; }
 
 # --- First run: clones the empty remote, filters, maps, publishes ---------------
@@ -246,18 +268,15 @@ assert_no_match "$out" 'SECRETTITLE|cse_|TESTTOKEN' 'output has no titles, ids o
 assert_eq "$(log_count)" 1 'a publishing run is logged'
 assert_match "$(sed -n 1p "$WAITING_FEED_LOG")" '^2026-[0-9-]+T[0-9:]+Z exit=0 waiting feed: ok=true wait=7 review=4 published=yes$' 'log line format'
 assert_no_match "$(cat "$WAITING_FEED_LOG")" 'SECRETTITLE|cse_|TESTTOKEN' 'log has no titles, ids or tokens'
-assert_eq "$(git --git-dir="$remote" log -1 --format=%ae main)" '4205216+Adam-S-Daniel@users.noreply.github.com' 'fallback commit identity'
-assert_eq "$(git --git-dir="$remote" log -1 --format=%s main)" 'Update waiting feed (7 wait, 4 review)' 'commit message'
+assert_eq "$(git --git-dir="$remote" log -1 --format=%ae "$feed_ref")" '4205216+Adam-S-Daniel@users.noreply.github.com' 'fallback commit identity'
+assert_eq "$(git --git-dir="$remote" log -1 --format=%s "$feed_ref")" 'Update waiting feed (7 wait, 4 review)' 'commit message'
 
 # --- Unchanged within 900 s: nothing happens -------------------------------------
-head_before=$(git -C "$WAITING_FEED_DIR" rev-parse HEAD)
 remote_before=$(remote_head)
-feed_before=$(cat "$WAITING_FEED_DIR/feed.json")
 WAITING_FEED_NOW=$((now + 60)) run_feed
 assert_eq "$rc" 0 'unchanged run exits 0'
 assert_eq "$out" 'waiting feed: ok=true wait=7 review=4 published=no' 'unchanged run output'
-assert_eq "$(git -C "$WAITING_FEED_DIR" rev-parse HEAD)" "$head_before" 'no new commit within 900 s'
-assert_eq "$(cat "$WAITING_FEED_DIR/feed.json")" "$feed_before" 'working tree untouched within 900 s'
+assert_eq "$(remote_head)" "$remote_before" 'no new commit within 900 s'
 assert_eq "$(git -C "$WAITING_FEED_DIR" status --short)" '' 'clone stays clean'
 assert_eq "$(commit_count)" 1 'remote has no new commit'
 assert_eq "$(log_count)" 1 'a quiet minute adds no log line'
@@ -268,7 +287,7 @@ assert_eq "$rc" 0 'heartbeat run exits 0'
 assert_eq "$out" 'waiting feed: ok=true wait=7 review=4 published=yes' 'heartbeat output'
 assert_eq "$(commit_count)" 1 'heartbeat replaces the single commit'
 assert_no_match "$(remote_head)" "^$remote_before\$" 'heartbeat commit is pushed'
-assert_eq "$(git --git-dir="$remote" log -1 --format=%s main)" 'Update waiting feed (7 wait, 4 review) [heartbeat]' 'heartbeat commit message'
+assert_eq "$(git --git-dir="$remote" log -1 --format=%s "$feed_ref")" 'Update waiting feed (7 wait, 4 review) [heartbeat]' 'heartbeat commit message'
 assert_eq "$(remote_jq '.generated_at')" "$(date -u -d "@$((now + 900))" +%Y-%m-%dT%H:%M:%SZ)" 'heartbeat refreshes generated_at'
 assert_eq "$(log_count)" 2 'heartbeat is logged'
 
@@ -280,10 +299,14 @@ WAITING_FEED_NOW=$t run_feed
 assert_eq "$out" 'waiting feed: ok=true wait=8 review=3 published=yes' 'changed output'
 assert_eq "$(commit_count)" 1 'the remote keeps one commit'
 assert_no_match "$(remote_head)" "^$remote_before\$" 'a changed feed is committed and pushed'
-assert_eq "$(git --git-dir="$remote" rev-list --max-parents=0 main)" "$(remote_head)" 'the commit has no parent'
-assert_eq "$(git -C "$WAITING_FEED_DIR" rev-parse HEAD)" "$(git --git-dir="$remote" rev-parse main)" 'remote head equals the clone head'
+assert_eq "$(git --git-dir="$remote" rev-list --max-parents=0 "$feed_ref")" "$(remote_head)" 'the commit has no parent'
+assert_eq "$(git -C "$WAITING_FEED_DIR" rev-parse "refs/remotes/origin/$feed_ref")" "$(remote_head)" 'the clone tracks the pushed feed'
+assert_eq "$(git --git-dir="$remote" ls-tree --name-only "$feed_ref")" feed.json 'the feed commit holds only feed.json'
+assert_eq "$(git --git-dir="$remote" rev-parse main)" "$main_seed" 'main is never written'
+assert_eq "$(git -C "$WAITING_FEED_DIR" rev-parse HEAD)" "$main_seed" 'the clone stays on main'
+assert_eq "$(git -C "$WAITING_FEED_DIR" status --short)" '' 'the clone stays clean after a publish'
 assert_eq "$(remote_jq '.items[0].id')" cse_a7 'new item is first'
-assert_eq "$(git --git-dir="$remote" log -1 --format=%s main)" 'Update waiting feed (8 wait, 3 review)' 'changed commit message has no heartbeat tag'
+assert_eq "$(git --git-dir="$remote" log -1 --format=%s "$feed_ref")" 'Update waiting feed (8 wait, 3 review)' 'changed commit message has no heartbeat tag'
 
 # --- --dry-run writes, commits and pushes nothing -------------------------------
 page p2 "$a1" >"$FX/page1.json"
@@ -309,7 +332,7 @@ assert_eq "$(call_count)" 0 'expired token makes no curl call'
 assert_eq "$(remote_jq '.ok')" false 'expired state is published'
 assert_eq "$(remote_jq '.error')" login_expired 'expired error code'
 assert_eq "$(remote_jq '[.items[].id] | join(" ")')" "$prev_ids" 'expired token keeps the previous items'
-assert_match "$(git --git-dir="$remote" log -1 --format=%s main)" '\[ok=false: login_expired\]$' 'failure commit message names the error'
+assert_match "$(git --git-dir="$remote" log -1 --format=%s "$feed_ref")" '\[ok=false: login_expired\]$' 'failure commit message names the error'
 assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" 'exit=1 waiting feed: ok=false error=login_expired ' 'failure is logged with exit 1'
 
 # The same failure again, within 900 s: no new commit, but still nonzero and logged.
@@ -352,15 +375,15 @@ failure_case no_credentials WAITING_FEED_CREDENTIALS="$test_root/missing.json"
 # --- A push that fails exits nonzero and is retried on the next run --------------
 t=$((t + 5000))
 page p2 "$a1" "$(item a8 active blocked 13 '[]' claude_code_cli 'Another ask' '')" >"$FX/page1.json"
-printf '#!/bin/sh\nexit 1\n' >"$remote/hooks/pre-receive"
-chmod +x "$remote/hooks/pre-receive"
+printf '#!/bin/sh\nexit 1\n' >"$test_root/hooks/pre-receive"
+chmod +x "$test_root/hooks/pre-receive"
 commits=$(remote_head)
 WAITING_FEED_NOW=$t run_feed
 assert_eq "$rc" 1 'a failed push exits nonzero'
 assert_match "$out" 'published=failed$' 'a failed push is reported'
 assert_eq "$(remote_head)" "$commits" 'a failed push adds nothing to the remote'
 assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" 'exit=1 .*published=failed$' 'a failed push is logged'
-rm -f -- "$remote/hooks/pre-receive"
+rm -f -- "$test_root/hooks/pre-receive"
 WAITING_FEED_NOW=$((t + 30)) run_feed
 assert_eq "$rc" 0 'the next run publishes the change'
 assert_match "$out" 'published=yes$' 'the change is retried'
@@ -381,10 +404,11 @@ git -C "$WAITING_FEED_DIR" remote set-url origin "$good_url"
 # --- A commit made on the remote by hand does not wedge later pushes ------------
 other="$test_root/other"
 git clone --quiet "file://$remote" "$other"
+git -C "$other" checkout --quiet --detach "origin/$feed_ref"
 printf '%s\n' 'hand edit' >"$other/NOTE"
 git -C "$other" add NOTE
 git -C "$other" -c user.name=x -c user.email=x@example.com commit --quiet -m 'hand edit'
-git -C "$other" push --quiet origin HEAD:main
+git -C "$other" push --quiet origin "HEAD:refs/heads/$feed_ref"
 t=$((t + 5000))
 page p2 "$a1" "$(item a9 active blocked 14 '[]' claude_code_cli 'Yet another' '')" >"$FX/page1.json"
 WAITING_FEED_NOW=$t run_feed
