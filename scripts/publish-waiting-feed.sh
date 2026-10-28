@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publishes the "waiting on Adam" feed: his Claude Code cloud sessions that are
-# blocked or ready for review, as feed.json in a clone of the private
-# Adam-S-Daniel/waiting-feed repository.
+# blocked or ready for review, as feed.json on the persistent/waiting-feed
+# branch of the private Adam-S-Daniel/waiting-feed repository.
 #
 # Run every minute by the 'Claude Waiting Feed Publish' scheduled task, which
 # calls wsl.exe directly. It reads the Claude Code login that already exists
@@ -14,9 +14,13 @@
 # other tasks fast-forward to origin/main, so whatever lands on main runs here
 # with the Claude login and the git credential in reach.
 #
-# The feed repository is output only and keeps exactly one commit: each publish
-# replaces it (force-with-lease), so session titles and asks from earlier
-# minutes are not kept in its history. Titles are capped and obvious secret
+# The feed branch is output only and keeps exactly one commit, whose tree holds
+# feed.json and nothing else: each publish replaces it (force-with-lease), so
+# session titles and asks from earlier minutes are not kept in its history.
+# main is a fleet repo's default branch, which takes changes only through pull
+# requests (the agent-checks pre-push hook refuses a direct push), so the
+# script never writes it. The commit is built from objects, not the clone's
+# index or working tree, so the clone stays on a clean main. Titles are capped and obvious secret
 # shapes (API keys, tokens) are masked before anything is written.
 #
 # Output is one aggregate-only line per run: counts, never titles, ids or
@@ -64,6 +68,7 @@ feed_dir=${WAITING_FEED_DIR:-$HOME/.cache/waiting-feed}
 feed_url=${WAITING_FEED_URL:-https://github.com/Adam-S-Daniel/waiting-feed.git}
 log_file=${WAITING_FEED_LOG:-$HOME/.cache/waiting-feed.log}
 now=${WAITING_FEED_NOW:-$(date +%s)}
+readonly feed_branch=persistent/waiting-feed
 
 for dependency in curl jq flock git mktemp timeout; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
@@ -107,7 +112,8 @@ log_line() {
     fi
 }
 
-# The clone is the only state: its HEAD is the previous feed.
+# The clone is the only state: its origin/persistent/waiting-feed is the
+# previous feed.
 if [[ ! -d $feed_dir/.git ]]; then
     mkdir -p -- "$(dirname -- "$feed_dir")"
     if ! timeout 60 git clone --quiet -- "$feed_url" "$feed_dir" >/dev/null 2>&1; then
@@ -132,13 +138,14 @@ if ! same_repo "$("${git_feed[@]}" remote get-url origin 2>/dev/null || true)" "
 fi
 # The remote is the source of truth: anything committed there by hand (or a
 # replaced commit) must not wedge every later push as a non-fast-forward.
-if timeout 60 "${git_feed[@]}" fetch --quiet origin >/dev/null 2>&1 &&
-    remote_head=$("${git_feed[@]}" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null); then
-    "${git_feed[@]}" reset --quiet --hard "$remote_head" >/dev/null 2>&1 || true
+# Keeping the checkout on origin/main keeps the hooks it carries current.
+if timeout 60 "${git_feed[@]}" fetch --quiet --prune origin >/dev/null 2>&1 &&
+    main_head=$("${git_feed[@]}" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null); then
+    "${git_feed[@]}" reset --quiet --hard "$main_head" >/dev/null 2>&1 || true
 fi
-prev_head=$("${git_feed[@]}" rev-parse -q --verify HEAD 2>/dev/null || true)
+prev_head=$("${git_feed[@]}" rev-parse -q --verify "refs/remotes/origin/$feed_branch" 2>/dev/null || true)
 committed_file="$temporary_dir/committed.json"
-if [[ -n $prev_head ]] && "${git_feed[@]}" show HEAD:feed.json >"$committed_file" 2>/dev/null &&
+if [[ -n $prev_head ]] && "${git_feed[@]}" show "$prev_head:feed.json" >"$committed_file" 2>/dev/null &&
     jq -e 'type == "object"' "$committed_file" >/dev/null 2>&1; then
     :
 else
@@ -294,7 +301,10 @@ old_state=$(jq -S -c "$state" "$committed_file")
 publish=true
 message="Update waiting feed ($wait_count wait, $review_count review)"
 if [[ $new_state == "$old_state" ]]; then
-    committed_at=$("${git_feed[@]}" log -1 --format=%ct 2>/dev/null || echo 0)
+    committed_at=0
+    if [[ -n $prev_head ]]; then
+        committed_at=$("${git_feed[@]}" log -1 --format=%ct "$prev_head" 2>/dev/null || echo 0)
+    fi
     if ((now - committed_at < heartbeat_seconds)); then
         publish=false
     else
@@ -310,7 +320,6 @@ push_failed=false
 if $dry_run; then
     published=dry-run
 elif $publish; then
-    cp -- "$new_feed" "$feed_dir/feed.json"
     # A fixed noreply identity and a UTC date, whatever the machine's git config.
     export GIT_AUTHOR_NAME='Adam Daniel' GIT_COMMITTER_NAME='Adam Daniel'
     export GIT_AUTHOR_EMAIL=4205216+Adam-S-Daniel@users.noreply.github.com
@@ -318,23 +327,16 @@ elif $publish; then
     export GIT_AUTHOR_DATE="$now +0000" GIT_COMMITTER_DATE="$now +0000"
     # One parentless commit replaces the branch, so the history holds only the
     # current feed. The lease refuses the push if the remote moved since fetch.
-    lease=(--force-with-lease=main:)
-    if [[ -n $prev_head ]]; then
-        lease=(--force-with-lease=main:"$prev_head")
-    fi
-    if "${git_feed[@]}" add feed.json &&
-        tree=$("${git_feed[@]}" write-tree) &&
+    lease=(--force-with-lease="$feed_branch:$prev_head")
+    if blob=$("${git_feed[@]}" hash-object -w -- "$new_feed") &&
+        tree=$(printf '100644 blob %s\tfeed.json\n' "$blob" | "${git_feed[@]}" mktree) &&
         new_head=$("${git_feed[@]}" commit-tree "$tree" -m "$message" 2>/dev/null) &&
-        timeout 60 "${git_feed[@]}" push --quiet "${lease[@]}" origin "$new_head:refs/heads/main" >/dev/null 2>&1; then
-        "${git_feed[@]}" reset --quiet --hard "$new_head" >/dev/null 2>&1 || true
+        timeout 60 "${git_feed[@]}" push --quiet "${lease[@]}" origin "$new_head:refs/heads/$feed_branch" >/dev/null 2>&1; then
         published=yes
     else
+        # Nothing local changed, so the next run sees the change again.
         push_failed=true
         published=failed
-        # Drop the unpushed commit so the next run sees the change again.
-        if [[ -n $prev_head ]]; then
-            "${git_feed[@]}" reset --quiet --hard "$prev_head" >/dev/null 2>&1 || true
-        fi
     fi
 fi
 

@@ -646,9 +646,12 @@ up the new PATH.
   indefinitely. It lists your Claude Code cloud sessions from
   `GET https://api.anthropic.com/v1/code/sessions` (up to three pages of 100,
   plus one call for the `hearth-thread`, `cowork-local` and `cowork-remote`
-  tags), keeps the ones waiting on you, and writes `feed.json` into a clone of
-  the private [waiting-feed](https://github.com/Adam-S-Daniel/waiting-feed)
-  repository, then commits and pushes it to `main`.
+  tags), keeps the ones waiting on you, and pushes `feed.json` to the
+  `persistent/waiting-feed` branch of the private
+  [waiting-feed](https://github.com/Adam-S-Daniel/waiting-feed) repository.
+  It never writes `main`: waiting-feed is a fleet repo, its `main` takes
+  changes only through pull requests, and the agent-checks pre-push hook
+  refuses a direct push there.
 - The action is `wsl.exe` directly, as for the census:
 
   ```
@@ -714,14 +717,17 @@ up the new PATH.
   `bad_response` (the body was not the expected JSON).
 - **Publishing.** The clone is `~/.cache/waiting-feed` (`WAITING_FEED_DIR`),
   cloned from `WAITING_FEED_URL` when missing; a clone whose `origin` is any
-  other repository is refused. Each run first fetches and resets the clone to
-  `origin/main`, so a commit made there by hand can't block later pushes.
-  Nothing is committed while
+  other repository is refused. Each run first fetches (with `--prune`) and
+  resets the clone to `origin/main`, which keeps the hooks it carries current;
+  the previous feed is read from `origin/persistent/waiting-feed`, so a commit
+  made there by hand can't block later pushes. Nothing is committed while
   `ok`, `error` and `items` equal the committed ones and the last commit is
   under 15 minutes old; after that an unchanged feed is committed anyway as a
-  heartbeat so a reader can tell the publisher is alive. The repository keeps
-  exactly one commit: each publish pushes a new parentless commit with
-  `--force-with-lease`, so earlier titles and asks are not kept in its history
+  heartbeat so a reader can tell the publisher is alive. The feed branch keeps
+  exactly one commit, whose tree holds only `feed.json`: each publish pushes a
+  new parentless commit with `--force-with-lease`, built with `hash-object` and
+  `mktree` rather than the clone's index, so the clone stays clean and fleet
+  files on `main` never ride along. Earlier titles and asks are not kept in its history
   (GitHub may still hold replaced commits by hash for a while). Commits use the
   noreply identity and a UTC date. Clone, fetch and push each time out after 60
   seconds and never prompt for credentials. A failed push is logged and exits
