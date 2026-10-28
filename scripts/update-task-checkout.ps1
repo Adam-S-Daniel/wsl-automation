@@ -4,7 +4,8 @@
     Shared bootstrap for existing scheduled-task entry points.
 .DESCRIPTION
     Dot-source this file and call Initialize-WslAutomationTask before importing task code.
-    -UpdateOnly is the Windows-side bootstrap used by the WSL census entry point.
+    -UpdateOnly is the Windows-side update behind update-task-checkout.sh, the bootstrap the
+    Bash entry points (usage census, waiting feed) source.
 #>
 [CmdletBinding()]
 param([switch]$UpdateOnly)

@@ -169,6 +169,10 @@ export WAITING_FEED_DIR="$test_root/clone"
 export WAITING_FEED_URL="file://$remote"
 export WAITING_FEED_LOG="$test_root/cache/waiting-feed.log"
 export WAITING_FEED_NOW=$now
+# The checkout bootstrap has its own test (update-task-checkout.test.sh); mark
+# these runs as already re-executed so they test publishing only. The wiring
+# check at the end clears this.
+export WSL_AUTOMATION_TASK_REEXEC="$script"
 
 write_credentials() {
     jq -n --arg t "$TEST_TOKEN" --argjson e "$1" '{claudeAiOauth: {accessToken: $t, expiresAt: $e}}' >"$WAITING_FEED_CREDENTIALS"
@@ -444,5 +448,40 @@ rc=0
 out=$(PATH="$nojq" WAITING_FEED_NOW=$t bash "$script" --dry-run 2>&1) || rc=$?
 assert_eq "$rc" 1 'no jq anywhere still fails'
 assert_eq "$out" 'missing dependency: jq' 'no jq anywhere is named'
+
+# --- The entry updates its checkout first: every 300 s, within 120 s -----------
+mkdir -p "$test_root/bootstrap-bin"
+export BOOTSTRAP_CALLS="$test_root/bootstrap-calls"
+cat >"$test_root/bootstrap-bin/wslpath" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$2"
+EOF_STUB
+# Record only the bootstrap; the publisher's own timeout calls run for real.
+real_timeout=$(command -v timeout)
+cat >"$test_root/bootstrap-bin/timeout" <<EOF_STUB
+#!/usr/bin/env bash
+if [[ \${*: -1} == -UpdateOnly ]]; then
+    printf '%s\\n' "\$*" >>"\$BOOTSTRAP_CALLS"
+    exit 0
+fi
+exec $real_timeout "\$@"
+EOF_STUB
+chmod +x "$test_root/bootstrap-bin/"*
+t=$((t + 60))
+bootstrap_run() {
+    rc=0
+    out=$(env -u WSL_AUTOMATION_TASK_REEXEC PATH="$test_root/bootstrap-bin:$PATH" \
+        WSL_AUTOMATION_UPDATE_STAMP="$test_root/state/stamp" WSL_AUTOMATION_NOW="$1" \
+        WAITING_FEED_NOW=$t GIT_COMMITTER_DATE="$t +0000" bash "$script" --dry-run 2>&1) || rc=$?
+}
+bootstrap_run "$t"
+assert_eq "$rc" 0 'a bootstrapped run still publishes'
+assert_match "$out" 'published=dry-run$' 'the bootstrapped run reaches the publisher with its arguments'
+assert_match "$(sed -n 1p "$BOOTSTRAP_CALLS")" '^--kill-after=5s 120s .*pwsh\.exe -NoProfile -File .*/scripts/update-task-checkout\.ps1 -UpdateOnly$' 'the feed updates through the shared updater within 120 s'
+bootstrap_run $((t + 299))
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 1 'the feed skips the update within 300 s of the last attempt'
+assert_match "$out" 'published=dry-run$' 'a throttled run still publishes'
+bootstrap_run $((t + 300))
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 2 'the feed updates again after 300 s'
 
 printf 'PASS: %s assertions\n' "$passed"

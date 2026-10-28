@@ -8,10 +8,11 @@
 # (~/.claude/.credentials.json) and NEVER refreshes it: an expired login is
 # reported as login_expired and the previous items are kept.
 #
-# Unlike publish-usage-census.sh this does not bootstrap a Windows checkout
-# update itself (a pwsh.exe updater with a 300 s timeout is far too heavy for a
-# 1-minute cadence). It still runs from the shared task checkout, which the
-# other tasks fast-forward to origin/main, so whatever lands on main runs here
+# Like every task entry it first updates the shared task checkout from main
+# and re-execs itself (update-task-checkout.sh), but at most once every 5
+# minutes and within 120 seconds: a Windows PowerShell host and a fetch every
+# minute would cost more than the publish, and the task's own limit is 5
+# minutes. Whatever lands on main therefore runs here, within about 5 minutes,
 # with the Claude login and the git credential in reach.
 #
 # The feed branch is output only and keeps exactly one commit, whose tree holds
@@ -38,6 +39,13 @@
 #   WAITING_FEED_URL          feed remote (default the private GitHub repo)
 #   WAITING_FEED_LOG          log file (default ~/.cache/waiting-feed.log)
 set -euo pipefail
+
+# Update the checkout from main and re-exec this entry first: at most every
+# 300 seconds, bounded to 120 seconds. See update-task-checkout.sh.
+scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/update-task-checkout.sh
+. "$scripts_dir/update-task-checkout.sh"
+wsl_automation_task_bootstrap "$scripts_dir/publish-waiting-feed.sh" 300 120 "$@"
 
 # The task starts a non-login shell (wsl.exe --exec), whose PATH lacks
 # ~/.local/bin, where jq may be installed. Append it so system tools still win.

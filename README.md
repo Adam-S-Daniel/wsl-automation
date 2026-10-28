@@ -182,15 +182,28 @@ there is nothing for the keeper to wait out.
 
 ### Checkout update before every scripted task
 
-The five task actions that run repo scripts (backup, keeper, ccstatusline sync,
-Codex Cloud sync, and usage census) first call `Update-WslAutomationRepo` for
-that same checkout. The two on-demand launcher actions invoke their CLIs
-directly and have no repo script to update. Existing task actions are unchanged;
-**no re-registration is needed** after deploying this change to the checkout.
-The every-minute waiting feed task does not call the updater itself, but it runs
-from the same checkout, so the other tasks' updates reach it too: whatever lands
-on `main` runs every minute with the Claude login and the git credential in
-reach. Keep `main` protected.
+Every task action that runs a repo script (backup, keeper, ccstatusline sync,
+Codex Cloud sync, usage census, and waiting feed) first updates that same
+checkout through one updater, `Update-WslAutomationRepo`, before it loads any
+task code. The two on-demand launcher actions invoke their CLIs directly and have
+no repo script to update. All six run from the one Windows checkout; the Bash
+tasks reach it through its `/mnt` path, so there is no second clone to keep
+current. Whatever lands on `main` runs with the Claude login and the git
+credential in reach, so keep `main` protected.
+
+There are two entry shapes and one bootstrap for each, both calling the same
+updater:
+
+| Entry | Bootstrap | Tries | Bounded by |
+| --- | --- | --- | --- |
+| PowerShell (backup, keeper, ccstatusline, Codex Cloud) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
+| Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
+| Bash in WSL: waiting feed (every minute) | `scripts/update-task-checkout.sh` | at most every 5 minutes | 120 s overall |
+
+The task actions themselves are unchanged, so **no re-registration is needed**
+when the bootstrap changes; the next run of any task picks it up from the
+checkout. A Pester test reads the installer's registered actions and fails if
+any script action skips its bootstrap, so a new task cannot be added without it.
 
 Each run fetches `origin`, switches to `main` if necessary and the working tree
 is clean, then runs `git merge --ff-only origin/main`. The old 12-hour update
@@ -212,11 +225,18 @@ intervals do not grow the log with no-op messages.
 
 When HEAD changes, PowerShell entries run themselves once in a fresh
 PowerShell host before loading task code, preserving parameters and exit status.
-The census entry calls the same updater through PowerShell 7 (`pwsh.exe`
-on PATH, falling back to the standard MSI install), then re-execs its Bash
-entry from disk once. Coreutils `timeout` bounds the census bootstrap to 300
-seconds, with a 5-second kill grace period; a timeout or missing utility warns
-and lets publishing continue. Environment guards prevent either entry from looping.
+The Bash entries source `update-task-checkout.sh`, which calls the same updater
+through PowerShell 7 (`pwsh.exe` on PATH, falling back to the standard MSI
+install) as `update-task-checkout.ps1 -UpdateOnly`, then re-execs the entry from
+disk once with its arguments (Bash reads a script as it runs, so the old copy
+must not carry on). Coreutils `timeout` bounds that Windows update to the
+entry's deadline, with a 5-second kill grace period; a timeout or a missing
+utility warns and lets the task continue. The waiting feed's 5-minute throttle
+is by attempt, recorded in `~/.local/state/wsl-automation/checkout-update.stamp`:
+starting a Windows PowerShell host and fetching every minute would cost more
+than the publish itself, and an offline machine then retries once per interval
+rather than every minute. Its 120-second deadline leaves room inside the task's
+5-minute limit. Environment guards keep every entry from looping.
 `pull-repo.ps1` remains a separate, manual general-purpose pull tool; scheduled
 self-updates do not call it.
 
@@ -660,11 +680,11 @@ up the new PATH.
 
 - Runs as a background S4U task for the current Windows user (session 0).
   Allowed on battery, 5 minute execution limit, ignores a second overlapping
-  instance, no `-StartWhenAvailable` (a missed minute is just skipped). Unlike
-  the census wrapper it does not run the Windows checkout updater: a `pwsh.exe`
-  update with a 300 second timeout is too heavy for a one-minute cadence, so it
-  runs the checked-out script as it is (which the other tasks keep at
-  `origin/main`). `wsl.exe --exec` starts a non-login shell, so the script
+  instance, no `-StartWhenAvailable` (a missed minute is just skipped). Like
+  every task it updates its checkout from `main` first, but at most every 5
+  minutes and within 120 seconds (see
+  [Checkout update before every scripted task](#checkout-update-before-every-scripted-task)).
+  `wsl.exe --exec` starts a non-login shell, so the script
   appends `~/.local/bin` to `PATH` itself to find a user-installed `jq`.
 - **It never refreshes the login.** The token comes from
   `.claudeAiOauth.accessToken` in `~/.claude/.credentials.json` (the

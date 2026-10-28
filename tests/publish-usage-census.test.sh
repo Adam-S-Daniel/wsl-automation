@@ -31,6 +31,8 @@ exec "$@"
 EOF_STUB
 chmod +x "$test_root/bin/"*
 export PATH="$test_root/bin:$PATH"
+# Keep the bootstrap's attempt stamp out of the real home directory.
+export WSL_AUTOMATION_UPDATE_STAMP="$test_root/state/checkout-update.stamp"
 
 passed=0
 
@@ -107,6 +109,7 @@ assert_match "$(sed -n 4p "$log_file")" ' exit=1 usage census: could not clone s
 assert_eq "$(line_count)" 4 'log accumulates one line per run'
 
 # One bootstrap per original run; the child guard prevents a second update.
+# The daily census always tries (interval 0), whatever the attempt stamp says.
 assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 4 'bootstrap executes once per run'
 assert_match "$(sed -n 1p "$BOOTSTRAP_CALLS")" '-NoProfile -File .*update-task-checkout.ps1 -UpdateOnly$' 'bootstrap uses the shared Windows updater'
 assert_eq "$(sed -n 1p "$TIMEOUT_CALLS")" "--kill-after=5s 300s $test_root/bin/pwsh.exe -NoProfile -File $repository_root/scripts/update-task-checkout.ps1 -UpdateOnly" 'bootstrap deadline and arguments'
@@ -122,6 +125,7 @@ assert_match "$out" 'args:--dry-run' 'bootstrap failure still publishes'
 # This is a Git-free fixture, with no remotes or inherited push configuration.
 mkdir -p "$test_root/updated/scripts"
 cp -- "$script" "$test_root/updated/scripts/publish-usage-census.sh"
+cp -- "$repository_root/scripts/update-task-checkout.sh" "$test_root/updated/scripts/update-task-checkout.sh"
 cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
 #!/usr/bin/env bash
 printf 'updated code:%s\n' "$*"
