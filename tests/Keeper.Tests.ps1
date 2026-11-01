@@ -20,6 +20,7 @@ Describe 'Invoke-ClaudeSessionKeeper' {
 
         Mock -ModuleName WslAutomation Remove-WslBackupLock { }
         Mock -ModuleName WslAutomation Repair-WslUserRuntime { 'Healthy' }
+        Mock -ModuleName WslAutomation Test-ClaudeStubGitDir { 'Absent' }
         # Session restore and Codex remote control are covered by their own Describe blocks
         # below; here they are neutralized (no sessions, codex daemon present) so these tests keep
         # asserting only the Remote Control launch.
@@ -143,6 +144,19 @@ Describe 'Invoke-ClaudeSessionKeeper' {
 
         $logContent = Get-Content -Path $script:logFile -Raw
         $logContent | Should -Match 'Backup still running after 1 min wait; proceeding anyway'
+    }
+
+    It 'checks ~/repos for a stub .git on every run' {
+        Mock -ModuleName WslAutomation Test-WslBackupLock {
+            [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
+        }
+        Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
+
+        Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Test-ClaudeStubGitDir -Times 1 -Exactly -ParameterFilter {
+            $DistroName -eq 'Ubuntu' -and $LogFile -eq $script:logFile
+        }
     }
 }
 
