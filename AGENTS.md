@@ -460,3 +460,29 @@ full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;
 - `reachability-unknown` means GitHub's API was unreachable; re-run the job.
 - Cross-repo reusable workflows (`jobs.<id>.uses`) are not covered by the
   lockfile and take a full 40-character commit SHA.
+
+### A stub `~/repos/.git` breaks every worktree Project thread
+
+`~/repos` is the folder of clones that `claude rc` runs in, and it is not
+itself a git repository. Claude Code can write `.git/info/exclude` into it
+anyway, leaving a `.git` directory that holds only `info/exclude` — no `HEAD`
+file, no `objects` folder. While that stub exists, Claude Code treats `~/repos`
+as a git repository. The commit that added this note records when it happened.
+
+- **Symptom.** claude.ai Project "Work locally" threads with Worktree on never
+  start. `claude rc` prints `Failed to create worktree ... Failed to resolve
+  base branch HEAD`, and the thread shows no output and reports the session
+  dropped after about 2 minutes.
+- **Fix.** `mv ~/repos/.git ~/repos/.git.stray`, then restart `claude rc`. The
+  restart is not optional: a running `claude rc` caches the git-root answer
+  and keeps believing the folder is a repository until it restarts.
+- **Guard.** `Test-ClaudeStubGitDir` runs on every keeper run, after
+  `Repair-WslUserRuntime`. It probes with one `sh -c` call and logs one warning
+  line per run while the stub exists. It uses the same test Claude Code does
+  before trusting a `.git` (a directory holding a `HEAD` file and an `objects`
+  folder); a `.git` file or symlink counts as a stub too, since `~/repos`
+  should hold no `.git` at all. It never throws and never boots a stopped
+  distro.
+- **It deliberately does not move the folder itself.** The keeper only warns:
+  moving a `.git` is a change to the user's files, and the restart that makes
+  the fix take effect would stop every session under `claude rc`.

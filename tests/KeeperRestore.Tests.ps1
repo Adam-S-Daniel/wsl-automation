@@ -34,6 +34,7 @@ Describe 'Invoke-ClaudeSessionKeeper session snapshot and restore' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{ ExitCode = 0; Output = @() }
         }
+        Mock -ModuleName WslAutomation Test-ClaudeStubGitDir { 'Absent' }
         Mock -ModuleName WslAutomation Test-WslBackupLock {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
         }
@@ -476,6 +477,7 @@ Describe 'Invoke-ClaudeSessionKeeper codex remote control' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{ ExitCode = 0; Output = @() }
         }
+        Mock -ModuleName WslAutomation Test-ClaudeStubGitDir { 'Absent' }
         Mock -ModuleName WslAutomation Test-WslBackupLock {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
         }

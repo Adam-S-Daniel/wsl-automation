@@ -57,6 +57,12 @@ function Invoke-ClaudeSessionKeeper {
         /run/user/<uid> for 'claude' and snap apps (Repair-WslUserRuntime; best effort, never
         throws, does nothing to a stopped distro, and only logs under -DryRun).
 
+        Stub .git in ~/repos. Right after that, the keeper checks that ~/repos, the folder
+        'claude rc' runs in, holds no .git that is not a real git repository: such a stub makes
+        Claude Code treat the folder as a repository and breaks every Project thread that asks
+        for a worktree (Test-ClaudeStubGitDir). It only logs a warning and changes nothing;
+        see the AGENTS.md note on the stub .git.
+
         Codex remote control. After the Claude handling, the keeper also keeps
         'codex remote-control start' (Codex's app-server daemon with remote control enabled)
         running: if Test-CodexRemoteControl finds no such daemon, it starts the Codex launcher
@@ -174,6 +180,9 @@ function Invoke-ClaudeSessionKeeper {
     # that comes with it) is restarted before the session work, which needs a working runtime dir.
     # Runs after the lock wait so it never acts while a backup export holds the distro.
     Repair-WslUserRuntime -DistroName $DistroName -LogFile $LogFile -DryRun:$DryRun | Out-Null
+
+    # Warns about a stub .git in ~/repos; it only logs, so it runs the same under -DryRun.
+    Test-ClaudeStubGitDir -DistroName $DistroName -LogFile $LogFile | Out-Null
 
     $status = $null
     $resumedCount = 0

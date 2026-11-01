@@ -478,6 +478,14 @@ command is built around not exporting out from under a live session.
   Linger is intentionally enabled on this machine. Why it exists: the
   2026-10-04 `kill(-1, SIGKILL)` from
   [skills-evals#250](https://github.com/Adam-S-Daniel/skills-evals/pull/250).
+- **Stub `.git` in `~/repos`.** Right after that, the keeper checks that
+  `~/repos` holds no `.git` that is not a real git repository (no `HEAD` file
+  or `objects` folder), and logs one warning line per run while one exists
+  (`Test-ClaudeStubGitDir`). Such a stub makes Claude Code treat `~/repos` as a
+  repository, so every claude.ai Project thread that asks for a worktree fails
+  to start and reports the session dropped. The fix is
+  `mv ~/repos/.git ~/repos/.git.stray`, then a restart of `claude rc`. The check
+  only warns and changes nothing; see the AGENTS.md note on the stub `.git`.
 
 ### Launcher task (default name: `Claude Code Session Launcher`)
 
