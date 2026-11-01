@@ -197,14 +197,14 @@ jobs:
         if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
-      - name: Pester (agent workspace trust, Linux)
+      - name: Pester (agent workspace trust and stub .git probe, Linux)
         if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: |
           $PSVersionTable.PSVersion
           (Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1).Version
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = './tests/AgentWorkspaceTrust.Tests.ps1'
+          $cfg.Run.Path = @('./tests/AgentWorkspaceTrust.Tests.ps1', './tests/ClaudeStubGitDir.Tests.ps1')
           $cfg.Run.Exit = $true
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
