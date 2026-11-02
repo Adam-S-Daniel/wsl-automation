@@ -15,6 +15,8 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
 - A scheduled-task installer that wires both of the above into Windows Task
   Scheduler.
 - A daily usage census publish (see "Usage census task" below).
+- A daily session miner run that turns your own Claude Code transcripts into
+  redacted lesson proposals (see "Session miner task" below).
 - An every-minute feed of the Claude Code cloud sessions waiting on you (see
   "Waiting feed task" below).
 
@@ -183,7 +185,7 @@ there is nothing for the keeper to wait out.
 ### Checkout update before every scripted task
 
 Every task action that runs a repo script (backup, keeper, ccstatusline sync,
-Codex Cloud sync, usage census, and waiting feed) first updates that same
+Codex Cloud sync, usage census, session miner, and waiting feed) first updates that same
 checkout through one updater, `Update-WslAutomationRepo`, before it loads any
 task code. The two on-demand launcher actions invoke their CLIs directly and have
 no repo script to update. All six run from the one Windows checkout; the Bash
@@ -198,6 +200,7 @@ updater:
 | --- | --- | --- | --- |
 | PowerShell (backup, keeper, ccstatusline, Codex Cloud) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
 | Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
+| Bash in WSL: session miner (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: waiting feed (every minute) | `scripts/update-task-checkout.sh` | at most every 5 minutes | 120 s overall |
 
 The task actions themselves are unchanged, so **no re-registration is needed**
@@ -667,6 +670,37 @@ up the new PATH.
   - In WSL, `tail ~/.cache/usage-census.log`.
   - `git ls-remote https://github.com/Adam-S-Daniel/skills-evals persistent/eval-results`
     shows the branch head moving after a publish.
+
+### Session miner task (default name: `Session Miner`)
+
+- Runs `scripts/run-session-miner.sh` inside the distro once a day at 12:47
+  (`-SessionMinerTime`), ten minutes after the usage census. The wrapper
+  shallow-clones skills-evals `main` and runs that copy's
+  `scripts/run_session_miner.sh`, which mines your own Claude Code transcripts
+  for lessons. It runs only on your own computer (skills-evals ADR 0015):
+  transcripts never leave the machine, and only redacted proposal files are
+  pushed, to the `persistent/lessons` branch of adam-agentskills-private.
+- **It needs a denylist file.** The miner reads `PRIVACY_DENYLIST_FILE`, which
+  the wrapper defaults to `~/.config/privacy-denylist.txt` inside the distro.
+  Without that file the miner exits `2` and mines nothing, so the task shows a
+  nonzero `LastTaskResult` until you create it.
+- The action is `wsl.exe` directly, as for the census:
+
+  ```
+  C:\Windows\System32\wsl.exe --distribution Ubuntu --cd "<scripts dir>" --exec /bin/bash ./run-session-miner.sh
+  ```
+
+- Runs as a background S4U task for the current Windows user (session 0), with
+  the same settings as the census: allowed on battery, 15 minute execution
+  limit, ignores a second overlapping instance, no `-StartWhenAvailable`.
+- Appends one line per run (UTC time, exit code, counts-only summary) to
+  `~/.cache/session-miner.log` inside the distro.
+- Run it now: `Start-ScheduledTask -TaskName 'Session Miner'`. To try it
+  without pushing anything, run `bash scripts/run-session-miner.sh --dry-run`
+  in WSL.
+- Check it:
+  - `(Get-ScheduledTaskInfo -TaskName 'Session Miner').LastTaskResult` is `0`.
+  - In WSL, `tail ~/.cache/session-miner.log`.
 
 ### Waiting feed task (default name: `Claude Waiting Feed Publish`)
 

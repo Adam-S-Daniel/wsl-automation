@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(cd "$(dirname "$0")/.." && pwd)
+script="$repository_root/scripts/run-session-miner.sh"
+test_root=$(mktemp -d)
+trap 'rm -rf -- "$test_root"' EXIT
+
+# Stub only the Windows bootstrap; no real checkout or Windows process is touched.
+mkdir -p "$test_root/bin"
+export BOOTSTRAP_CALLS="$test_root/bootstrap-calls"
+export TIMEOUT_CALLS="$test_root/timeout-calls"
+cat >"$test_root/bin/wslpath" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$2"
+EOF_STUB
+cat >"$test_root/bin/pwsh.exe" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$BOOTSTRAP_CALLS"
+if [[ -n ${BOOTSTRAP_REPLACEMENT:-} ]]; then
+    cp -- "$BOOTSTRAP_REPLACEMENT" "$BOOTSTRAP_ENTRY"
+fi
+exit "${BOOTSTRAP_EXIT:-0}"
+EOF_STUB
+cat >"$test_root/bin/timeout" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TIMEOUT_CALLS"
+if [[ ${TIMEOUT_EXIT:-0} != 0 ]]; then exit "$TIMEOUT_EXIT"; fi
+shift 2
+exec "$@"
+EOF_STUB
+chmod +x "$test_root/bin/"*
+export PATH="$test_root/bin:$PATH"
+# Keep the bootstrap's attempt stamp out of the real home directory.
+export WSL_AUTOMATION_UPDATE_STAMP="$test_root/state/checkout-update.stamp"
+
+# The default-denylist assertions must not inherit a value from the caller.
+unset PRIVACY_DENYLIST_FILE
+export HOME="$test_root/home"
+mkdir -p "$HOME"
+
+passed=0
+
+fail() {
+    printf 'FAIL: %s\n' "$1" >&2
+    exit 1
+}
+
+pass() {
+    passed=$((passed + 1))
+}
+
+assert_eq() {
+    [[ $1 == "$2" ]] || fail "$3: expected '$2', got '$1'"
+    pass
+}
+
+assert_match() {
+    [[ $1 =~ $2 ]] || fail "$3: '$1' does not match '$2'"
+    pass
+}
+
+# A throwaway skills-evals whose miner script echoes its arguments plus an
+# env-controlled line and exits with an env-controlled code.
+fixture="$test_root/skills-evals-src"
+mkdir -p "$fixture/scripts"
+cat >"$fixture/scripts/run_session_miner.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'args:%s\n' "$*"
+printf 'denylist:%s\n' "${PRIVACY_DENYLIST_FILE-UNSET}"
+printf '%b\n' "${STUB_OUTPUT:-stub ok}"
+exit "${STUB_EXIT:-0}"
+EOF
+git -C "$fixture" init --quiet
+git -C "$fixture" add scripts/run_session_miner.sh
+git -C "$fixture" -c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false \
+    commit --quiet -m 'fixture'
+
+export SKILLS_EVALS_URL="file://$fixture"
+log_file="$test_root/cache/session-miner.log"
+export SESSION_MINER_LOG="$log_file"
+
+line_count() {
+    if [[ -f $log_file ]]; then wc -l <"$log_file" | tr -d ' '; else echo 0; fi
+}
+
+# (a) and (b): --dry-run reaches the stub; exit 0 propagates; one log line.
+rc=0
+out=$(bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 0 'exit code on success'
+assert_match "$out" 'args:--dry-run' '--dry-run reaches the miner script'
+assert_eq "$(line_count)" 1 'one log line after the first run'
+assert_match "$(sed -n 1p "$log_file")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z exit=0 ' 'success log line format'
+
+# PRIVACY_DENYLIST_FILE defaults to the owner's file and is exported to the miner.
+assert_match "$out" "denylist:$HOME/.config/privacy-denylist.txt" 'denylist defaults to ~/.config/privacy-denylist.txt'
+
+# An explicit value is preserved, not overwritten.
+rc=0
+explicit=$(PRIVACY_DENYLIST_FILE="$test_root/custom-denylist.txt" bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 0 'exit code with an explicit denylist'
+assert_match "$explicit" "denylist:$test_root/custom-denylist.txt" 'explicit PRIVACY_DENYLIST_FILE is preserved'
+assert_eq "$(line_count)" 2 'explicit-denylist run adds one log line'
+
+# (c): a nonzero exit propagates and is logged.
+rc=0
+out=$(STUB_EXIT=3 bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 3 'nonzero exit propagates'
+assert_match "$(sed -n 3p "$log_file")" ' exit=3 ' 'nonzero exit is logged'
+
+# (d): multi-line output is logged on one line.
+rc=0
+STUB_OUTPUT='first\nsecond\nthird' bash "$script" >/dev/null 2>&1 || rc=$?
+assert_eq "$(line_count)" 4 'multi-line output adds exactly one log line'
+assert_match "$(sed -n 4p "$log_file")" 'first \| second \| third$' 'multi-line output is collapsed with |'
+
+# (e): an unreachable URL gives exit 1 and a logged message.
+rc=0
+out=$(SKILLS_EVALS_URL="file://$test_root/does-not-exist" bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 1 'clone failure exits 1'
+assert_eq "$out" 'session miner: could not clone skills-evals' 'clone failure message on stdout'
+assert_match "$(sed -n 5p "$log_file")" ' exit=1 session miner: could not clone skills-evals$' 'clone failure is logged'
+
+# (f): runs append, they do not overwrite.
+assert_eq "$(line_count)" 5 'log accumulates one line per run'
+
+# One bootstrap per original run; the child guard prevents a second update.
+# The daily miner always tries (interval 0), whatever the attempt stamp says.
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 5 'bootstrap executes once per run'
+assert_match "$(sed -n 1p "$BOOTSTRAP_CALLS")" '-NoProfile -File .*update-task-checkout.ps1 -UpdateOnly$' 'bootstrap uses the shared Windows updater'
+assert_eq "$(sed -n 1p "$TIMEOUT_CALLS")" "--kill-after=5s 300s $test_root/bin/pwsh.exe -NoProfile -File $repository_root/scripts/update-task-checkout.ps1 -UpdateOnly" 'bootstrap deadline and arguments'
+
+# Offline/failed bootstrap still runs the miner and preserves its status.
+rc=0
+out=$(BOOTSTRAP_EXIT=1 STUB_EXIT=3 bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 3 'bootstrap failure preserves miner exit'
+assert_match "$out" 'WARNING: checkout bootstrap unavailable' 'bootstrap failure warns'
+assert_match "$out" 'args:--dry-run' 'bootstrap failure still mines'
+
+# The update replaces the shell entry itself: it must be read from disk before work runs.
+# This is a Git-free fixture, with no remotes or inherited push configuration.
+mkdir -p "$test_root/updated/scripts"
+cp -- "$script" "$test_root/updated/scripts/run-session-miner.sh"
+cp -- "$repository_root/scripts/update-task-checkout.sh" "$test_root/updated/scripts/update-task-checkout.sh"
+cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
+#!/usr/bin/env bash
+printf 'updated code:%s\n' "$*"
+exit 4
+EOF_REPLACEMENT
+rc=0
+out=$(BOOTSTRAP_REPLACEMENT="$test_root/replacement.sh" BOOTSTRAP_ENTRY="$test_root/updated/scripts/run-session-miner.sh" bash "$test_root/updated/scripts/run-session-miner.sh" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 4 'updated shell entry exit propagates'
+assert_eq "$out" 'updated code:--dry-run' 'runs the updated entry from disk with arguments'
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 7 'failure and update each bootstrap once'
+
+# A simulated deadline failure never starts the Windows host, and mining still runs.
+rc=0
+out=$(TIMEOUT_EXIT=124 STUB_EXIT=3 bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 3 'bootstrap timeout preserves miner exit'
+assert_match "$out" 'WARNING: checkout bootstrap unavailable' 'bootstrap timeout warns'
+assert_match "$out" 'args:--dry-run' 'bootstrap timeout still mines'
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 7 'timeout does not launch Windows host'
+assert_eq "$(wc -l <"$TIMEOUT_CALLS" | tr -d ' ')" 8 'timeout seam runs once per original entry'
+
+# Hide only timeout from Bash lookup; the other test tools stay available.
+rc=0
+out=$(
+    # Exported function is invoked by the child Bash entry. Older ShellCheck
+    # reports this as SC2317; 0.11 reports it as SC2329.
+    # shellcheck disable=SC2317,SC2329
+    command() {
+        if [[ $1 == -v && ${2:-} == timeout ]]; then return 1; fi
+        builtin command "$@"
+    }
+    export -f command
+    STUB_EXIT=3 bash "$script" --dry-run 2>&1
+) || rc=$?
+assert_eq "$rc" 3 'missing timeout preserves miner exit'
+assert_match "$out" 'WARNING: checkout bootstrap unavailable' 'missing timeout warns'
+assert_match "$out" 'args:--dry-run' 'missing timeout still mines'
+assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 7 'missing timeout does not launch Windows host'
+assert_eq "$(wc -l <"$TIMEOUT_CALLS" | tr -d ' ')" 8 'missing timeout does not invoke timeout'
+
+printf 'PASS: %s assertions\n' "$passed"

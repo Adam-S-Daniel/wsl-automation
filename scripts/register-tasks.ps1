@@ -4,7 +4,7 @@
 .SYNOPSIS
     Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
     Claude Code session keeper, ccstatusline config sync, Codex Cloud environment sync, and usage
-    census publish scheduled tasks.
+    census publish, and session miner scheduled tasks.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -16,7 +16,7 @@
 .PARAMETER ScriptsDir
     Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
     wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and publish-usage-census.sh.
+    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, publish-usage-census.sh, and run-session-miner.sh.
     Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
@@ -75,8 +75,15 @@
 .PARAMETER UsageCensusTime
     Time of day (HH:mm) the usage census task's daily trigger fires. Defaults to '12:37'.
 
+.PARAMETER SessionMinerTaskName
+    Name of the scheduled task that runs the daily session miner from WSL. Defaults to
+    'Session Miner'.
+
+.PARAMETER SessionMinerTime
+    Time of day (HH:mm) the session miner task's daily trigger fires. Defaults to '12:47'.
+
 .PARAMETER WslExePath
-    Path to wsl.exe used as the usage census task's action. Defaults to
+    Path to wsl.exe used as the usage census and session miner tasks' action. Defaults to
     %SystemRoot%\System32\wsl.exe.
 
 .PARAMETER PwshPath
@@ -145,6 +152,10 @@ param(
 
     [string]$UsageCensusTime = '12:37',
 
+    [string]$SessionMinerTaskName = 'Session Miner',
+
+    [string]$SessionMinerTime = '12:47',
+
     [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
 
     # This script runs before Import-Module (the module isn't loaded until the body below), so
@@ -193,7 +204,8 @@ try {
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
-        -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime -WslExePath $WslExePath `
+        -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime `
+        -SessionMinerTaskName $SessionMinerTaskName -SessionMinerTime $SessionMinerTime -WslExePath $WslExePath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -SkipTaskHistory:$SkipTaskHistory -WhatIf:$WhatIfPreference
 
     exit 0
