@@ -5,11 +5,11 @@ function Set-WslAutomationScheduledTasks {
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
         session keeper and its two launchers, ccstatusline config sync, Codex Cloud environment
-        sync, the daily usage census publish, the daily session miner, and the every-minute waiting
-        feed publish.
+        sync, the daily usage census publish, the daily session miner, the weekly memory curation, and
+        the every-minute waiting feed publish.
 
     .DESCRIPTION
-        Creates nine Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates ten Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
         running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
@@ -20,7 +20,8 @@ function Set-WslAutomationScheduledTasks {
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
         distro once a day, calling wsl.exe directly so no pwsh is involved; and a session miner
-        task that runs scripts/run-session-miner.sh the same way once a day; and a waiting feed
+        task that runs scripts/run-session-miner.sh the same way once a day; and a memory curation
+        task that runs scripts/run-memory-curation.sh the same way once a week; and a waiting feed
         publish task that runs scripts/publish-waiting-feed.sh inside the distro every minute, the
         same way.
 
@@ -28,7 +29,7 @@ function Set-WslAutomationScheduledTasks {
         they never flash a console window on the desktop; both launchers are interactive (they
         must show a terminal) and on-demand (no trigger). The three pwsh-based S4U tasks require
         an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath and
-        scripts/grant-keeper-batch-logon.ps1. The usage census, session miner and waiting feed tasks are S4U too, but
+        scripts/grant-keeper-batch-logon.ps1. The usage census, session miner, memory curation and waiting feed tasks are S4U too, but
         their action is wsl.exe itself, so they need no pwsh at all.
 
         Every task's Settings and Principal are always (re)built fresh from this function's
@@ -37,7 +38,7 @@ function Set-WslAutomationScheduledTasks {
         That now includes the backup task, which used to keep an existing task's Settings and
         Principal: re-running this function is what switches an existing backup task from the
         interactive 'wsl --export' backup to the background restic one in place. Re-running
-        this function is idempotent for all nine tasks.
+        this function is idempotent for all ten tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -56,7 +57,7 @@ function Set-WslAutomationScheduledTasks {
         Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
         wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
         sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and
-        publish-usage-census.sh, run-session-miner.sh and publish-waiting-feed.sh.
+        publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh and publish-waiting-feed.sh.
 
     .PARAMETER BackupDir
         The OneDrive-synced directory the backup task copies the restic repository into (its
@@ -145,13 +146,21 @@ function Set-WslAutomationScheduledTasks {
         Time of day (HH:mm) the session miner task's daily trigger fires. Defaults to '12:47',
         ten minutes after the usage census so the two never overlap.
 
+    .PARAMETER MemoryCurationTaskName
+        Name of the scheduled task that runs the weekly memory curation from WSL. Defaults to
+        'Memory Curation'.
+
+    .PARAMETER MemoryCurationTime
+        Time of day (HH:mm) the memory curation task's weekly (Monday) trigger fires. Defaults
+        to '13:47', an hour after the session miner so the two never overlap.
+
     .PARAMETER WaitingFeedTaskName
         Name of the scheduled task that publishes the waiting feed (the Claude Code cloud
         sessions waiting on the owner) from WSL every minute. Defaults to
         'Claude Waiting Feed Publish'.
 
     .PARAMETER WslExePath
-        Path to wsl.exe used as the usage census, session miner and waiting feed tasks' action. Defaults to
+        Path to wsl.exe used as the usage census, session miner, memory curation and waiting feed tasks' action. Defaults to
         %SystemRoot%\System32\wsl.exe.
 
     .PARAMETER PwshPath
@@ -184,9 +193,9 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
-        Registers (or updates) all nine scheduled tasks using default names, backup time, and
+        Registers (or updates) all ten scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
-        daily usage census publish, the daily session miner, and the every-minute waiting feed publish.
+        daily usage census publish, the daily session miner, the weekly memory curation, and the every-minute waiting feed publish.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
@@ -239,6 +248,10 @@ function Set-WslAutomationScheduledTasks {
         [string]$SessionMinerTaskName = 'Session Miner',
 
         [string]$SessionMinerTime = '12:47',
+
+        [string]$MemoryCurationTaskName = 'Memory Curation',
+
+        [string]$MemoryCurationTime = '13:47',
 
         [string]$WaitingFeedTaskName = 'Claude Waiting Feed Publish',
 
@@ -578,6 +591,31 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Memory curation: one weekly (Monday) trigger, wsl.exe as the action
+    # Built like the session miner above (wsl.exe directly, S4U, session 0, no StartWhenAvailable):
+    # a missed week is simply curated the next Monday. The wrapper bounds its own Claude run at 2
+    # hours, so the task's limit of 3 hours only ever stops a wedged wrapper.
+    $memoryCurationArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./run-memory-curation.sh"
+    $memoryCurationAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $memoryCurationArguments
+    $memoryCurationTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $MemoryCurationTime
+    $memoryCurationSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 3) -MultipleInstances IgnoreNew
+    $memoryCurationPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingMemoryCurationTask = Get-ScheduledTask -TaskName $MemoryCurationTaskName -ErrorAction SilentlyContinue
+    if ($existingMemoryCurationTask) {
+        if ($PSCmdlet.ShouldProcess($MemoryCurationTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $MemoryCurationTaskName -Action $memoryCurationAction -Trigger $memoryCurationTrigger `
+                -Settings $memoryCurationSettings -Principal $memoryCurationPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($MemoryCurationTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $MemoryCurationTaskName -Action $memoryCurationAction -Trigger $memoryCurationTrigger `
+                -Settings $memoryCurationSettings -Principal $memoryCurationPrincipal
+        }
+    }
+
     # --- Waiting feed publish: every minute, wsl.exe as the action ----------
     # Same shape as the usage census (wsl.exe directly, S4U, session 0), but repeating every
     # minute with the indefinite-repetition construction the keeper trigger documents above
@@ -701,6 +739,7 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue
     Write-Information -MessageData "Session miner task '$SessionMinerTaskName' (background/S4U): $WslExePath $sessionMinerArguments (daily at $SessionMinerTime)" -InformationAction Continue
+    Write-Information -MessageData "Memory curation task '$MemoryCurationTaskName' (background/S4U): $WslExePath $memoryCurationArguments (weekly on Monday at $MemoryCurationTime)" -InformationAction Continue
     Write-Information -MessageData "Waiting feed task '$WaitingFeedTaskName' (background/S4U): $WslExePath $waitingFeedArguments (repeats every 1 min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $taskHistoryResult" -InformationAction Continue
 }

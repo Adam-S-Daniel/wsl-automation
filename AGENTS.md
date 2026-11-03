@@ -494,3 +494,18 @@ as a git repository. The commit that added this note records when it happened.
 - **It deliberately does not move the folder itself.** The keeper only warns:
   moving a `.git` is a change to the user's files, and the restart that makes
   the fix take effect would stop every session under `claude rc`.
+
+### Memory curation covers both Claude homes on this machine
+
+Claude Code on this machine keeps memory in two homes: the WSL one
+(`~/.claude`) and the Windows one (`%USERPROFILE%\.claude`). The routine spec in
+`_agent-guidance` (`docs/routines/memory-curation.md`) names only one, so
+`scripts/run-memory-curation.sh` resolves the Windows home at run time (never a
+hardcoded user name) and passes both to the headless session.
+
+- **The log is counts-only and the summary is a local file.** Memory is private:
+  the log gets directory and note counts, never a path, note name or note text,
+  and Claude's summary goes to a mode-600 file (`~/.cache/memory-curation/last-summary.md`),
+  not to the log.
+- **An unresolvable Windows home is not a failure.** The run continues on the
+  WSL home and logs `windows_home=unresolved`.

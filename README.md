@@ -17,6 +17,8 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
 - A daily usage census publish (see "Usage census task" below).
 - A daily session miner run that turns your own Claude Code transcripts into
   redacted lesson proposals (see "Session miner task" below).
+- A weekly memory curation run that tidies Claude Code's private memory notes
+  in both Claude homes on this machine (see "Memory curation task" below).
 - An every-minute feed of the Claude Code cloud sessions waiting on you (see
   "Waiting feed task" below).
 
@@ -185,7 +187,7 @@ there is nothing for the keeper to wait out.
 ### Checkout update before every scripted task
 
 Every task action that runs a repo script (backup, keeper, ccstatusline sync,
-Codex Cloud sync, usage census, session miner, and waiting feed) first updates that same
+Codex Cloud sync, usage census, session miner, memory curation, and waiting feed) first updates that same
 checkout through one updater, `Update-WslAutomationRepo`, before it loads any
 task code. The two on-demand launcher actions invoke their CLIs directly and have
 no repo script to update. All six run from the one Windows checkout; the Bash
@@ -201,6 +203,7 @@ updater:
 | PowerShell (backup, keeper, ccstatusline, Codex Cloud) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
 | Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: session miner (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
+| Bash in WSL: memory curation (weekly) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: waiting feed (every minute) | `scripts/update-task-checkout.sh` | at most every 5 minutes | 120 s overall |
 
 The task actions themselves are unchanged, so **no re-registration is needed**
@@ -701,6 +704,45 @@ up the new PATH.
 - Check it:
   - `(Get-ScheduledTaskInfo -TaskName 'Session Miner').LastTaskResult` is `0`.
   - In WSL, `tail ~/.cache/session-miner.log`.
+
+### Memory curation task (default name: `Memory Curation`)
+
+- Runs `scripts/run-memory-curation.sh` inside the distro once a week, on
+  Monday at 13:47 (`-MemoryCurationTime`), an hour after the session miner. It
+  is the machine half of the routine in
+  [_agent-guidance's `docs/routines/memory-curation.md`](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/routines/memory-curation.md):
+  the wrapper shallow-clones `_agent-guidance` `main` and starts a headless
+  Claude session in that copy, with a short prompt that points at the doc.
+- **It covers both Claude homes on this machine.** Claude Code keeps memory in
+  the WSL home (`${CLAUDE_CONFIG_DIR:-~/.claude}`) and in the Windows home
+  (`%USERPROFILE%\.claude`). The wrapper resolves the Windows home at run time
+  (`cmd.exe` through WSL interop, then `wslpath`; override it with
+  `WINDOWS_CLAUDE_HOME`), passes every `projects/*/memory/` directory of both
+  homes to the session, and runs on the WSL home alone, with
+  `windows_home=unresolved` in the log, if the Windows one cannot be resolved.
+- **Memory is private.** Claude's final summary is written to
+  `~/.cache/memory-curation/last-summary.md` (mode 600) and printed to stdout.
+  The log, `~/.cache/memory-curation.log`, gets one line per run (UTC time, exit
+  code, mode, and counts of homes, memory directories, notes and archived
+  notes before and after) and never a path, note name, note text, or Claude
+  output.
+- The action is `wsl.exe` directly, as for the session miner:
+
+  ```
+  C:\Windows\System32\wsl.exe --distribution Ubuntu --cd "<scripts dir>" --exec /bin/bash ./run-memory-curation.sh
+  ```
+
+- Runs as a background S4U task for the current Windows user (session 0), with
+  the session miner's settings except for a 3 hour execution limit: allowed on
+  battery, ignores a second overlapping instance, no `-StartWhenAvailable`. The
+  wrapper stops Claude itself after 2 hours (`MEMORY_CURATION_TIMEOUT`).
+- Run it now: `Start-ScheduledTask -TaskName 'Memory Curation'`. To try it
+  without starting Claude, run `bash scripts/run-memory-curation.sh --dry-run`
+  in WSL: it runs the routine's `memory_audit.py` over every memory directory
+  and exits `1` if any audit fails.
+- Check it:
+  - `(Get-ScheduledTaskInfo -TaskName 'Memory Curation').LastTaskResult` is `0`.
+  - In WSL, `tail ~/.cache/memory-curation.log`.
 
 ### Waiting feed task (default name: `Claude Waiting Feed Publish`)
 

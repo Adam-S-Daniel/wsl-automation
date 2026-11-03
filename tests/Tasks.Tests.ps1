@@ -45,6 +45,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
             $trigger = [pscustomobject]@{
                 IsDaily    = [bool]$Daily
+                IsWeekly   = [bool]$Weekly
+                DaysOfWeek = $DaysOfWeek
                 IsOnce     = [bool]$Once
                 IsAtLogOn  = [bool]$AtLogOn
                 At         = $At
@@ -189,13 +191,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all seven background tasks as S4U in session 0, where no desktop window can flash' {
+        It 'runs all eight background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The backup, keeper, ccstatusline sync, Codex Cloud sync, usage census, session miner, and
+            # The backup, keeper, ccstatusline sync, Codex Cloud sync, usage census, session miner, memory curation, and
             # waiting feed publish are windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 7 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 8 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -350,7 +352,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 7 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 8 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -413,7 +415,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Session Miner' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 7 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 8 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -443,6 +445,66 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             # A raw trailing backslash before the closing quote would escape it and swallow --exec.
             $minerAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
             $minerAction.Argument | Should -Not -Match '\\"'
+        }
+
+        It 'registers the memory curation task as a direct wsl.exe action with one weekly Monday trigger, S4U, a 3 hour limit, and no catch-up setting' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Memory Curation' -and
+                $Action.Execute -like '*wsl.exe' -and
+                @($Trigger).Count -eq 1 -and $Trigger.IsWeekly -and -not $Trigger.IsDaily -and
+                @($Trigger.DaysOfWeek).Count -eq 1 -and $Trigger.DaysOfWeek[0] -eq 'Monday' -and $Trigger.At -eq '13:47' -and
+                $Principal.FakePrincipal -and
+                $Settings.ExecutionTimeLimit.TotalHours -eq 3 -and $Settings.MultipleInstances -eq 'IgnoreNew' -and
+                -not $Settings.DisallowStartIfOnBatteries -and -not $Settings.StopIfGoingOnBatteries -and
+                -not $Settings.StartWhenAvailable
+            }
+
+            $curationAction = @($script:capturedActions | Where-Object { $_.Argument -match 'run-memory-curation\.sh' })
+            $curationAction.Count | Should -Be 1
+            $curationAction[0].Argument | Should -Match '--distribution Ubuntu'
+            $curationAction[0].Argument.Contains('--cd "' + $script:scriptsDir + '"') | Should -BeTrue
+            $curationAction[0].Argument | Should -Match '--exec /bin/bash \./run-memory-curation\.sh$'
+            $curationAction[0].Argument | Should -Not -Match 'pwsh'
+        }
+
+        It 'builds the memory curation principal for the current user, never SYSTEM, as S4U' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Memory Curation' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME" -and
+                $Principal.LogonType -eq 'S4U'
+            }
+        }
+
+        It 'honors -MemoryCurationTime, -MemoryCurationTaskName, -WslExePath and -DistroName for the memory curation task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -MemoryCurationTime '04:20' `
+                -MemoryCurationTaskName 'Custom Curation' -WslExePath 'C:\fake\wsl.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Curation' -and
+                $Action.Execute -eq 'C:\fake\wsl.exe' -and
+                $Action.Argument -match '--distribution Debian' -and
+                $Trigger.At -eq '04:20'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Memory Curation'
+            }
+        }
+
+        It 'sanitizes a trailing backslash in ScriptsDir so the memory curation --cd argument stays well-formed' {
+            Set-WslAutomationScheduledTasks -ScriptsDir ($script:scriptsDir + '\') -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $curationAction = $script:capturedActions | Where-Object { $_.Argument -match 'run-memory-curation\.sh' }
+
+            # A raw trailing backslash before the closing quote would escape it and swallow --exec.
+            $curationAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
+            $curationAction.Argument | Should -Not -Match '\\"'
         }
 
         It 'registers the waiting feed task as a direct wsl.exe action repeating every minute indefinitely, S4U, IgnoreNew' {
@@ -893,6 +955,44 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the memory curation task already exists' {
+
+        BeforeEach {
+            $script:existingMemoryCurationTask = [pscustomobject]@{
+                TaskName  = 'Memory Curation'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Memory Curation') {
+                    return $script:existingMemoryCurationTask
+                }
+                return $null
+            }
+        }
+
+        It 'rebuilds settings and principal while replacing the action and trigger in place' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Memory Curation' -and
+                $Action.Argument -match 'run-memory-curation\.sh' -and
+                $Trigger.IsWeekly -and $Settings.FakeSettings -and $Principal.FakePrincipal
+            }
+        }
+
+        It 'does not create a second memory curation task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Memory Curation'
+            }
+        }
+    }
+
     Context 'when the waiting feed task already exists' {
 
         BeforeEach {
@@ -1104,6 +1204,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
             foreach ($expanded in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) {
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-usage-census.sh')) { 'publish-usage-census.sh' }
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./run-session-miner.sh')) { 'run-session-miner.sh' }
+                if ($expanded.Value.EndsWith('--exec /bin/bash ./run-memory-curation.sh')) { 'run-memory-curation.sh' }
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-waiting-feed.sh')) { 'publish-waiting-feed.sh' }
             }
             foreach ($variable in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
@@ -1128,11 +1229,11 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all seven script actions among nine registered task actions' {
-        $script:actionCount | Should -Be 9
-        $script:actionScripts.Count | Should -Be 7
+    It 'covers all eight script actions among ten registered task actions' {
+        $script:actionCount | Should -Be 10
+        $script:actionScripts.Count | Should -Be 8
         @($script:actionScripts | Sort-Object) | Should -Be @(
-            'ensure-claude-session.ps1', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-session-miner.sh',
+            'ensure-claude-session.ps1', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
             'sync-ccstatusline-config.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }
