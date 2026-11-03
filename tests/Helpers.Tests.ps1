@@ -14,6 +14,72 @@ Describe 'WslAutomation helpers' {
         }
     }
 
+    Describe 'ConvertTo-WslLocalTimeTrigger' {
+        # Private helper, called through InModuleScope. Inputs are built from a local time, so the
+        # expectations hold in any time zone; a summer and a winter date cover both sides of DST.
+
+        It 'rewrites a UTC (Z) start boundary as the local time it names, with no offset' -TestCases @(
+            @{ Local = '2026-07-01T12:37:00' }
+            @{ Local = '2026-12-01T12:37:00' }
+        ) {
+            param($Local)
+            $utc = ([datetime]$Local).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [cultureinfo]::InvariantCulture)
+            $trigger = [pscustomobject]@{ StartBoundary = $utc }
+
+            $result = InModuleScope WslAutomation -Parameters @{ Trigger = $trigger } {
+                param($Trigger)
+                $Trigger | ConvertTo-WslLocalTimeTrigger
+            }
+
+            $result.StartBoundary | Should -Be $Local
+            $trigger.StartBoundary | Should -Be $Local
+        }
+
+        It 'rewrites a start boundary carrying a UTC offset as local time' {
+            $local = [datetime]'2026-07-01T00:00:00'
+            $withOffset = ([datetimeoffset]$local).ToString('yyyy-MM-ddTHH:mm:sszzz', [cultureinfo]::InvariantCulture)
+            $trigger = [pscustomobject]@{ StartBoundary = $withOffset }
+
+            $result = InModuleScope WslAutomation -Parameters @{ Trigger = $trigger } {
+                param($Trigger)
+                ConvertTo-WslLocalTimeTrigger -Trigger $Trigger
+            }
+
+            $result.StartBoundary | Should -Be '2026-07-01T00:00:00'
+        }
+
+        It 'leaves a start boundary with no offset unchanged, even one in the spring-forward gap' {
+            $trigger = [pscustomobject]@{ StartBoundary = '2026-03-08T02:30:00' }
+
+            $result = InModuleScope WslAutomation -Parameters @{ Trigger = $trigger } {
+                param($Trigger)
+                ConvertTo-WslLocalTimeTrigger -Trigger $Trigger
+            }
+
+            $result.StartBoundary | Should -Be '2026-03-08T02:30:00'
+        }
+
+        It 'passes through a trigger with no start boundary' {
+            $trigger = [pscustomobject]@{ IsAtLogOn = $true }
+
+            $result = InModuleScope WslAutomation -Parameters @{ Trigger = $trigger } {
+                param($Trigger)
+                ConvertTo-WslLocalTimeTrigger -Trigger $Trigger
+            }
+
+            $result.IsAtLogOn | Should -BeTrue
+            $result.PSObject.Properties['StartBoundary'] | Should -BeNullOrEmpty
+        }
+
+        It 'accepts a real New-ScheduledTaskTrigger object (nothing registered)' -Skip:(-not $IsWindows) {
+            $result = InModuleScope WslAutomation {
+                New-ScheduledTaskTrigger -Daily -At '12:37' | ConvertTo-WslLocalTimeTrigger
+            }
+
+            $result.StartBoundary | Should -Match '^\d{4}-\d{2}-\d{2}T12:37:00$'
+        }
+    }
+
     Describe 'Write-WslAutomationLog' {
         # Write-WslAutomationLog is a private (non-exported) module member, so it can only be
         # called directly from -ModuleName WslAutomation's own scope, via InModuleScope. Only the

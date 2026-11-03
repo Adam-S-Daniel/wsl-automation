@@ -303,7 +303,9 @@ function Set-WslAutomationScheduledTasks {
     $backupScriptPath = Join-Path $ScriptsDir 'wsl-restic-backup.ps1'
     $backupArguments = "-NoProfile -File `"$backupScriptPath`" -BackupDir `"$BackupDir`" -RepoDir `"$ResticRepoDir`" -DistroName $DistroName -NoPause"
     $backupAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $backupArguments
-    $backupTrigger = New-ScheduledTaskTrigger -Daily -At $BackupTime
+    # Every trigger goes through ConvertTo-WslLocalTimeTrigger so its start time is local
+    # wall-clock time and does not shift by an hour when the clocks change.
+    $backupTrigger = New-ScheduledTaskTrigger -Daily -At $BackupTime | ConvertTo-WslLocalTimeTrigger
 
     # -Daily has no -RepetitionInterval/-RepetitionDuration parameter set at all (unlike -Once,
     # see the keeper trigger comment below), and a trigger built without one has Repetition =
@@ -405,7 +407,7 @@ function Set-WslAutomationScheduledTasks {
     # -RepetitionDuration unset here is required, not incidental - it is what makes the
     # repetition indefinite.
     $keeperTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes $KeeperIntervalMinutes)
+        -RepetitionInterval (New-TimeSpan -Minutes $KeeperIntervalMinutes) | ConvertTo-WslLocalTimeTrigger
 
     # Settings/Principal are always rebuilt fresh for the keeper task, regardless of whether
     # it already exists, so its battery/idle behavior always matches this function's defaults.
@@ -498,7 +500,7 @@ function Set-WslAutomationScheduledTasks {
     # Same indefinite-repetition construction as the keeper trigger above (-Once + creation-time
     # -RepetitionInterval, never mutated afterward); see the comment on $keeperTrigger for why.
     $ccstatuslineTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes $CcstatuslineIntervalMinutes)
+        -RepetitionInterval (New-TimeSpan -Minutes $CcstatuslineIntervalMinutes) | ConvertTo-WslLocalTimeTrigger
 
     # Settings/Principal are always rebuilt fresh for the ccstatusline task too, regardless of
     # whether it already exists, so its battery/idle behavior always matches this function's
@@ -529,8 +531,8 @@ function Set-WslAutomationScheduledTasks {
     $codexCloudSyncArguments = "-NoProfile -File `"$codexCloudSyncScriptPath`" -DistroName $DistroName"
     $codexCloudSyncAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $codexCloudSyncArguments
     $codexCloudSyncTriggers = @(
-        (New-ScheduledTaskTrigger -Daily -At '00:00'),
-        (New-ScheduledTaskTrigger -Daily -At '12:00')
+        (New-ScheduledTaskTrigger -Daily -At '00:00' | ConvertTo-WslLocalTimeTrigger),
+        (New-ScheduledTaskTrigger -Daily -At '12:00' | ConvertTo-WslLocalTimeTrigger)
     )
     $codexCloudSyncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
@@ -561,7 +563,7 @@ function Set-WslAutomationScheduledTasks {
     # any trailing backslash above, which would otherwise escape the closing quote.
     $usageCensusArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-usage-census.sh"
     $usageCensusAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $usageCensusArguments
-    $usageCensusTrigger = New-ScheduledTaskTrigger -Daily -At $UsageCensusTime
+    $usageCensusTrigger = New-ScheduledTaskTrigger -Daily -At $UsageCensusTime | ConvertTo-WslLocalTimeTrigger
     $usageCensusSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
     $usageCensusPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
@@ -587,7 +589,7 @@ function Set-WslAutomationScheduledTasks {
     # ADR 0015) and exits 2 without ~/.config/privacy-denylist.txt.
     $sessionMinerArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./run-session-miner.sh"
     $sessionMinerAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $sessionMinerArguments
-    $sessionMinerTrigger = New-ScheduledTaskTrigger -Daily -At $SessionMinerTime
+    $sessionMinerTrigger = New-ScheduledTaskTrigger -Daily -At $SessionMinerTime | ConvertTo-WslLocalTimeTrigger
     $sessionMinerSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
     $sessionMinerPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
@@ -612,7 +614,7 @@ function Set-WslAutomationScheduledTasks {
     # hours, so the task's limit of 3 hours only ever stops a wedged wrapper.
     $memoryCurationArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./run-memory-curation.sh"
     $memoryCurationAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $memoryCurationArguments
-    $memoryCurationTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $MemoryCurationTime
+    $memoryCurationTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $MemoryCurationTime | ConvertTo-WslLocalTimeTrigger
     $memoryCurationSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 3) -MultipleInstances IgnoreNew
     $memoryCurationPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
@@ -641,7 +643,7 @@ function Set-WslAutomationScheduledTasks {
     $waitingFeedArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-waiting-feed.sh"
     $waitingFeedAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $waitingFeedArguments
     $waitingFeedTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes 1)
+        -RepetitionInterval (New-TimeSpan -Minutes 1) | ConvertTo-WslLocalTimeTrigger
     $waitingFeedSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
     $waitingFeedPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
@@ -667,7 +669,7 @@ function Set-WslAutomationScheduledTasks {
     # an S4U logon may make unelevated; the 15 minute limit is generous for one call and a push.
     $taskHealthArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-task-health.sh"
     $taskHealthAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $taskHealthArguments
-    $taskHealthTrigger = New-ScheduledTaskTrigger -Daily -At $TaskHealthTime
+    $taskHealthTrigger = New-ScheduledTaskTrigger -Daily -At $TaskHealthTime | ConvertTo-WslLocalTimeTrigger
     $taskHealthSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
     $taskHealthPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
