@@ -51,6 +51,9 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 IsAtLogOn  = [bool]$AtLogOn
                 At         = $At
                 Repetition = $repetition
+                # The real cmdlet writes StartBoundary in UTC with a 'Z' suffix (pwsh 7.6), the
+                # form that makes Task Scheduler store a fixed offset and drift at DST changes.
+                StartBoundary = ([datetime]$At).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [cultureinfo]::InvariantCulture)
             }
             $script:capturedTriggers += $trigger
             return $trigger
@@ -111,6 +114,19 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
 
         BeforeEach {
             Mock -ModuleName WslAutomation Get-ScheduledTask { $null }
+        }
+
+        It 'gives every trigger a local start boundary with no UTC offset, keeping its wall-clock time' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $script:capturedTriggers.Count | Should -BeGreaterThan 0
+            foreach ($trigger in $script:capturedTriggers) {
+                $trigger.StartBoundary | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+            }
+            $usageCensusTrigger = @($script:capturedTriggers | Where-Object { $_.At -eq '12:37' })
+            $usageCensusTrigger.Count | Should -Be 1
+            $usageCensusTrigger[0].StartBoundary | Should -BeLike '*T12:37:00'
         }
 
         It 'creates the backup task with a wsl-restic-backup.ps1 action passing quoted BackupDir and RepoDir and -NoPause' {
