@@ -509,3 +509,19 @@ hardcoded user name) and passes both to the headless session.
   not to the log.
 - **An unresolvable Windows home is not a failure.** The run continues on the
   WSL home and logs `windows_home=unresolved`.
+
+### Task health is published for the cloud audit
+
+Cloud checks cannot see Windows Task Scheduler, so the daily `Task Health
+Publish` task (`scripts/publish-task-health.sh`) publishes this machine's
+task health, and `_agent-guidance`'s weekly fleet-health audit reads it.
+
+- **Where.** `task-health.json` on the `persistent/task-health` branch of
+  `Adam-S-Daniel/waiting-feed`: one parentless commit, replaced on every
+  publish (force-with-lease), never `main`. Never delete the branch.
+- **Counts, states, numbers and timestamps only.** No path, user name, host
+  name, log text or session name goes into the file, the log line or stdout.
+  Add a field only if it is one of those kinds of values.
+- **restic is read through file mtimes, not restic.** The repository password
+  is root-only, so the script takes the newest mtime in the repository's
+  `snapshots` directory and never runs restic.

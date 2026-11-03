@@ -21,6 +21,8 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   in both Claude homes on this machine (see "Memory curation task" below).
 - An every-minute feed of the Claude Code cloud sessions waiting on you (see
   "Waiting feed task" below).
+- A daily publish of this machine's task health, counts and timestamps only,
+  for the cloud fleet-health audit (see "Task health publish task" below).
 
 ## What this is
 
@@ -187,7 +189,7 @@ there is nothing for the keeper to wait out.
 ### Checkout update before every scripted task
 
 Every task action that runs a repo script (backup, keeper, ccstatusline sync,
-Codex Cloud sync, usage census, session miner, memory curation, and waiting feed) first updates that same
+Codex Cloud sync, usage census, session miner, memory curation, waiting feed, and task health) first updates that same
 checkout through one updater, `Update-WslAutomationRepo`, before it loads any
 task code. The two on-demand launcher actions invoke their CLIs directly and have
 no repo script to update. All six run from the one Windows checkout; the Bash
@@ -204,6 +206,7 @@ updater:
 | Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: session miner (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: memory curation (weekly) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
+| Bash in WSL: task health (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: waiting feed (every minute) | `scripts/update-task-checkout.sh` | at most every 5 minutes | 120 s overall |
 
 The task actions themselves are unchanged, so **no re-registration is needed**
@@ -846,6 +849,102 @@ up the new PATH.
 - Run it now: `Start-ScheduledTask -TaskName 'Claude Waiting Feed Publish'`;
   check `(Get-ScheduledTaskInfo -TaskName 'Claude Waiting Feed Publish').LastTaskResult`
   is `0` and `tail ~/.cache/waiting-feed.log` in WSL.
+
+### Task health publish task (default name: `Task Health Publish`)
+
+- Runs `scripts/publish-task-health.sh` inside the distro once a day at 23:47
+  (`-TaskHealthTime`). Cloud checks cannot see Windows Task Scheduler, so this
+  publishes a small snapshot of this machine's task health that the weekly
+  fleet-health audit in `_agent-guidance` can read.
+- It pushes `task-health.json` (at the tree root) to the `persistent/task-health`
+  branch of the private
+  [waiting-feed](https://github.com/Adam-S-Daniel/waiting-feed) repository,
+  with the same mechanics as the waiting feed: a persistent clone
+  (`~/.cache/task-health`, `TASK_HEALTH_DIR`), a push only to the configured
+  URL (`TASK_HEALTH_URL`), and one parentless commit that replaces the branch
+  with `--force-with-lease`, so the branch only ever holds the newest snapshot.
+  It never writes `main`. It always publishes: `generated_utc` is the heartbeat.
+- **Counts, states, numbers and timestamps only.** No path, user name, host
+  name, log text or session name is ever read into the file. Each log is
+  reduced to a timestamp (and, for a WSL task log, the integer after `exit=` on
+  its last line).
+- The action is `wsl.exe` directly, as for the census:
+
+  ```
+  C:\Windows\System32\wsl.exe --distribution Ubuntu --cd "<scripts dir>" --exec /bin/bash ./publish-task-health.sh
+  ```
+
+- Runs as a background S4U task for the current Windows user (session 0):
+  allowed on battery, 15 minute execution limit, ignores a second overlapping
+  instance, no `-StartWhenAvailable` (a missed day stays missed; the next
+  snapshot's `generated_utc` shows the gap).
+- **`task-health.json`** (keys are sorted):
+
+  ```json
+  {
+    "generated_utc": "2026-11-03T04:47:05Z",
+    "outputs": {
+      "keeper_last_line_utc": "2026-11-03T04:45:02Z",
+      "memory_curation_last_exit": 0,
+      "memory_curation_last_run_utc": "2026-11-02T18:47:00Z",
+      "restic_latest_snapshot_utc": "2026-11-03T07:00:12Z",
+      "session_miner_last_exit": 0,
+      "session_miner_last_run_utc": "2026-11-03T17:47:00Z",
+      "usage_census_last_exit": 0,
+      "usage_census_last_run_utc": "2026-11-03T17:37:40Z",
+      "waiting_feed_last_exit": 0,
+      "waiting_feed_last_run_utc": "2026-11-03T04:40:01Z"
+    },
+    "schema": 1,
+    "tasks": [
+      {
+        "last_result": 0,
+        "last_result_hex": "0x0",
+        "last_run_utc": "2026-11-03T07:00:00Z",
+        "name": "WSL Ubuntu Daily Backup",
+        "next_run_utc": "2026-11-04T07:00:00Z",
+        "state": "Ready"
+      }
+    ]
+  }
+  ```
+
+  - `schema`: always `1`. `generated_utc`: when the snapshot was made (UTC).
+  - `tasks`: one entry per registered task, in a fixed order (all eleven
+    wsl-automation tasks, this one included). `state` is the Task Scheduler
+    state (`Ready`, `Running`, `Disabled`, ...) or `missing` when the task is
+    not registered, in which case every other field is `null`. `last_result`
+    is the task's last result code (`last_result_hex` is the same in hex;
+    `0x41303` means it has not run yet), `last_run_utc` and `next_run_utc` are
+    UTC or `null` (never run, or no next run). They come from one Windows
+    PowerShell call that reads Task Scheduler unelevated; the task names reach
+    it as data (base64 in an environment variable), never in the command text.
+  - `tasks_error`: `"unavailable"`, present only when that PowerShell call
+    failed; `tasks` is then empty, the rest is still published, and the run
+    exits `1`.
+  - `outputs`: `restic_latest_snapshot_utc` is the newest file mtime in the
+    restic repository's `snapshots` directory (restic is never run: its
+    password is root-only); `keeper_last_line_utc` is the timestamp of the last
+    line of `%LOCALAPPDATA%\wsl-automation\keeper.log` (local time, converted to
+    UTC; the path is resolved at run time with `cmd.exe` and `wslpath`);
+    `<name>_last_run_utc` and `<name>_last_exit` come from the last line of
+    `~/.cache/session-miner.log`, `memory-curation.log`, `usage-census.log` and
+    `waiting-feed.log`. Anything unavailable is `null`.
+- Output is one counts-only line per run, for example
+  `task health: tasks=11 missing=0 nonzero_results=0 outputs_known=10 published=yes`
+  (`nonzero_results` counts tasks whose last result is not `0`, including
+  "has not run yet"; `outputs_known` counts non-null `outputs` fields). The same
+  line with a UTC time and exit code is appended to `~/.cache/task-health.log`
+  (`TASK_HEALTH_LOG`); a `--dry-run` line is printed but not logged. Exit `0` on
+  success, `1` on a PowerShell, clone or push failure.
+- Run it now: `Start-ScheduledTask -TaskName 'Task Health Publish'`. Dry run
+  (reads everything and prints the line, but clones, writes, commits and pushes
+  nothing) from inside the distro: `bash scripts/publish-task-health.sh --dry-run`.
+- Check it:
+  - `(Get-ScheduledTaskInfo -TaskName 'Task Health Publish').LastTaskResult` is `0`.
+  - In WSL, `tail ~/.cache/task-health.log`.
+  - `git ls-remote https://github.com/Adam-S-Daniel/waiting-feed persistent/task-health`
+    shows the branch head moving after a publish.
 
 ### Legacy scripts
 

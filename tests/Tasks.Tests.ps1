@@ -191,13 +191,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all eight background tasks as S4U in session 0, where no desktop window can flash' {
+        It 'runs all nine background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The backup, keeper, ccstatusline sync, Codex Cloud sync, usage census, session miner, memory curation, and
-            # waiting feed publish are windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 8 -Exactly -ParameterFilter {
+            # The backup, keeper, ccstatusline sync, Codex Cloud sync, usage census, session miner, memory curation,
+            # waiting feed publish, and task health publish are windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 9 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -314,8 +314,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Trigger.Count -eq 2 -and $Trigger[0].IsDaily -and $Trigger[0].At -eq '00:00' -and
                 $Trigger[1].IsDaily -and $Trigger[1].At -eq '12:00'
             }
-            # The Codex Cloud sync, usage census, and session miner tasks share these settings.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
+            # The Codex Cloud sync, usage census, session miner, and task health tasks share these settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 4 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
             }
@@ -331,8 +331,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 @($Trigger).Count -eq 1 -and $Trigger.IsDaily -and $Trigger.At -eq '12:37' -and
                 $Principal.FakePrincipal
             }
-            # The Codex Cloud sync, usage census, and session miner tasks share these settings.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
+            # The Codex Cloud sync, usage census, session miner, and task health tasks share these settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 4 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
             }
@@ -352,7 +352,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 8 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 9 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -394,8 +394,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 @($Trigger).Count -eq 1 -and $Trigger.IsDaily -and $Trigger.At -eq '12:47' -and
                 $Principal.FakePrincipal
             }
-            # The Codex Cloud sync, session miner, and session miner tasks share these settings.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
+            # The Codex Cloud sync, usage census, session miner, and task health tasks share these settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 4 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
             }
@@ -415,7 +415,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Session Miner' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 8 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 9 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -505,6 +505,65 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             # A raw trailing backslash before the closing quote would escape it and swallow --exec.
             $curationAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
             $curationAction.Argument | Should -Not -Match '\\"'
+        }
+
+        It 'registers the task health task as a direct wsl.exe action with one daily trigger, S4U, and no catch-up setting' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Task Health Publish' -and
+                $Action.Execute -like '*wsl.exe' -and
+                @($Trigger).Count -eq 1 -and $Trigger.IsDaily -and $Trigger.At -eq '23:47' -and
+                $Principal.FakePrincipal -and
+                $Settings.ExecutionTimeLimit.TotalMinutes -eq 15 -and $Settings.MultipleInstances -eq 'IgnoreNew' -and
+                -not $Settings.DisallowStartIfOnBatteries -and -not $Settings.StopIfGoingOnBatteries -and
+                -not $Settings.StartWhenAvailable
+            }
+
+            $healthAction = @($script:capturedActions | Where-Object { $_.Argument -match 'publish-task-health\.sh' })
+            $healthAction.Count | Should -Be 1
+            $healthAction[0].Argument | Should -Match '--distribution Ubuntu'
+            $healthAction[0].Argument.Contains('--cd "' + $script:scriptsDir + '"') | Should -BeTrue
+            $healthAction[0].Argument | Should -Match '--exec /bin/bash \./publish-task-health\.sh$'
+            $healthAction[0].Argument | Should -Not -Match 'pwsh'
+        }
+
+        It 'builds the task health principal for the current user, never SYSTEM, as S4U' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Task Health Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME" -and
+                $Principal.LogonType -eq 'S4U'
+            }
+        }
+
+        It 'honors -TaskHealthTime, -TaskHealthTaskName, -WslExePath and -DistroName for the task health task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -TaskHealthTime '05:10' `
+                -TaskHealthTaskName 'Custom Health' -WslExePath 'C:\fake\wsl.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Health' -and
+                $Action.Execute -eq 'C:\fake\wsl.exe' -and
+                $Action.Argument -match '--distribution Debian' -and
+                $Trigger.At -eq '05:10'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Task Health Publish'
+            }
+        }
+
+        It 'sanitizes a trailing backslash in ScriptsDir so the task health --cd argument stays well-formed' {
+            Set-WslAutomationScheduledTasks -ScriptsDir ($script:scriptsDir + '\') -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $healthAction = $script:capturedActions | Where-Object { $_.Argument -match 'publish-task-health\.sh' }
+
+            # A raw trailing backslash before the closing quote would escape it and swallow --exec.
+            $healthAction.Argument.Contains('--cd "' + $script:scriptsDir + '" --exec') | Should -BeTrue
+            $healthAction.Argument | Should -Not -Match '\\"'
         }
 
         It 'registers the waiting feed task as a direct wsl.exe action repeating every minute indefinitely, S4U, IgnoreNew' {
@@ -993,6 +1052,44 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the task health task already exists' {
+
+        BeforeEach {
+            $script:existingTaskHealthTask = [pscustomobject]@{
+                TaskName  = 'Task Health Publish'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Task Health Publish') {
+                    return $script:existingTaskHealthTask
+                }
+                return $null
+            }
+        }
+
+        It 'rebuilds settings and principal while replacing the action and trigger in place' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Task Health Publish' -and
+                $Action.Argument -match 'publish-task-health\.sh' -and
+                $Trigger.IsDaily -and $Settings.FakeSettings -and $Principal.FakePrincipal
+            }
+        }
+
+        It 'does not create a second task health task' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Task Health Publish'
+            }
+        }
+    }
+
     Context 'when the waiting feed task already exists' {
 
         BeforeEach {
@@ -1206,6 +1303,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./run-session-miner.sh')) { 'run-session-miner.sh' }
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./run-memory-curation.sh')) { 'run-memory-curation.sh' }
                 if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-waiting-feed.sh')) { 'publish-waiting-feed.sh' }
+                if ($expanded.Value.EndsWith('--exec /bin/bash ./publish-task-health.sh')) { 'publish-task-health.sh' }
             }
             foreach ($variable in $Node.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
                 $name = $variable.VariablePath.UserPath
@@ -1229,11 +1327,11 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all eight script actions among ten registered task actions' {
-        $script:actionCount | Should -Be 10
-        $script:actionScripts.Count | Should -Be 8
+    It 'covers all nine script actions among eleven registered task actions' {
+        $script:actionCount | Should -Be 11
+        $script:actionScripts.Count | Should -Be 9
         @($script:actionScripts | Sort-Object) | Should -Be @(
-            'ensure-claude-session.ps1', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
+            'ensure-claude-session.ps1', 'publish-task-health.sh', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
             'sync-ccstatusline-config.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }

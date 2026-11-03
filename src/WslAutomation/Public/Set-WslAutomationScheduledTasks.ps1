@@ -5,11 +5,11 @@ function Set-WslAutomationScheduledTasks {
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
         session keeper and its two launchers, ccstatusline config sync, Codex Cloud environment
-        sync, the daily usage census publish, the daily session miner, the weekly memory curation, and
-        the every-minute waiting feed publish.
+        sync, the daily usage census publish, the daily session miner, the weekly memory curation,
+        the every-minute waiting feed publish, and the daily task health publish.
 
     .DESCRIPTION
-        Creates ten Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates eleven Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
         running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
@@ -23,13 +23,14 @@ function Set-WslAutomationScheduledTasks {
         task that runs scripts/run-session-miner.sh the same way once a day; and a memory curation
         task that runs scripts/run-memory-curation.sh the same way once a week; and a waiting feed
         publish task that runs scripts/publish-waiting-feed.sh inside the distro every minute, the
-        same way.
+        same way; and a task health publish task that runs scripts/publish-task-health.sh the same
+        way once a day.
 
         The backup, keeper and ccstatusline tasks run as background S4U tasks (session 0), so
         they never flash a console window on the desktop; both launchers are interactive (they
         must show a terminal) and on-demand (no trigger). The three pwsh-based S4U tasks require
         an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath and
-        scripts/grant-keeper-batch-logon.ps1. The usage census, session miner, memory curation and waiting feed tasks are S4U too, but
+        scripts/grant-keeper-batch-logon.ps1. The usage census, session miner, memory curation, waiting feed and task health tasks are S4U too, but
         their action is wsl.exe itself, so they need no pwsh at all.
 
         Every task's Settings and Principal are always (re)built fresh from this function's
@@ -38,7 +39,7 @@ function Set-WslAutomationScheduledTasks {
         That now includes the backup task, which used to keep an existing task's Settings and
         Principal: re-running this function is what switches an existing backup task from the
         interactive 'wsl --export' backup to the background restic one in place. Re-running
-        this function is idempotent for all ten tasks.
+        this function is idempotent for all eleven tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -57,7 +58,7 @@ function Set-WslAutomationScheduledTasks {
         Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
         wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
         sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and
-        publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh and publish-waiting-feed.sh.
+        publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, publish-waiting-feed.sh and publish-task-health.sh.
 
     .PARAMETER BackupDir
         The OneDrive-synced directory the backup task copies the restic repository into (its
@@ -159,8 +160,17 @@ function Set-WslAutomationScheduledTasks {
         sessions waiting on the owner) from WSL every minute. Defaults to
         'Claude Waiting Feed Publish'.
 
+    .PARAMETER TaskHealthTaskName
+        Name of the scheduled task that publishes the daily task health snapshot (counts, states
+        and timestamps only) from WSL. Defaults to 'Task Health Publish'.
+
+    .PARAMETER TaskHealthTime
+        Time of day (HH:mm) the task health task's daily trigger fires. Defaults to '23:47',
+        late in the day so the snapshot reflects that day's runs, and well clear of every other
+        task's time.
+
     .PARAMETER WslExePath
-        Path to wsl.exe used as the usage census, session miner, memory curation and waiting feed tasks' action. Defaults to
+        Path to wsl.exe used as the usage census, session miner, memory curation, waiting feed and task health tasks' action. Defaults to
         %SystemRoot%\System32\wsl.exe.
 
     .PARAMETER PwshPath
@@ -193,9 +203,10 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
-        Registers (or updates) all ten scheduled tasks using default names, backup time, and
+        Registers (or updates) all eleven scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
-        daily usage census publish, the daily session miner, the weekly memory curation, and the every-minute waiting feed publish.
+        daily usage census publish, the daily session miner, the weekly memory curation, the every-minute waiting feed publish, and the daily task health
+        publish.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
@@ -254,6 +265,10 @@ function Set-WslAutomationScheduledTasks {
         [string]$MemoryCurationTime = '13:47',
 
         [string]$WaitingFeedTaskName = 'Claude Waiting Feed Publish',
+
+        [string]$TaskHealthTaskName = 'Task Health Publish',
+
+        [string]$TaskHealthTime = '23:47',
 
         [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
 
@@ -645,6 +660,32 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Task health publish: one daily trigger, wsl.exe as the action ------
+    # Built exactly like the usage census (wsl.exe directly, S4U, session 0, no StartWhenAvailable):
+    # a missed day stays missed, since the snapshot is only a heartbeat the cloud audit compares
+    # against its own clock. The script makes one Windows PowerShell call for task states, which
+    # an S4U logon may make unelevated; the 15 minute limit is generous for one call and a push.
+    $taskHealthArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-task-health.sh"
+    $taskHealthAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $taskHealthArguments
+    $taskHealthTrigger = New-ScheduledTaskTrigger -Daily -At $TaskHealthTime
+    $taskHealthSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
+    $taskHealthPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingTaskHealthTask = Get-ScheduledTask -TaskName $TaskHealthTaskName -ErrorAction SilentlyContinue
+    if ($existingTaskHealthTask) {
+        if ($PSCmdlet.ShouldProcess($TaskHealthTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $TaskHealthTaskName -Action $taskHealthAction -Trigger $taskHealthTrigger `
+                -Settings $taskHealthSettings -Principal $taskHealthPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($TaskHealthTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $TaskHealthTaskName -Action $taskHealthAction -Trigger $taskHealthTrigger `
+                -Settings $taskHealthSettings -Principal $taskHealthPrincipal
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -741,5 +782,6 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Session miner task '$SessionMinerTaskName' (background/S4U): $WslExePath $sessionMinerArguments (daily at $SessionMinerTime)" -InformationAction Continue
     Write-Information -MessageData "Memory curation task '$MemoryCurationTaskName' (background/S4U): $WslExePath $memoryCurationArguments (weekly on Monday at $MemoryCurationTime)" -InformationAction Continue
     Write-Information -MessageData "Waiting feed task '$WaitingFeedTaskName' (background/S4U): $WslExePath $waitingFeedArguments (repeats every 1 min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Task health task '$TaskHealthTaskName' (background/S4U): $WslExePath $taskHealthArguments (daily at $TaskHealthTime)" -InformationAction Continue
     Write-Information -MessageData "Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $taskHistoryResult" -InformationAction Continue
 }

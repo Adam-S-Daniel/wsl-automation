@@ -4,7 +4,7 @@
 .SYNOPSIS
     Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
     Claude Code session keeper, ccstatusline config sync, Codex Cloud environment sync, and usage
-    census publish, session miner, and memory curation scheduled tasks.
+    census publish, session miner, memory curation, waiting feed, and task health scheduled tasks.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -16,7 +16,7 @@
 .PARAMETER ScriptsDir
     Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
     wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, publish-usage-census.sh, run-session-miner.sh, and run-memory-curation.sh.
+    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
     Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
@@ -90,8 +90,15 @@
     Time of day (HH:mm) the memory curation task's weekly (Monday) trigger fires. Defaults to
     '13:47'.
 
+.PARAMETER TaskHealthTaskName
+    Name of the scheduled task that publishes the daily task health snapshot from WSL. Defaults to
+    'Task Health Publish'.
+
+.PARAMETER TaskHealthTime
+    Time of day (HH:mm) the task health task's daily trigger fires. Defaults to '23:47'.
+
 .PARAMETER WslExePath
-    Path to wsl.exe used as the usage census, session miner, and memory curation tasks' action. Defaults to
+    Path to wsl.exe used as the usage census, session miner, memory curation, and task health tasks' action. Defaults to
     %SystemRoot%\System32\wsl.exe.
 
 .PARAMETER PwshPath
@@ -168,6 +175,10 @@ param(
 
     [string]$MemoryCurationTime = '13:47',
 
+    [string]$TaskHealthTaskName = 'Task Health Publish',
+
+    [string]$TaskHealthTime = '23:47',
+
     [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
 
     # This script runs before Import-Module (the module isn't loaded until the body below), so
@@ -218,7 +229,8 @@ try {
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
         -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime `
         -SessionMinerTaskName $SessionMinerTaskName -SessionMinerTime $SessionMinerTime `
-        -MemoryCurationTaskName $MemoryCurationTaskName -MemoryCurationTime $MemoryCurationTime -WslExePath $WslExePath `
+        -MemoryCurationTaskName $MemoryCurationTaskName -MemoryCurationTime $MemoryCurationTime `
+        -TaskHealthTaskName $TaskHealthTaskName -TaskHealthTime $TaskHealthTime -WslExePath $WslExePath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -SkipTaskHistory:$SkipTaskHistory -WhatIf:$WhatIfPreference
 
     exit 0
