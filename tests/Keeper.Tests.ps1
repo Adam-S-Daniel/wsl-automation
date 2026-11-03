@@ -37,6 +37,9 @@ Describe 'Invoke-ClaudeSessionKeeper' {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
         }
         Mock -ModuleName WslAutomation Test-ClaudeSession { $true }
+        # Pester 6 throws when no filtered mock matches (Pester 5 called the real command), and the
+        # keeper also calls Get-Date without -Format for the snapshot time: pass those through.
+        Mock -ModuleName WslAutomation Get-Date { Microsoft.PowerShell.Utility\Get-Date @PesterBoundParameters }
         Mock -ModuleName WslAutomation Get-Date -ParameterFilter { $Format -eq 'yyyy-MM-dd HH:mm:ss' } {
             '2026-10-05 12:34:56'
         }
