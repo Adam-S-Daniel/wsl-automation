@@ -563,7 +563,7 @@ function Set-WslAutomationScheduledTasks {
     # any trailing backslash above, which would otherwise escape the closing quote.
     $usageCensusArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-usage-census.sh"
     $usageCensusAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $usageCensusArguments
-    $usageCensusTrigger = New-ScheduledTaskTrigger -Daily -At $UsageCensusTime
+    $usageCensusTrigger = New-ScheduledTaskTrigger -Daily -At $UsageCensusTime | ConvertTo-WslLocalTimeTrigger
     $usageCensusSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
     $usageCensusPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
