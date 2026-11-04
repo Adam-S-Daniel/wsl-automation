@@ -537,3 +537,24 @@ clock change (issue 89). Every trigger therefore goes through the private
 with no offset; Task Scheduler then keeps the wall-clock time across the
 change. A new trigger must go through it too; `tests/Tasks.Tests.ps1` fails
 otherwise.
+
+### Docker Desktop WSL integration breaks after reboot; the watchdog repairs it
+
+Diagnosed 2026-10-31; the `Docker WSL Integration Watchdog` task exists for it
+(README has the statuses and alerts).
+
+- **Symptom.** Every attempt failed with `dial unix /mnt/wsl/docker-desktop/shared-sockets/host-services/backend.sock: connect: no such file or directory`.
+- **Cause.** Docker's `wsl-bootstrap` pre-bootstrap force-unmounts its
+  shared-socket mounts under `/mnt/wsl`, a mount peer group shared across
+  distros ([docker/desktop-feedback#678](https://github.com/docker/desktop-feedback/issues/678)).
+  Ubuntu powered off 35 ms later and its systemd shutdown unmounted
+  `host-services` for good.
+- **"Skip WSL distro integration" removes the distro** from `IntegratedWslDistros`
+  in `%APPDATA%\Docker\settings-store.json`.
+- **A Docker Desktop restart re-creates the mounts, so it is the repair.**
+  A missing integration entry needs the owner, so that case alerts and never restarts.
+- **Interactive, not S4U:** the restart relaunches the Docker GUI, which must
+  land in the user's session (and the toast needs the desktop). Hence
+  `conhost.exe --headless`. Still the user, never SYSTEM.
+- **Docker's start-at-login stays ON.** Starting Docker later makes it likelier
+  Ubuntu is already running with sessions when the race fires.
