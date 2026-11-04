@@ -329,4 +329,19 @@ assert_eq "$rc" 0 'TASK_HEALTH_URL from the settings file is used'
 assert_match "$out" 'published=yes$' 'the run with the file setting publishes'
 assert_eq "$(git --git-dir="$fresh_remote" rev-list --count "$feed_ref")" 1 'the snapshot reached the repository named in the file'
 
+# --- "running" and "has not run" are states, not failures --------------------
+cat >"$FX/ps.json" <<'EOF_JSON'
+[
+  {"name": "Task A", "state": "Running", "last_run_utc": null, "last_result": 267009,
+   "last_result_hex": "0x41301", "next_run_utc": null},
+  {"name": "Task B", "state": "Ready", "last_run_utc": null, "last_result": 267011,
+   "last_result_hex": "0x41303", "next_run_utc": null},
+  {"name": "Task Gone", "state": "Ready", "last_run_utc": null, "last_result": 1,
+   "last_result_hex": "0x1", "next_run_utc": null}
+]
+EOF_JSON
+TASK_HEALTH_NOW=$((now + 200200)) run_health --dry-run
+assert_eq "$rc" 0 'the state-codes run exits 0'
+assert_match "$out" ' nonzero_results=1 ' 'running and has-not-run are not counted; a real failure is'
+
 printf 'PASS: %s assertions\n' "$passed"

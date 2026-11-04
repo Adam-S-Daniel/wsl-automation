@@ -278,7 +278,10 @@ jq -n -S --arg generated "$timestamp" --argjson tasks "$tasks_json" --argjson ta
 
 task_count=$(jq '.tasks | length' "$new_file")
 missing_count=$(jq '[.tasks[] | select(.state == "missing")] | length' "$new_file")
-nonzero_count=$(jq '[.tasks[] | select(.last_result != null and .last_result != 0)] | length' "$new_file")
+# 0x41301 (267009, running now) and 0x41303 (267011, has not run yet) are
+# states, not failures; the weekly fleet-health audit skips them too
+# (_agent-guidance#431), so they are not counted here.
+nonzero_count=$(jq '[.tasks[] | select(.last_result != null and .last_result != 0 and .last_result != 267009 and .last_result != 267011)] | length' "$new_file")
 known_count=$(jq '[.outputs[] | select(. != null)] | length' "$new_file")
 
 # --- Publish: one parentless commit replaces the branch ----------------------
