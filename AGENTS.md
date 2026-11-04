@@ -448,7 +448,7 @@ cannot use `on.paths` (a skipped check blocks the merge), so all three run on
 every pull request and skip early instead: each job's `salient` step diffs the
 pull request's base and head and gates every later step on it, and a final
 step reports success when nothing salient changed. The salient paths are
-`src/**`, `scripts/**`, `tests/**`, `.github/workflows/ci.yml`,
+`src/**`, `scripts/**`, `tests/**`, `config/**`, `.github/workflows/ci.yml`,
 `.github/workflows/actions.lock` and `PSScriptAnalyzerSettings.psd1`. On any
 other event, or when the changed files cannot be determined, the job runs in
 full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;

@@ -89,6 +89,9 @@ EOF_STUB
 chmod +x "$test_root/bin/"*
 export PATH="$test_root/bin:$PATH"
 
+# Never read the real settings file: point it at one that does not exist.
+export WSL_AUTOMATION_SETTINGS="$test_root/no-such-settings.env"
+
 # --- Fixtures -----------------------------------------------------------------
 # shellcheck disable=SC2016
 evil_name='Evil "x" $(touch PWNED) `touch PWNED2`'
@@ -301,5 +304,29 @@ out=$(env -u WSL_AUTOMATION_TASK_REEXEC PATH="$test_root/bootstrap-bin:$PATH" \
 assert_eq "$rc" 0 'a bootstrapped run still publishes'
 assert_match "$out" 'published=dry-run$' 'the bootstrapped run reaches the publisher with its arguments'
 assert_match "$(sed -n 1p "$BOOTSTRAP_CALLS")" '^--kill-after=5s 300s .*pwsh\.exe -NoProfile -File .*/scripts/update-task-checkout\.ps1 -UpdateOnly$' 'the task updates through the shared updater within 300 s'
+
+# --- TASK_HEALTH_URL is a required setting with no fallback ------------------
+# (1) Unset and no settings file: exit 2, naming the key, publishing nothing.
+before=$(remote_head)
+rc=0
+out=$(env -u TASK_HEALTH_URL TASK_HEALTH_NOW=$((now + 200000)) bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 2 'a missing TASK_HEALTH_URL exits 2'
+assert_match "$out" 'TASK_HEALTH_URL is not set; set it in ~/.config/wsl-automation/settings.env' 'the error names the key and where to set it'
+assert_match "$out" 'task health: setting TASK_HEALTH_URL is missing or invalid' 'the failure is reported on stdout'
+assert_match "$(tail -n 1 "$TASK_HEALTH_LOG")" ' exit=2 task health: setting TASK_HEALTH_URL is missing or invalid$' 'the failure is logged with exit 2 and names the key'
+[[ $(tail -n 1 "$TASK_HEALTH_LOG") != *"$test_root"* ]] || fail 'the log line must not hold a path'
+pass
+assert_eq "$(remote_head)" "$before" 'nothing was published without the setting'
+
+# (2) Provided only by a settings file: the snapshot is pushed to it.
+fresh_remote="$test_root/fresh-remote.git"
+git init --quiet --bare -b main "$fresh_remote"
+printf '# comment\nOTHER_KEY=ignored\n\nTASK_HEALTH_URL=file://%s\n' "$fresh_remote" >"$test_root/settings.env"
+rc=0
+out=$(env -u TASK_HEALTH_URL WSL_AUTOMATION_SETTINGS="$test_root/settings.env" TASK_HEALTH_DIR="$test_root/clone-settings" \
+    TASK_HEALTH_NOW=$((now + 200100)) bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 0 'TASK_HEALTH_URL from the settings file is used'
+assert_match "$out" 'published=yes$' 'the run with the file setting publishes'
+assert_eq "$(git --git-dir="$fresh_remote" rev-list --count "$feed_ref")" 1 'the snapshot reached the repository named in the file'
 
 printf 'PASS: %s assertions\n' "$passed"

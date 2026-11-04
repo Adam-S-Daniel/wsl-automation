@@ -31,6 +31,9 @@ exec "$@"
 EOF_STUB
 chmod +x "$test_root/bin/"*
 export PATH="$test_root/bin:$PATH"
+
+# Never read the real settings file: point it at one that does not exist.
+export WSL_AUTOMATION_SETTINGS="$test_root/no-such-settings.env"
 # Keep the bootstrap's attempt stamp out of the real home directory.
 export WSL_AUTOMATION_UPDATE_STAMP="$test_root/state/checkout-update.stamp"
 
@@ -142,6 +145,7 @@ assert_match "$out" 'args:--dry-run' 'bootstrap failure still mines'
 mkdir -p "$test_root/updated/scripts"
 cp -- "$script" "$test_root/updated/scripts/run-session-miner.sh"
 cp -- "$repository_root/scripts/update-task-checkout.sh" "$test_root/updated/scripts/update-task-checkout.sh"
+cp -- "$repository_root/scripts/task-settings.sh" "$test_root/updated/scripts/task-settings.sh"
 cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
 #!/usr/bin/env bash
 printf 'updated code:%s\n' "$*"
@@ -180,5 +184,25 @@ assert_match "$out" 'WARNING: checkout bootstrap unavailable' 'missing timeout w
 assert_match "$out" 'args:--dry-run' 'missing timeout still mines'
 assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 7 'missing timeout does not launch Windows host'
 assert_eq "$(wc -l <"$TIMEOUT_CALLS" | tr -d ' ')" 8 'missing timeout does not invoke timeout'
+
+# --- SKILLS_EVALS_URL is a required setting with no fallback ------------------------------
+# (1) Unset and no settings file: exit 2, naming the key, before any clone.
+rc=0
+out=$(env -u SKILLS_EVALS_URL bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 2 'a missing SKILLS_EVALS_URL exits 2'
+assert_match "$out" 'SKILLS_EVALS_URL is not set; set it in ~/.config/wsl-automation/settings.env' 'the error names the key and where to set it'
+assert_match "$out" 'session miner: setting SKILLS_EVALS_URL is missing or invalid' 'the failure is reported on stdout'
+[[ $out != *'could not clone'* ]] || fail 'a missing SKILLS_EVALS_URL must not reach the clone'
+pass
+assert_match "$(tail -n 1 "$log_file")" ' exit=2 session miner: setting SKILLS_EVALS_URL is missing or invalid$' 'the failure is logged with exit 2 and names the key'
+[[ $(tail -n 1 "$log_file") != *"$test_root"* ]] || fail 'the log line must not hold a path'
+pass
+
+# (2) Provided only by a settings file: the script uses it.
+printf '# comment\nOTHER_KEY=ignored\n\nSKILLS_EVALS_URL=file://%s\n' "$fixture" >"$test_root/settings.env"
+rc=0
+out=$(env -u SKILLS_EVALS_URL WSL_AUTOMATION_SETTINGS="$test_root/settings.env" bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 0 'SKILLS_EVALS_URL from the settings file is used'
+assert_match "$out" 'args:--dry-run' 'the clone from the settings file reaches the miner script'
 
 printf 'PASS: %s assertions\n' "$passed"

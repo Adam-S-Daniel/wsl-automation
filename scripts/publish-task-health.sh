@@ -34,10 +34,14 @@
 # One line per run goes to stdout and the log: counts only. A --dry-run prints
 # it but clones, writes, logs, commits and pushes nothing.
 #
+# Required setting, with no default: TASK_HEALTH_URL, the target repository. Set it
+# in ~/.config/wsl-automation/settings.env or the environment (see
+# task-settings.sh and config/settings.env.example); when it is missing the run
+# logs a line naming it and exits 2.
+#
 # Usage: publish-task-health.sh [--dry-run]
 #
 # Environment seams (for tests):
-#   TASK_HEALTH_URL               target repository (default the private GitHub repo)
 #   TASK_HEALTH_BRANCH            default persistent/task-health
 #   TASK_HEALTH_DIR               clone (default ~/.cache/task-health)
 #   TASK_HEALTH_LOG               log file (default ~/.cache/task-health.log)
@@ -57,6 +61,8 @@ scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
 wsl_automation_task_bootstrap "$scripts_dir/publish-task-health.sh" 0 300 "$@"
+# shellcheck source=scripts/task-settings.sh
+. "$scripts_dir/task-settings.sh"
 
 # The task starts a non-login shell (wsl.exe --exec), whose PATH lacks
 # ~/.local/bin, where jq may be installed. Append it so system tools still win.
@@ -79,7 +85,6 @@ case "${1:-}" in
         ;;
 esac
 
-target_url=${TASK_HEALTH_URL:-https://github.com/Adam-S-Daniel/waiting-feed.git}
 branch=${TASK_HEALTH_BRANCH:-persistent/task-health}
 clone_dir=${TASK_HEALTH_DIR:-$HOME/.cache/task-health}
 log_file=${TASK_HEALTH_LOG:-$HOME/.cache/task-health.log}
@@ -115,6 +120,14 @@ log_line() {
         tail -n "$((log_max_lines / 2))" -- "$log_file" >"$log_file.tmp" && mv -f -- "$log_file.tmp" "$log_file"
     fi
 }
+
+if ! wsl_automation_require_setting TASK_HEALTH_URL; then
+    line='task health: setting TASK_HEALTH_URL is missing or invalid'
+    printf '%s\n' "$line"
+    if ! $dry_run; then log_line "$line" 2; fi
+    exit 2
+fi
+target_url=$TASK_HEALTH_URL
 
 # --- Task states: ONE Windows PowerShell call --------------------------------
 names_json=$(jq -Rc 'split(",") | map(select(length > 0))' <<<"$tasks_csv")

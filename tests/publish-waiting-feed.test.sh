@@ -82,6 +82,9 @@ EOF_STUB
 chmod +x "$test_root/bin/curl"
 export PATH="$test_root/bin:$PATH"
 
+# Never read the real settings file: point it at one that does not exist.
+export WSL_AUTOMATION_SETTINGS="$test_root/no-such-settings.env"
+
 # --- Fixtures -----------------------------------------------------------------
 # item ID STATUS BUCKET DAY TAGS_JSON ORIGIN NEEDS_ACTION STATUS_DETAIL
 item() {
@@ -483,5 +486,28 @@ assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 1 'the feed skips the updat
 assert_match "$out" 'published=dry-run$' 'a throttled run still publishes'
 bootstrap_run $((t + 300))
 assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" 2 'the feed updates again after 300 s'
+
+# --- WAITING_FEED_URL is a required setting with no fallback ------------------
+# (1) Unset and no settings file: exit 2, naming the key, before any clone.
+rm -rf -- "$test_root/clone-missing"
+rc=0
+out=$(env -u WAITING_FEED_URL WAITING_FEED_DIR="$test_root/clone-missing" bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 2 'a missing WAITING_FEED_URL exits 2'
+assert_match "$out" 'WAITING_FEED_URL is not set; set it in ~/.config/wsl-automation/settings.env' 'the error names the key and where to set it'
+assert_match "$out" 'waiting feed: setting WAITING_FEED_URL is missing or invalid' 'the failure is reported on stdout'
+assert_match "$(tail -n 1 "$WAITING_FEED_LOG")" ' exit=2 waiting feed: setting WAITING_FEED_URL is missing or invalid$' 'the failure is logged with exit 2 and names the key'
+[[ $(tail -n 1 "$WAITING_FEED_LOG") != *"$test_root"* ]] || fail 'the log line must not hold a path'
+pass
+[[ ! -e $test_root/clone-missing ]] || fail 'a missing WAITING_FEED_URL must not reach the clone'
+pass
+
+# (2) Provided only by a settings file: the feed is cloned from it.
+printf '# comment\nOTHER_KEY=ignored\n\nWAITING_FEED_URL=file://%s\n' "$remote" >"$test_root/settings.env"
+rm -rf -- "$test_root/clone-settings"
+rc=0
+out=$(env -u WAITING_FEED_URL WSL_AUTOMATION_SETTINGS="$test_root/settings.env" WAITING_FEED_DIR="$test_root/clone-settings" bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 0 'WAITING_FEED_URL from the settings file is used'
+assert_match "$out" 'published=dry-run$' 'the run with the file setting reaches the publisher'
+assert_eq "$(git -C "$test_root/clone-settings" remote get-url origin)" "file://$remote" 'the feed was cloned from the file setting'
 
 printf 'PASS: %s assertions\n' "$passed"

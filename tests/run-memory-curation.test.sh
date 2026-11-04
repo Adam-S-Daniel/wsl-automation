@@ -52,6 +52,9 @@ exit "${CLAUDE_EXIT:-0}"
 EOF_STUB
 chmod +x "$test_root/bin/"*
 export PATH="$test_root/bin:$PATH"
+
+# Never read the real settings file: point it at one that does not exist.
+export WSL_AUTOMATION_SETTINGS="$test_root/no-such-settings.env"
 # Keep the bootstrap's attempt stamp out of the real home directory.
 export WSL_AUTOMATION_UPDATE_STAMP="$test_root/state/checkout-update.stamp"
 
@@ -155,7 +158,8 @@ assert_eq "$(wc -l <"$CLAUDE_CALLS" | tr -d ' ')" 1 'live run calls claude once'
 argv=$(cat "$CLAUDE_ARGV")
 assert_eq "$(sed -n 1p "$CLAUDE_ARGV")" -p 'claude gets -p first'
 prompt=$(sed -n 2p "$CLAUDE_ARGV")
-assert_contains "$prompt" 'docs/routines/memory-curation.md in Adam-S-Daniel/_agent-guidance' 'prompt points at the routine doc'
+assert_contains "$prompt" 'docs/routines/memory-curation.md in the current directory' 'prompt points at the routine doc'
+assert_lacks "$prompt" 'Adam-S-Daniel' 'prompt names no owner'
 assert_contains "$prompt" "$wsl_home/projects/*/memory/" 'prompt names the WSL home'
 assert_contains "$prompt" "$win_home/projects/*/memory/" 'prompt names the Windows home'
 assert_contains "$prompt" "$test_root/roots-one" 'prompt names an existing clone root'
@@ -287,6 +291,7 @@ assert_contains "$out" 'SUMMARYSECRET' 'bootstrap failure still curates'
 mkdir -p "$test_root/updated/scripts"
 cp -- "$script" "$test_root/updated/scripts/run-memory-curation.sh"
 cp -- "$repository_root/scripts/update-task-checkout.sh" "$test_root/updated/scripts/update-task-checkout.sh"
+cp -- "$repository_root/scripts/task-settings.sh" "$test_root/updated/scripts/task-settings.sh"
 cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
 #!/usr/bin/env bash
 printf 'updated code:%s\n' "$*"
@@ -305,5 +310,25 @@ assert_eq "$(wc -l <"$BOOTSTRAP_CALLS" | tr -d ' ')" "$(($(line_count) + 1))" 'b
 assert_match "$(sed -n 1p "$BOOTSTRAP_CALLS")" '-NoProfile -File .*update-task-checkout.ps1 -UpdateOnly$' 'bootstrap uses the shared Windows updater'
 assert_match "$(cat "$log_file")" 'exit=0 memory curation: mode=live' 'runs append to the log'
 assert_eq "$(grep -cvE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z exit=[0-9]+ memory curation: ' "$log_file" || true)" 0 'every log line has the same shape'
+
+# --- AGENT_GUIDANCE_URL is a required setting with no fallback ------------------------------
+# (1) Unset and no settings file: exit 2, naming the key, before any clone.
+rc=0
+out=$(env -u AGENT_GUIDANCE_URL bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 2 'a missing AGENT_GUIDANCE_URL exits 2'
+assert_match "$out" 'AGENT_GUIDANCE_URL is not set; set it in ~/.config/wsl-automation/settings.env' 'the error names the key and where to set it'
+assert_match "$out" 'memory curation: setting AGENT_GUIDANCE_URL is missing or invalid' 'the failure is reported on stdout'
+[[ $out != *'could not clone'* ]] || fail 'a missing AGENT_GUIDANCE_URL must not reach the clone'
+pass
+assert_match "$(tail -n 1 "$log_file")" ' exit=2 memory curation: setting AGENT_GUIDANCE_URL is missing or invalid$' 'the failure is logged with exit 2 and names the key'
+[[ $(tail -n 1 "$log_file") != *"$test_root"* ]] || fail 'the log line must not hold a path'
+pass
+
+# (2) Provided only by a settings file: the script uses it.
+printf '# comment\nOTHER_KEY=ignored\n\nAGENT_GUIDANCE_URL=file://%s\n' "$fixture" >"$test_root/settings.env"
+rc=0
+out=$(env -u AGENT_GUIDANCE_URL WSL_AUTOMATION_SETTINGS="$test_root/settings.env" bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 0 'AGENT_GUIDANCE_URL from the settings file is used'
+assert_match "$(last_log)" ' exit=0 memory curation: mode=dry-run ' 'the clone from the settings file reaches the audits'
 
 printf 'PASS: %s assertions\n' "$passed"

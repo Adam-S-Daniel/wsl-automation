@@ -13,8 +13,12 @@
 # collapsed onto one line). The publish script's output is totals only; nothing
 # is added to it here, so no path or personal data reaches the log or stdout.
 #
+# Required setting, with no default: SKILLS_EVALS_URL, the repository to clone.
+# Set it in ~/.config/wsl-automation/settings.env or the environment (see
+# task-settings.sh and config/settings.env.example); when it is missing the run
+# logs a line naming it and exits 2.
+#
 # Environment seams (for tests):
-#   SKILLS_EVALS_URL   repository to clone (default: the GitHub skills-evals repo)
 #   USAGE_CENSUS_LOG   log file (default: ~/.cache/usage-census.log)
 set -euo pipefail
 
@@ -24,10 +28,19 @@ scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
 wsl_automation_task_bootstrap "$scripts_dir/publish-usage-census.sh" 0 300 "$@"
+# shellcheck source=scripts/task-settings.sh
+. "$scripts_dir/task-settings.sh"
 
-url=${SKILLS_EVALS_URL:-https://github.com/Adam-S-Daniel/skills-evals.git}
 log=${USAGE_CENSUS_LOG:-$HOME/.cache/usage-census.log}
 mkdir -p -- "$(dirname -- "$log")"
+
+if ! wsl_automation_require_setting SKILLS_EVALS_URL; then
+    out='usage census: setting SKILLS_EVALS_URL is missing or invalid'
+    printf '%s exit=2 %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$out" >>"$log"
+    printf '%s\n' "$out"
+    exit 2
+fi
+url=$SKILLS_EVALS_URL
 
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
