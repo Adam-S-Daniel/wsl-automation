@@ -73,7 +73,7 @@ export GIT_TERMINAL_PROMPT=0
 
 readonly log_max_lines=2000
 readonly powershell_timeout=120
-readonly default_tasks='WSL Ubuntu Daily Backup,Claude Code Session Keeper,Claude Code Session Launcher,Codex Remote Control Launcher,ccstatusline Config Sync,Codex Cloud Environment Sync,Usage Census Publish,Session Miner,Memory Curation,Claude Waiting Feed Publish,Task Health Publish'
+readonly default_tasks='WSL Ubuntu Daily Backup,Claude Code Session Keeper,Claude Code Session Launcher,Codex Remote Control Launcher,ccstatusline Config Sync,Codex Cloud Environment Sync,Usage Census Publish,Session Miner,Memory Curation,Claude Waiting Feed Publish,Task Health Publish,Docker WSL Integration Watchdog'
 
 dry_run=false
 case "${1:-}" in

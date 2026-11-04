@@ -12,6 +12,9 @@ function Send-WslAutomationAlert {
         text that carries no host name, user name or log text; the caller owns that.
     .PARAMETER Subject
         Toast message and email subject.
+    .PARAMETER ToastMessage
+        Toast text. Defaults to -Subject; pass it when the subject carries a suffix (such as a
+        "via" link) that belongs in the email but not in the toast.
     .PARAMETER Body
         Email body.
     .PARAMETER LogFile
@@ -35,14 +38,19 @@ function Send-WslAutomationAlert {
         [Parameter(Mandatory)]
         [string]$LogFile,
 
+        [string]$ToastMessage,
+
         [string]$WorkflowRepo = 'Adam-S-Daniel/fastmail-actions',
 
         [string]$WorkflowFile = 'send-self-alert.yml'
     )
 
+    if ([string]::IsNullOrEmpty($ToastMessage)) {
+        $ToastMessage = $Subject
+    }
     $toastOk = $false
     try {
-        $toastOk = [bool](Show-WslAutomationToast -Title 'Docker WSL integration' -Message $Subject)
+        $toastOk = [bool](Show-WslAutomationToast -Title 'Docker WSL integration' -Message $ToastMessage)
     }
     catch {
         $toastOk = $false

@@ -948,7 +948,7 @@ up the new PATH.
   ```
 
   - `schema`: always `1`. `generated_utc`: when the snapshot was made (UTC).
-  - `tasks`: one entry per registered task, in a fixed order (all eleven
+  - `tasks`: one entry per registered task, in a fixed order (all twelve
     wsl-automation tasks, this one included). `state` is the Task Scheduler
     state (`Ready`, `Running`, `Disabled`, ...) or `missing` when the task is
     not registered, in which case every other field is `null`. `last_result`
@@ -969,7 +969,7 @@ up the new PATH.
     `~/.cache/session-miner.log`, `memory-curation.log`, `usage-census.log` and
     `waiting-feed.log`. Anything unavailable is `null`.
 - Output is one counts-only line per run, for example
-  `task health: tasks=11 missing=0 nonzero_results=0 outputs_known=10 published=yes`
+  `task health: tasks=12 missing=0 nonzero_results=0 outputs_known=10 published=yes`
   (`nonzero_results` counts tasks whose last result is not `0`, leaving
   out `0x41301` (running) and `0x41303` (has not run yet), as the weekly
   fleet-health audit does; `outputs_known` counts non-null `outputs` fields). The same

@@ -19,8 +19,9 @@ BeforeAll {
 
     # Send-WslAutomationAlert and Show-WslAutomationToast are private seams: call them in module scope.
     function Invoke-TestSendAlert {
-        param([string]$Subject, [string]$Body, [string]$LogFile, [string]$WorkflowRepo, [string]$WorkflowFile)
+        param([string]$Subject, [string]$Body, [string]$LogFile, [string]$WorkflowRepo, [string]$WorkflowFile, [string]$ToastMessage)
         $params = @{ Subject = $Subject; Body = $Body; LogFile = $LogFile }
+        if ($ToastMessage) { $params['ToastMessage'] = $ToastMessage }
         if ($WorkflowRepo) { $params['WorkflowRepo'] = $WorkflowRepo }
         if ($WorkflowFile) { $params['WorkflowFile'] = $WorkflowFile }
         InModuleScope WslAutomation -Parameters @{ Params = $params } {
@@ -174,6 +175,7 @@ Describe 'Invoke-DockerWslIntegrationWatchdog' {
             Should -Invoke -ModuleName WslAutomation Get-WslDistroState -Times 0 -Exactly
             Should -Invoke -ModuleName WslAutomation Send-WslAutomationAlert -Times 1 -Exactly -ParameterFilter {
                 $Subject -eq ('Docker Desktop WSL integration no longer includes Ubuntu' + $script:subjectSuffix) -and
+                $ToastMessage -eq 'Docker Desktop WSL integration no longer includes Ubuntu' -and
                 $Body -match 'Settings > Resources > WSL integration' -and $Body -match 'Apply & restart' -and $Body -match 'Ubuntu'
             }
         }
@@ -302,6 +304,7 @@ Describe 'Invoke-DockerWslIntegrationWatchdog' {
             Should -Invoke -ModuleName WslAutomation Invoke-DockerDesktopCli -Times 2 -Exactly -ParameterFilter { $Arguments -contains 'restart' }
             Should -Invoke -ModuleName WslAutomation Send-WslAutomationAlert -Times 1 -Exactly -ParameterFilter {
                 $Subject -eq ('Docker Desktop WSL integration with Ubuntu is broken and a restart did not fix it' + $script:subjectSuffix) -and
+                $ToastMessage -eq 'Docker Desktop WSL integration with Ubuntu is broken and a restart did not fix it' -and
                 $Body -match 'Ubuntu' -and $Body -match 'wsl --shutdown' -and $Body -match 'Quit Docker Desktop|quit Docker Desktop'
             }
         }
@@ -489,6 +492,17 @@ Describe 'Send-WslAutomationAlert' {
         }
     }
 
+    It 'shows -ToastMessage in the toast while the email subject stays -Subject' {
+        Invoke-TestSendAlert -Subject 'Email subject, via link' -ToastMessage 'Plain toast text' -Body 'b' -LogFile $script:logFile | Out-Null
+
+        Should -Invoke -ModuleName WslAutomation Show-WslAutomationToast -Times 1 -Exactly -ParameterFilter {
+            $Message -eq 'Plain toast text'
+        }
+        Should -Invoke -ModuleName WslAutomation Invoke-GhExe -Times 1 -Exactly -ParameterFilter {
+            $Arguments[6] -eq 'subject=Email subject, via link'
+        }
+    }
+
     It 'honors -WorkflowRepo and -WorkflowFile' {
         Invoke-TestSendAlert -Subject 's' -Body 'b' -LogFile $script:logFile -WorkflowRepo 'example/repo' -WorkflowFile 'other.yml' | Out-Null
 
@@ -573,7 +587,7 @@ Describe 'Invoke-DockerWslIntegrationWatchdog subject through the real alert fun
             $Arguments[8].StartsWith('body=') -and $Arguments[8] -match 'Debian2'
         }
         Should -Invoke -ModuleName WslAutomation Show-WslAutomationToast -Times 1 -Exactly -ParameterFilter {
-            $Title -eq 'Docker WSL integration' -and $Message.EndsWith('/scripts/ensure-docker-wsl-integration.ps1')
+            $Title -eq 'Docker WSL integration' -and $Message -eq 'Docker Desktop WSL integration no longer includes Debian2'
         }
         $log = Get-Content -LiteralPath $script:logFile -Raw
         $log | Should -Match 'alert toast: ok'

@@ -130,7 +130,7 @@ function Invoke-DockerWslIntegrationWatchdog {
             return $false
         }
 
-        $sent = Send-WslAutomationAlert -Subject ($Subject + $subjectSuffix) -Body $Body -LogFile $LogFile
+        $sent = Send-WslAutomationAlert -Subject ($Subject + $subjectSuffix) -ToastMessage $Subject -Body $Body -LogFile $LogFile
         $delivered = [bool]($sent.Toast -or $sent.Email)
         if ($delivered) {
             $stateJson = [pscustomobject]@{ lastAlert = $AlertStatus; at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json
