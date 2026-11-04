@@ -3,6 +3,14 @@
 # the configured GitHub connectors. It deliberately emits aggregate-only status.
 set -euo pipefail
 
+# Required setting, with no default: CODEX_CLOUD_GUIDANCE_REPOSITORY, the guidance
+# repository as owner/name. Set it in ~/.config/wsl-automation/settings.env or the
+# environment (see task-settings.sh and config/settings.env.example); when it is
+# missing the run exits 2 naming it.
+scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/task-settings.sh
+. "$scripts_dir/task-settings.sh"
+
 readonly api_base='https://chatgpt.com/backend-api'
 readonly connector_search_limit=10
 readonly inventory_page_size=100
@@ -12,7 +20,6 @@ readonly bootstrap_sha256='e1c79a80a00bad2ade61c959115bf366366c34f5f7f616dcc236a
 
 dry_run=false
 connector_override="${CODEX_CLOUD_GITHUB_CONNECTOR_ID:-}"
-guidance_repository="${CODEX_CLOUD_GUIDANCE_REPOSITORY:-Adam-S-Daniel/_agent-guidance}"
 
 usage() {
     printf '%s\n' 'usage: sync-codex-cloud-environments.sh [--dry-run] [--connector-id ID]'
@@ -78,6 +85,11 @@ while (($#)); do
     esac
     shift
 done
+
+if ! wsl_automation_require_setting CODEX_CLOUD_GUIDANCE_REPOSITORY; then
+    exit 2
+fi
+guidance_repository=$CODEX_CLOUD_GUIDANCE_REPOSITORY
 
 for dependency in codex curl gh jq flock mktemp; do
     if ! command -v "$dependency" >/dev/null 2>&1; then

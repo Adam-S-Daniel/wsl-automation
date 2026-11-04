@@ -19,8 +19,12 @@
 # collapsed onto one line). The miner's output is counts only; nothing is added to
 # it here, so no path or personal data reaches the log or stdout.
 #
+# Required setting, with no default: SKILLS_EVALS_URL, the repository to clone.
+# Set it in ~/.config/wsl-automation/settings.env or the environment (see
+# task-settings.sh and config/settings.env.example); when it is missing the run
+# logs a line naming it and exits 2.
+#
 # Environment seams (for tests):
-#   SKILLS_EVALS_URL   repository to clone (default: the GitHub skills-evals repo)
 #   SESSION_MINER_LOG  log file (default: ~/.cache/session-miner.log)
 set -euo pipefail
 
@@ -29,14 +33,23 @@ set -euo pipefail
 scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
+# shellcheck source=scripts/task-settings.sh
+. "$scripts_dir/task-settings.sh"
 wsl_automation_task_bootstrap "$scripts_dir/run-session-miner.sh" 0 300 "$@"
 
 # The miner refuses to run without a denylist; default to the owner's file.
 export PRIVACY_DENYLIST_FILE=${PRIVACY_DENYLIST_FILE:-$HOME/.config/privacy-denylist.txt}
 
-url=${SKILLS_EVALS_URL:-https://github.com/Adam-S-Daniel/skills-evals.git}
 log=${SESSION_MINER_LOG:-$HOME/.cache/session-miner.log}
 mkdir -p -- "$(dirname -- "$log")"
+
+if ! wsl_automation_require_setting SKILLS_EVALS_URL; then
+    out='session miner: setting SKILLS_EVALS_URL is missing or invalid'
+    printf '%s exit=2 %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$out" >>"$log"
+    printf '%s\n' "$out"
+    exit 2
+fi
+url=$SKILLS_EVALS_URL
 
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT

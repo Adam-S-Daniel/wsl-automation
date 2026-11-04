@@ -147,6 +147,9 @@ export FAKE_INVENTORY_PAGE1='{"repo_review_settings":[{"repository":{"id":"guida
 export FAKE_INVENTORY_PAGE2='{"repo_review_settings":[],"next_token":null}'
 export FAKE_SEARCH_RESPONSE='{"repositories":[{"id":"guidance-1","name":"_agent-guidance"},{"id":"repo-1","name":"example-repo"}]}'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID='connector-1'
+# Never read the real settings file; the guidance repository is a required setting.
+export WSL_AUTOMATION_SETTINGS="$test_root/no-such-settings.env"
+export CODEX_CLOUD_GUIDANCE_REPOSITORY='Adam-S-Daniel/_agent-guidance'
 
 export FAKE_ENVIRONMENTS='[{"id":"unrelated-environment","repos":[]}]'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID=$'connector\nmalicious'
@@ -155,6 +158,19 @@ if run_sync "$test_root/malicious-connector.out" --dry-run; then
 fi
 grep -qxF 'candidate connector ID is invalid' "$test_root/malicious-connector.out" || fail 'malicious connector failure was not sanitized'
 export CODEX_CLOUD_GITHUB_CONNECTOR_ID='connector-1'
+
+# The guidance repository is a required setting with no fallback: (1) unset with
+# no settings file exits 2 naming the key.
+status=0
+(unset CODEX_CLOUD_GUIDANCE_REPOSITORY; run_sync "$test_root/missing-setting.out" --dry-run) || status=$?
+[[ $status -eq 2 ]] || fail "missing guidance repository setting exited $status, expected 2"
+grep -qF 'CODEX_CLOUD_GUIDANCE_REPOSITORY is not set; set it in ~/.config/wsl-automation/settings.env' "$test_root/missing-setting.out" || fail 'missing setting error does not name the key'
+[[ ! -e $test_root/requests/inventory-count ]] || fail 'missing setting must fail before any request'
+
+# (2) Provided only by a settings file, the value is used.
+printf '# comment\nOTHER_KEY=ignored\n\nCODEX_CLOUD_GUIDANCE_REPOSITORY=Adam-S-Daniel/_agent-guidance\n' >"$test_root/settings.env"
+(unset CODEX_CLOUD_GUIDANCE_REPOSITORY; WSL_AUTOMATION_SETTINGS="$test_root/settings.env" run_sync "$test_root/file-setting.out" --dry-run) || fail 'settings file value was not used'
+grep -qxF 'Codex Cloud environment sync dry run: 2 proposed changes, 0 unchanged' "$test_root/file-setting.out" || fail 'settings file value did not select the guidance repository'
 
 run_sync "$test_root/create.out"
 expected_script=$(jq -er 'select(.repos == ["repo-1"]) | .setup' "$test_root/requests/create.jsonl")
@@ -452,4 +468,4 @@ if run_sync "$test_root/mismatched-name.out" --dry-run; then
 fi
 grep -qxF 'repository inventory item has an invalid GitHub repository path' "$test_root/mismatched-name.out" || fail 'mismatched path failure was not sanitized'
 
-printf '%s\n' 'PASS: 26 Codex Cloud environment sync behaviors'
+printf '%s\n' 'PASS: 28 Codex Cloud environment sync behaviors'

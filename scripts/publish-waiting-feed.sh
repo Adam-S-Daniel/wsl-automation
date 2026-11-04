@@ -28,6 +28,11 @@
 # tokens. The same line, with a UTC timestamp and the exit code, is appended to
 # the log only when a run published or failed, so a quiet minute adds nothing.
 #
+# Required setting, with no default: WAITING_FEED_URL, the feed remote. Set it in
+# ~/.config/wsl-automation/settings.env or the environment (see task-settings.sh
+# and config/settings.env.example); when it is missing the run logs a line naming
+# it and exits 2.
+#
 # Usage: publish-waiting-feed.sh [--dry-run]   (--dry-run: no write, commit or push)
 #
 # Environment seams (for tests):
@@ -36,7 +41,6 @@
 #   WAITING_FEED_API_BASE     default https://api.anthropic.com
 #   WAITING_FEED_NOW          epoch seconds (default: now); expiry check and heartbeat
 #   WAITING_FEED_DIR          feed clone (default ~/.cache/waiting-feed)
-#   WAITING_FEED_URL          feed remote (default the private GitHub repo)
 #   WAITING_FEED_LOG          log file (default ~/.cache/waiting-feed.log)
 set -euo pipefail
 
@@ -45,6 +49,8 @@ set -euo pipefail
 scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
+# shellcheck source=scripts/task-settings.sh
+. "$scripts_dir/task-settings.sh"
 wsl_automation_task_bootstrap "$scripts_dir/publish-waiting-feed.sh" 300 120 "$@"
 
 # The task starts a non-login shell (wsl.exe --exec), whose PATH lacks
@@ -73,7 +79,6 @@ credentials=${WAITING_FEED_CREDENTIALS:-$HOME/.claude/.credentials.json}
 claude_json=${WAITING_FEED_CLAUDE_JSON:-$HOME/.claude.json}
 api_base=${WAITING_FEED_API_BASE:-https://api.anthropic.com}
 feed_dir=${WAITING_FEED_DIR:-$HOME/.cache/waiting-feed}
-feed_url=${WAITING_FEED_URL:-https://github.com/Adam-S-Daniel/waiting-feed.git}
 log_file=${WAITING_FEED_LOG:-$HOME/.cache/waiting-feed.log}
 now=${WAITING_FEED_NOW:-$(date +%s)}
 readonly feed_branch=persistent/waiting-feed
@@ -119,6 +124,14 @@ log_line() {
         tail -n "$((log_max_lines / 2))" -- "$log_file" >"$log_file.tmp" && mv -f -- "$log_file.tmp" "$log_file"
     fi
 }
+
+if ! wsl_automation_require_setting WAITING_FEED_URL; then
+    line='waiting feed: setting WAITING_FEED_URL is missing or invalid'
+    printf '%s\n' "$line"
+    log_line "$line" 2
+    exit 2
+fi
+feed_url=$WAITING_FEED_URL
 
 # The clone is the only state: its origin/persistent/waiting-feed is the
 # previous feed.

@@ -255,6 +255,41 @@ Reviewing and merging a change therefore also authorizes it to run on the next
 task invocation. Dirty, divergent, or unavailable checkouts can continue to run
 older or local code until their warning is resolved.
 
+### Settings file for the Bash tasks (`settings.env`)
+
+A value that names one of your own resources (a repository or URL) is set in
+one place and has **no fallback in code**. The Bash tasks start through
+`wsl.exe` from Task Scheduler with no environment of their own, so those values
+live in `~/.config/wsl-automation/settings.env` inside the distro. Copy
+[`config/settings.env.example`](config/settings.env.example) there and replace
+its placeholder values with yours.
+
+| Key | Task that uses it |
+| --- | --- |
+| `SKILLS_EVALS_URL` | Usage census and Session miner (the skills-evals repository to clone) |
+| `AGENT_GUIDANCE_URL` | Memory curation (the `_agent-guidance` repository to clone) |
+| `WAITING_FEED_URL` | Waiting feed (the feed repository it pushes to) |
+| `TASK_HEALTH_URL` | Task health publish (the repository it pushes to) |
+| `CODEX_CLOUD_GUIDANCE_REPOSITORY` | Codex Cloud environment sync (the guidance repository as `owner/name`) |
+
+- **The file is read as data, never sourced.** One `KEY=VALUE` per line; blank
+  lines and `#` comments are skipped, only the key a task asks for is taken
+  (the last occurrence wins), a value starting with `~/` expands to your home
+  directory, and nothing else is expanded: no quotes are stripped and no
+  variable is substituted. A line that is neither a comment nor `KEY=VALUE`
+  is an error that names its line number (never the path, which holds your
+  user name).
+- **The environment wins.** A key already set and non-empty in the task's
+  environment is used as is, and the file is not read for it.
+  `WSL_AUTOMATION_SETTINGS` points at a different file (tests use this).
+- **Missing means exit 2.** When a key is unset or empty everywhere, the task
+  exits 2 with `<KEY> is not set; set it in ~/.config/wsl-automation/settings.env
+  (WSL_AUTOMATION_SETTINGS; see config/settings.env.example) or the
+  environment`. The tasks that keep a log also write a line naming the key
+  (`... setting <KEY> is missing or invalid`, with `exit=2`); no path goes into
+  it. The resolver is `scripts/task-settings.sh`
+  (`wsl_automation_require_setting KEY`).
+
 ### Backup task (default name: `WSL Ubuntu Daily Backup`)
 
 The daily backup is a **live restic backup** run inside the running distro
@@ -823,7 +858,7 @@ up the new PATH.
   401), `http_<code>` (any other HTTP status), `network` (curl failed),
   `bad_response` (the body was not the expected JSON).
 - **Publishing.** The clone is `~/.cache/waiting-feed` (`WAITING_FEED_DIR`),
-  cloned from `WAITING_FEED_URL` when missing; a clone whose `origin` is any
+  cloned from `WAITING_FEED_URL` (a [required setting](#settings-file-for-the-bash-tasks-settingsenv), no default) when missing; a clone whose `origin` is any
   other repository is refused. Each run first fetches (with `--prune`) and
   resets the clone to `origin/main`, which keeps the hooks it carries current;
   the previous feed is read from `origin/persistent/waiting-feed`, so a commit
@@ -861,7 +896,7 @@ up the new PATH.
   [waiting-feed](https://github.com/Adam-S-Daniel/waiting-feed) repository,
   with the same mechanics as the waiting feed: a persistent clone
   (`~/.cache/task-health`, `TASK_HEALTH_DIR`), a push only to the configured
-  URL (`TASK_HEALTH_URL`), and one parentless commit that replaces the branch
+  URL (`TASK_HEALTH_URL`, a [required setting](#settings-file-for-the-bash-tasks-settingsenv) with no default), and one parentless commit that replaces the branch
   with `--force-with-lease`, so the branch only ever holds the newest snapshot.
   It never writes `main`. It always publishes: `generated_utc` is the heartbeat.
 - **Counts, states, numbers and timestamps only.** No path, user name, host
