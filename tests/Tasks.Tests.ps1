@@ -49,11 +49,14 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 DaysOfWeek = $DaysOfWeek
                 IsOnce     = [bool]$Once
                 IsAtLogOn  = [bool]$AtLogOn
+                User       = $User
+                Delay      = $null
                 At         = $At
                 Repetition = $repetition
                 # The real cmdlet writes StartBoundary in UTC with a 'Z' suffix (pwsh 7.6), the
                 # form that makes Task Scheduler store a fixed offset and drift at DST changes.
-                StartBoundary = ([datetime]$At).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [cultureinfo]::InvariantCulture)
+                # An at-logon trigger has no start time at all.
+                StartBoundary = if ($At) { ([datetime]$At).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [cultureinfo]::InvariantCulture) } else { $null }
             }
             $script:capturedTriggers += $trigger
             return $trigger
@@ -121,7 +124,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             $script:capturedTriggers.Count | Should -BeGreaterThan 0
-            foreach ($trigger in $script:capturedTriggers) {
+            # An at-logon trigger (the Docker watchdog's) has no start boundary to localize.
+            foreach ($trigger in @($script:capturedTriggers | Where-Object { -not $_.IsAtLogOn })) {
                 $trigger.StartBoundary | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
             }
             $usageCensusTrigger = @($script:capturedTriggers | Where-Object { $_.At -eq '12:37' })
@@ -167,15 +171,19 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $keeperAction.Argument | Should -Match '-DistroName Debian'
         }
 
-        It 'creates exactly one daily trigger for the backup task and no logon trigger' {
+        It 'creates exactly one daily trigger for the backup task and no logon trigger of its own' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
             Should -Invoke -ModuleName WslAutomation New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter {
                 $Daily -eq $true -and $At -eq '02:00'
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskTrigger -Times 0 -Exactly -ParameterFilter {
+            # The only at-logon trigger anywhere is the Docker watchdog's, and it names the user.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter {
                 $AtLogOn -eq $true
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Ubuntu Daily Backup' -and @($Trigger).Count -eq 1 -and -not $Trigger.IsAtLogOn
             }
         }
 
@@ -274,12 +282,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs only the two launchers interactively; the backup task is S4U for the current user, never SYSTEM' {
+        It 'runs only the two launchers and the Docker watchdog interactively; the backup task is S4U for the current user, never SYSTEM' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # Both launchers must show a terminal; the restic backup runs in the background.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 2 -Exactly -ParameterFilter {
+            # Both launchers must show a terminal and the Docker watchdog must restart Docker Desktop in
+            # the user's session; the restic backup runs in the background.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 3 -Exactly -ParameterFilter {
                 $LogonType -eq 'Interactive'
             }
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
@@ -639,6 +648,60 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $feedAction.Argument | Should -Not -Match '\\"'
         }
 
+        It 'registers the Docker watchdog task as an Interactive conhost --headless pwsh action for the current user, never SYSTEM' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -ConhostPath 'C:\fake\conhost.exe' -DistroName 'Debian' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Docker WSL Integration Watchdog' -and
+                $Principal.FakePrincipal -and $Principal.LogonType -eq 'Interactive' -and
+                $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            }
+
+            $watchdogAction = @($script:capturedActions | Where-Object { $_.Argument -match 'ensure-docker-wsl-integration\.ps1' })
+            $watchdogAction.Count | Should -Be 1
+            $watchdogAction[0].Execute | Should -Be 'C:\fake\conhost.exe'
+            $expectedScript = Join-Path $script:scriptsDir 'ensure-docker-wsl-integration.ps1'
+            $watchdogAction[0].Argument | Should -Be "--headless `"C:\fake\pwsh.exe`" -NoProfile -File `"$expectedScript`" -DistroName Debian"
+        }
+
+        It 'gives the Docker watchdog an at-logon trigger delayed 12 minutes and an indefinite 30 minute repetition, both for the current user' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Docker WSL Integration Watchdog' -and
+                @($Trigger).Count -eq 2 -and
+                $Trigger[0].IsAtLogOn -eq $true -and $Trigger[0].User -eq "$env:USERDOMAIN\$env:USERNAME" -and $Trigger[0].Delay -eq 'PT12M' -and
+                $Trigger[1].IsOnce -eq $true -and $Trigger[1].Repetition.Interval -eq 'PT30M' -and $null -eq $Trigger[1].Repetition.Duration
+            }
+        }
+
+        It 'registers the Docker watchdog on battery with a 20 minute limit, one instance at a time, and no catch-up run' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Docker WSL Integration Watchdog' -and
+                -not $Settings.DisallowStartIfOnBatteries -and -not $Settings.StopIfGoingOnBatteries -and
+                $Settings.ExecutionTimeLimit -eq (New-TimeSpan -Minutes 20) -and
+                $Settings.MultipleInstances -eq 'IgnoreNew' -and -not $Settings.StartWhenAvailable
+            }
+        }
+
+        It 'honors -DockerWatchdogTaskName, -DockerWatchdogIntervalMinutes and -DockerWatchdogLogonDelayMinutes' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DockerWatchdogTaskName 'Custom Docker Watchdog' `
+                -DockerWatchdogIntervalMinutes 45 -DockerWatchdogLogonDelayMinutes 15 -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Docker Watchdog' -and
+                $Trigger[0].Delay -eq 'PT15M' -and $Trigger[1].Repetition.Interval -eq 'PT45M'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Docker WSL Integration Watchdog'
+            }
+        }
         It 'registers the backup task without -WakeToRun by default (no scheduled wake on Modern Standby)' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
@@ -1132,6 +1195,31 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the Docker watchdog task already exists' {
+
+        BeforeEach {
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Docker WSL Integration Watchdog') {
+                    return [pscustomobject]@{ TaskName = 'Docker WSL Integration Watchdog' }
+                }
+                return $null
+            }
+        }
+
+        It 'rebuilds action, both triggers, settings and the Interactive principal in place' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Docker WSL Integration Watchdog' -and
+                $Action.Argument -match 'ensure-docker-wsl-integration\.ps1' -and
+                @($Trigger).Count -eq 2 -and $Settings.FakeSettings -and $Principal.LogonType -eq 'Interactive'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Docker WSL Integration Watchdog'
+            }
+        }
+    }
     Context 'legacy script archiving' {
 
         BeforeEach {
@@ -1343,11 +1431,11 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all nine script actions among eleven registered task actions' {
-        $script:actionCount | Should -Be 11
-        $script:actionScripts.Count | Should -Be 9
+    It 'covers all ten script actions among twelve registered task actions' {
+        $script:actionCount | Should -Be 12
+        $script:actionScripts.Count | Should -Be 10
         @($script:actionScripts | Sort-Object) | Should -Be @(
-            'ensure-claude-session.ps1', 'publish-task-health.sh', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
+            'ensure-claude-session.ps1', 'ensure-docker-wsl-integration.ps1', 'publish-task-health.sh', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
             'sync-ccstatusline-config.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }
@@ -1383,6 +1471,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
 
     It 'bootstraps <Entry> before importing and invoking task code' -ForEach @(
         @{ Entry = 'ensure-claude-session.ps1'; Work = 'Invoke-ClaudeSessionKeeper' },
+        @{ Entry = 'ensure-docker-wsl-integration.ps1'; Work = 'Invoke-DockerWslIntegrationWatchdog' },
         @{ Entry = 'sync-ccstatusline-config.ps1'; Work = 'Update-CcstatuslineConfig' },
         @{ Entry = 'sync-codex-cloud-environments.ps1'; Work = 'Invoke-CodexCloudEnvironmentSync' },
         @{ Entry = 'wsl-restic-backup.ps1'; Work = 'Invoke-WslResticBackup' }

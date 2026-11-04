@@ -344,4 +344,10 @@ TASK_HEALTH_NOW=$((now + 200200)) run_health --dry-run
 assert_eq "$rc" 0 'the state-codes run exits 0'
 assert_match "$out" ' nonzero_results=1 ' 'running and has-not-run are not counted; a real failure is'
 
+# The default task list (used when TASK_HEALTH_TASKS is unset) covers every registered task,
+# including the Docker WSL integration watchdog.
+default_line=$(grep -m1 '^readonly default_tasks=' "$script")
+assert_match "$default_line" 'Task Health Publish,Docker WSL Integration Watchdog' 'the default list ends with the watchdog'
+default_count=$(grep -o ',' <<<"$default_line" | wc -l)
+assert_eq "$default_count" 11 'the default list names twelve tasks'
 printf 'PASS: %s assertions\n' "$passed"

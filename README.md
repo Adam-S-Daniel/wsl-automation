@@ -23,6 +23,9 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   "Waiting feed task" below).
 - A daily publish of this machine's task health, counts and timestamps only,
   for the cloud fleet-health audit (see "Task health publish task" below).
+- A watchdog that repairs Docker Desktop's WSL integration when it breaks after a
+  reboot, and alerts you when it cannot (see "Docker WSL integration watchdog
+  task" below).
 
 ## What this is
 
@@ -189,7 +192,7 @@ there is nothing for the keeper to wait out.
 ### Checkout update before every scripted task
 
 Every task action that runs a repo script (backup, keeper, ccstatusline sync,
-Codex Cloud sync, usage census, session miner, memory curation, waiting feed, and task health) first updates that same
+Codex Cloud sync, usage census, session miner, memory curation, waiting feed, task health, and the Docker watchdog) first updates that same
 checkout through one updater, `Update-WslAutomationRepo`, before it loads any
 task code. The two on-demand launcher actions invoke their CLIs directly and have
 no repo script to update. All six run from the one Windows checkout; the Bash
@@ -202,7 +205,7 @@ updater:
 
 | Entry | Bootstrap | Tries | Bounded by |
 | --- | --- | --- | --- |
-| PowerShell (backup, keeper, ccstatusline, Codex Cloud) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
+| PowerShell (backup, keeper, ccstatusline, Codex Cloud, Docker watchdog) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
 | Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: session miner (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: memory curation (weekly) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
@@ -945,7 +948,7 @@ up the new PATH.
   ```
 
   - `schema`: always `1`. `generated_utc`: when the snapshot was made (UTC).
-  - `tasks`: one entry per registered task, in a fixed order (all eleven
+  - `tasks`: one entry per registered task, in a fixed order (all twelve
     wsl-automation tasks, this one included). `state` is the Task Scheduler
     state (`Ready`, `Running`, `Disabled`, ...) or `missing` when the task is
     not registered, in which case every other field is `null`. `last_result`
@@ -966,7 +969,7 @@ up the new PATH.
     `~/.cache/session-miner.log`, `memory-curation.log`, `usage-census.log` and
     `waiting-feed.log`. Anything unavailable is `null`.
 - Output is one counts-only line per run, for example
-  `task health: tasks=11 missing=0 nonzero_results=0 outputs_known=10 published=yes`
+  `task health: tasks=12 missing=0 nonzero_results=0 outputs_known=10 published=yes`
   (`nonzero_results` counts tasks whose last result is not `0`, leaving
   out `0x41301` (running) and `0x41303` (has not run yet), as the weekly
   fleet-health audit does; `outputs_known` counts non-null `outputs` fields). The same
@@ -982,6 +985,68 @@ up the new PATH.
   - `git ls-remote https://github.com/Adam-S-Daniel/waiting-feed persistent/task-health`
     shows the branch head moving after a publish.
 
+### Docker WSL integration watchdog task (default name: `Docker WSL Integration Watchdog`)
+
+- Runs `scripts\ensure-docker-wsl-integration.ps1` (`Invoke-DockerWslIntegrationWatchdog`) 12
+  minutes after you log on and then every 30 minutes, indefinitely. It never
+  boots a stopped distro and never prompts. The logon delay (and the function's
+  own check that the machine booted or resumed at least 10 minutes ago) keeps it
+  clear of WSL's post-boot init window and Docker Desktop's own start at login.
+- **Why it exists.** After a reboot, Docker Desktop's WSL integration with the
+  distro intermittently fails. Docker's pre-bootstrap force-unmounts its
+  shared-socket mounts under `/mnt/wsl` (a mount peer group shared across
+  distros), the distro can power off moments later, and its shutdown unmounts
+  `/mnt/wsl/docker-desktop/shared-sockets/host-services`, so integration fails
+  with `connect: no such file or directory` on `backend.sock`. Clicking "Skip WSL
+  distro integration" in Docker's error dialog then removes the distro from
+  Docker's integration list. A Docker Desktop restart re-creates the mounts and
+  recovers the first case. See the AGENTS.md section on this and
+  [docker/desktop-feedback#678](https://github.com/docker/desktop-feedback/issues/678).
+- **What it checks, in order**, with one log line per step:
+  1. Wake guard: less than 10 minutes since boot or resume is `DeferredRecentWake`.
+  2. Docker Desktop must report `running` (`docker desktop status --format json`);
+     otherwise `DockerNotRunning`, with no alert and no restart.
+  3. `IntegratedWslDistros` in `%APPDATA%\Docker\settings-store.json` must include
+     the distro (case-insensitive). If it does not, that is `IntegrationNotConfigured`:
+     an alert telling you to turn it back on under Docker Desktop > Settings >
+     Resources > WSL integration and Apply & restart. A restart cannot fix it, so
+     Docker is **not** restarted. An unreadable settings file is `SettingsUnreadable`
+     (log only).
+  4. The distro must already be running; otherwise `DistroNotRunning`.
+  5. A probe inside the distro: the shared socket exists and `docker version` answers.
+     Passing is `Healthy`.
+  6. Otherwise up to 2 `docker desktop restart` attempts (`-MaxRestarts`), each waiting
+     up to 180 s for the engine and then up to 120 s for the probe. Passing is
+     `Recovered`.
+  7. Still broken is `Unrecovered`: an alert suggesting Quit Docker Desktop,
+     `wsl --shutdown`, start Docker Desktop again.
+- **Alerts** are a Windows toast plus an email through the
+  [`send-self-alert.yml`](https://github.com/Adam-S-Daniel/fastmail-actions) workflow of
+  `Adam-S-Daniel/fastmail-actions`, dispatched with `gh workflow run`. The email needs
+  `gh` authenticated for your user and the repository secrets `SELF_ALERT_FROM` and
+  `SELF_ALERT_TO` in that repository. That repository is public, so subjects and bodies are
+  fixed text plus the distro name, never a host name, user name or log text, and the
+  `gh` output is never logged. Each email subject ends with
+  `, via "Docker WSL Integration Watchdog" <link to the script>`. An alert is sent
+  once per status: the state file remembers the last alerted status and a repeat sends
+  nothing until a `Healthy` or `Recovered` run clears it.
+- **Logs and state**, under `%LOCALAPPDATA%\wsl-automation\`: `docker-wsl-watchdog.log`
+  (outcomes only; no user name, host name or profile path) and
+  `docker-wsl-watchdog-state.json` (`{ "lastAlert": "<Status>", "at": "<ISO 8601>" }`;
+  a corrupt file counts as no state).
+- Exit code: `0` for `Healthy`, `Recovered`, `DockerNotRunning`, `DistroNotRunning`,
+  `DeferredRecentWake` and `SettingsUnreadable`; `1` for `Unrecovered`,
+  `IntegrationNotConfigured` or an error. `-DryRun` logs what it would restart and alert
+  without doing either.
+- **Interactive, through `conhost.exe --headless`, on purpose.** Unlike the other pwsh tasks
+  this one is not S4U: `docker desktop restart` relaunches the Docker Desktop GUI, which must
+  land in your session rather than session 0, and the toast needs your desktop. A bare
+  interactive pwsh would flash a console window every 30 minutes, so the action is
+  `conhost.exe --headless pwsh.exe -NoProfile -File ...`, which runs it without one. It still
+  runs as you, never SYSTEM. It has an execution limit of 20 minutes, runs on battery, and
+  ignores a second overlapping instance.
+- Run it now: `Start-ScheduledTask -TaskName 'Docker WSL Integration Watchdog'`, or a dry run
+  with `pwsh -NoProfile -File scripts\ensure-docker-wsl-integration.ps1 -DryRun`.
 ### Legacy scripts
 
 Any paths passed via `-LegacyScriptsToArchive` are renamed in place to
@@ -1137,8 +1202,10 @@ Tests are written in Pester v5 syntax and are compatible with both Pester
 Invoke-Pester ./tests
 ```
 
-No test invokes real `wsl.exe` or `robocopy.exe` - every test mocks the
-module's `Invoke-WslExe` and `Invoke-RobocopyExe` seams - and all filesystem
+No test invokes real `wsl.exe`, `robocopy.exe`, `docker.exe`, `gh.exe` or
+`powershell.exe` - every test mocks the module's `Invoke-WslExe`,
+`Invoke-RobocopyExe`, `Invoke-DockerDesktopCli`, `Invoke-GhExe` and
+`Invoke-WindowsPowerShellExe` seams - and all filesystem
 paths used by the tests live under Pester's `TestDrive:`. The bash scripts have
 their own tests (`bash tests/<name>.test.sh`), which put stubs on `PATH`
 instead of running `restic`, `git` or Windows programs.

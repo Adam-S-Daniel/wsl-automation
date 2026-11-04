@@ -6,10 +6,11 @@ function Set-WslAutomationScheduledTasks {
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
         session keeper and its two launchers, ccstatusline config sync, Codex Cloud environment
         sync, the daily usage census publish, the daily session miner, the weekly memory curation,
-        the every-minute waiting feed publish, and the daily task health publish.
+        the every-minute waiting feed publish, the daily task health publish, and the Docker
+        Desktop WSL integration watchdog.
 
     .DESCRIPTION
-        Creates eleven Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates twelve Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
         running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
@@ -24,7 +25,14 @@ function Set-WslAutomationScheduledTasks {
         task that runs scripts/run-memory-curation.sh the same way once a week; and a waiting feed
         publish task that runs scripts/publish-waiting-feed.sh inside the distro every minute, the
         same way; and a task health publish task that runs scripts/publish-task-health.sh the same
-        way once a day.
+        way once a day; and a Docker WSL integration watchdog task that runs
+        scripts/ensure-docker-wsl-integration.ps1 (through conhost --headless) at logon and every
+        30 minutes, restarting Docker Desktop when its WSL integration with the distro is broken.
+
+        The watchdog is the one pwsh-based task that is Interactive, not S4U: 'docker desktop
+        restart' relaunches the Docker Desktop GUI, which must land in the user's session rather
+        than session 0, and the alert toast needs the user's desktop. conhost.exe --headless runs
+        its pwsh without a console window, so the interactive run does not flash one.
 
         The backup, keeper and ccstatusline tasks run as background S4U tasks (session 0), so
         they never flash a console window on the desktop; both launchers are interactive (they
@@ -39,7 +47,7 @@ function Set-WslAutomationScheduledTasks {
         That now includes the backup task, which used to keep an existing task's Settings and
         Principal: re-running this function is what switches an existing backup task from the
         interactive 'wsl --export' backup to the background restic one in place. Re-running
-        this function is idempotent for all eleven tasks.
+        this function is idempotent for all twelve tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -169,9 +177,27 @@ function Set-WslAutomationScheduledTasks {
         late in the day so the snapshot reflects that day's runs, and well clear of every other
         task's time.
 
+    .PARAMETER DockerWatchdogTaskName
+        Name of the scheduled task that runs the Docker Desktop WSL integration watchdog.
+        Defaults to 'Docker WSL Integration Watchdog'.
+
+    .PARAMETER DockerWatchdogIntervalMinutes
+        How often, in minutes, the watchdog task repeats indefinitely. Defaults to 30. The
+        watchdog's own wake guard defers a repetition that lands right after a boot or resume.
+
+    .PARAMETER DockerWatchdogLogonDelayMinutes
+        Delay, in minutes, after logon before the watchdog's at-logon trigger fires. Defaults to
+        12: WSL's post-boot init window runs to roughly 270 seconds, and Docker Desktop starts at
+        login too, so the check waits beyond both (see AGENTS.md).
+
     .PARAMETER WslExePath
         Path to wsl.exe used as the usage census, session miner, memory curation, waiting feed and task health tasks' action. Defaults to
         %SystemRoot%\System32\wsl.exe.
+
+    .PARAMETER ConhostPath
+        Path to conhost.exe used as the Docker watchdog task's action executable, with
+        --headless so the interactive run shows no console window. Defaults to
+        %SystemRoot%\System32\conhost.exe.
 
     .PARAMETER PwshPath
         Path to pwsh.exe used as the action executable for the pwsh-based tasks. Defaults to an
@@ -203,10 +229,10 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
-        Registers (or updates) all eleven scheduled tasks using default names, backup time, and
+        Registers (or updates) all twelve scheduled tasks using default names, backup time, and
         keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
-        daily usage census publish, the daily session miner, the weekly memory curation, the every-minute waiting feed publish, and the daily task health
-        publish.
+        daily usage census publish, the daily session miner, the weekly memory curation, the every-minute waiting feed publish, the daily task health
+        publish, and the Docker WSL integration watchdog.
 
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir $PSScriptRoot -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
@@ -270,7 +296,15 @@ function Set-WslAutomationScheduledTasks {
 
         [string]$TaskHealthTime = '23:47',
 
+        [string]$DockerWatchdogTaskName = 'Docker WSL Integration Watchdog',
+
+        [int]$DockerWatchdogIntervalMinutes = 30,
+
+        [int]$DockerWatchdogLogonDelayMinutes = 12,
+
         [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
+
+        [string]$ConhostPath = (Join-Path $env:SystemRoot 'System32\conhost.exe'),
 
         [string]$PwshPath = (Get-WslAutomationDefaultPwshPath),
 
@@ -688,6 +722,52 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Docker WSL integration watchdog: logon + every 30 minutes, conhost --headless ----------
+    # Repairs Docker Desktop's WSL integration with the distro (and alerts when it cannot); see
+    # Invoke-DockerWslIntegrationWatchdog and AGENTS.md. The action is conhost.exe --headless
+    # wrapping pwsh: the task is Interactive (below), and --headless keeps that interactive run
+    # from flashing a console window the way a bare pwsh would.
+    $dockerWatchdogScriptPath = Join-Path $ScriptsDir 'ensure-docker-wsl-integration.ps1'
+    $dockerWatchdogArguments = "--headless `"$PwshPath`" -NoProfile -File `"$dockerWatchdogScriptPath`" -DistroName $DistroName"
+    $dockerWatchdogAction = New-ScheduledTaskAction -Execute $ConhostPath -Argument $dockerWatchdogArguments
+
+    # Trigger 1: at logon of the current user, delayed so the check never races WSL's post-boot
+    # init window (up to ~270 s) or Docker Desktop's own start at login (see AGENTS.md). Task
+    # Scheduler wants the delay as an ISO 8601 duration; XmlConvert formats a non-round number
+    # of minutes correctly too.
+    $dockerWatchdogLogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME" | ConvertTo-WslLocalTimeTrigger
+    $dockerWatchdogLogonTrigger.Delay = [System.Xml.XmlConvert]::ToString([timespan]::FromMinutes($DockerWatchdogLogonDelayMinutes))
+    # Trigger 2: the same indefinite-repetition construction as the keeper trigger above (-Once +
+    # creation-time -RepetitionInterval, never mutated afterward). A repetition tick that lands
+    # right after a boot is deferred by the function's own wake guard.
+    $dockerWatchdogRepeatTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes $DockerWatchdogIntervalMinutes) | ConvertTo-WslLocalTimeTrigger
+    $dockerWatchdogTriggers = @($dockerWatchdogLogonTrigger, $dockerWatchdogRepeatTrigger)
+
+    # No StartWhenAvailable: a missed tick is simply covered by the next one, and a catch-up at
+    # wake would land in the post-wake transition window.
+    $dockerWatchdogSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -MultipleInstances IgnoreNew
+    # Interactive, not S4U, on purpose: 'docker desktop restart' relaunches the Docker Desktop
+    # GUI, which must land in the user's session (an S4U task runs in session 0, where the GUI
+    # would start unseen and without the user's desktop), and the alert toast needs the user's
+    # desktop too. Still the current user, never SYSTEM.
+    $dockerWatchdogPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+
+    $existingDockerWatchdogTask = Get-ScheduledTask -TaskName $DockerWatchdogTaskName -ErrorAction SilentlyContinue
+    if ($existingDockerWatchdogTask) {
+        if ($PSCmdlet.ShouldProcess($DockerWatchdogTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $DockerWatchdogTaskName -Action $dockerWatchdogAction -Trigger $dockerWatchdogTriggers `
+                -Settings $dockerWatchdogSettings -Principal $dockerWatchdogPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($DockerWatchdogTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $DockerWatchdogTaskName -Action $dockerWatchdogAction -Trigger $dockerWatchdogTriggers `
+                -Settings $dockerWatchdogSettings -Principal $dockerWatchdogPrincipal
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -785,5 +865,6 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Memory curation task '$MemoryCurationTaskName' (background/S4U): $WslExePath $memoryCurationArguments (weekly on Monday at $MemoryCurationTime)" -InformationAction Continue
     Write-Information -MessageData "Waiting feed task '$WaitingFeedTaskName' (background/S4U): $WslExePath $waitingFeedArguments (repeats every 1 min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Task health task '$TaskHealthTaskName' (background/S4U): $WslExePath $taskHealthArguments (daily at $TaskHealthTime)" -InformationAction Continue
+    Write-Information -MessageData "Docker watchdog task '$DockerWatchdogTaskName' (interactive, headless): $ConhostPath $dockerWatchdogArguments (at logon after $DockerWatchdogLogonDelayMinutes min, then every $DockerWatchdogIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Task Scheduler history (Microsoft-Windows-TaskScheduler/Operational): $taskHistoryResult" -InformationAction Continue
 }
