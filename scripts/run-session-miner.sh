@@ -33,9 +33,9 @@ set -euo pipefail
 scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
+wsl_automation_task_bootstrap "$scripts_dir/run-session-miner.sh" 0 300 "$@"
 # shellcheck source=scripts/task-settings.sh
 . "$scripts_dir/task-settings.sh"
-wsl_automation_task_bootstrap "$scripts_dir/run-session-miner.sh" 0 300 "$@"
 
 # The miner refuses to run without a denylist; default to the owner's file.
 export PRIVACY_DENYLIST_FILE=${PRIVACY_DENYLIST_FILE:-$HOME/.config/privacy-denylist.txt}

@@ -44,9 +44,9 @@ set -euo pipefail
 scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
+wsl_automation_task_bootstrap "$scripts_dir/run-memory-curation.sh" 0 300 "$@"
 # shellcheck source=scripts/task-settings.sh
 . "$scripts_dir/task-settings.sh"
-wsl_automation_task_bootstrap "$scripts_dir/run-memory-curation.sh" 0 300 "$@"
 
 dry_run=0
 for arg in "$@"; do

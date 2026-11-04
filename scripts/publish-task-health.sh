@@ -60,9 +60,9 @@ set -euo pipefail
 scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
+wsl_automation_task_bootstrap "$scripts_dir/publish-task-health.sh" 0 300 "$@"
 # shellcheck source=scripts/task-settings.sh
 . "$scripts_dir/task-settings.sh"
-wsl_automation_task_bootstrap "$scripts_dir/publish-task-health.sh" 0 300 "$@"
 
 # The task starts a non-login shell (wsl.exe --exec), whose PATH lacks
 # ~/.local/bin, where jq may be installed. Append it so system tools still win.

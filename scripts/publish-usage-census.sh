@@ -27,9 +27,9 @@ set -euo pipefail
 scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/update-task-checkout.sh
 . "$scripts_dir/update-task-checkout.sh"
+wsl_automation_task_bootstrap "$scripts_dir/publish-usage-census.sh" 0 300 "$@"
 # shellcheck source=scripts/task-settings.sh
 . "$scripts_dir/task-settings.sh"
-wsl_automation_task_bootstrap "$scripts_dir/publish-usage-census.sh" 0 300 "$@"
 
 log=${USAGE_CENSUS_LOG:-$HOME/.cache/usage-census.log}
 mkdir -p -- "$(dirname -- "$log")"
