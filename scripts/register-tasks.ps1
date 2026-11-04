@@ -4,7 +4,8 @@
 .SYNOPSIS
     Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
     Claude Code session keeper, ccstatusline config sync, Codex Cloud environment sync, and usage
-    census publish, session miner, memory curation, waiting feed, and task health scheduled tasks.
+    census publish, session miner, memory curation, waiting feed, and task health scheduled tasks,
+    and the Docker Desktop WSL integration watchdog.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -16,7 +17,7 @@
 .PARAMETER ScriptsDir
     Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
     wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
+    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, ensure-docker-wsl-integration.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
     Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
@@ -97,9 +98,23 @@
 .PARAMETER TaskHealthTime
     Time of day (HH:mm) the task health task's daily trigger fires. Defaults to '23:47'.
 
+.PARAMETER DockerWatchdogTaskName
+    Name of the scheduled task that runs the Docker Desktop WSL integration watchdog. Defaults to
+    'Docker WSL Integration Watchdog'.
+
+.PARAMETER DockerWatchdogIntervalMinutes
+    How often, in minutes, the watchdog task repeats indefinitely. Defaults to 30.
+
+.PARAMETER DockerWatchdogLogonDelayMinutes
+    Delay, in minutes, after logon before the watchdog's at-logon trigger fires. Defaults to 12.
+
 .PARAMETER WslExePath
     Path to wsl.exe used as the usage census, session miner, memory curation, and task health tasks' action. Defaults to
     %SystemRoot%\System32\wsl.exe.
+
+.PARAMETER ConhostPath
+    Path to conhost.exe used as the watchdog task's action executable (with --headless, so its
+    interactive run shows no console window). Defaults to %SystemRoot%\System32\conhost.exe.
 
 .PARAMETER PwshPath
     Path to pwsh.exe used as the action executable for all the tasks. Defaults to an MSI install
@@ -179,7 +194,15 @@ param(
 
     [string]$TaskHealthTime = '23:47',
 
+    [string]$DockerWatchdogTaskName = 'Docker WSL Integration Watchdog',
+
+    [int]$DockerWatchdogIntervalMinutes = 30,
+
+    [int]$DockerWatchdogLogonDelayMinutes = 12,
+
     [string]$WslExePath = (Join-Path $env:SystemRoot 'System32\wsl.exe'),
+
+    [string]$ConhostPath = (Join-Path $env:SystemRoot 'System32\conhost.exe'),
 
     # This script runs before Import-Module (the module isn't loaded until the body below), so
     # it cannot call the module's private Get-WslAutomationDefaultPwshPath helper and instead
@@ -230,7 +253,9 @@ try {
         -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime `
         -SessionMinerTaskName $SessionMinerTaskName -SessionMinerTime $SessionMinerTime `
         -MemoryCurationTaskName $MemoryCurationTaskName -MemoryCurationTime $MemoryCurationTime `
-        -TaskHealthTaskName $TaskHealthTaskName -TaskHealthTime $TaskHealthTime -WslExePath $WslExePath `
+        -TaskHealthTaskName $TaskHealthTaskName -TaskHealthTime $TaskHealthTime `
+        -DockerWatchdogTaskName $DockerWatchdogTaskName -DockerWatchdogIntervalMinutes $DockerWatchdogIntervalMinutes `
+        -DockerWatchdogLogonDelayMinutes $DockerWatchdogLogonDelayMinutes -WslExePath $WslExePath -ConhostPath $ConhostPath `
         -LegacyScriptsToArchive $LegacyScriptsToArchive -SkipTaskHistory:$SkipTaskHistory -WhatIf:$WhatIfPreference
 
     exit 0
