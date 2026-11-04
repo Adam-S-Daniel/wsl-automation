@@ -967,8 +967,9 @@ up the new PATH.
     `waiting-feed.log`. Anything unavailable is `null`.
 - Output is one counts-only line per run, for example
   `task health: tasks=11 missing=0 nonzero_results=0 outputs_known=10 published=yes`
-  (`nonzero_results` counts tasks whose last result is not `0`, including
-  "has not run yet"; `outputs_known` counts non-null `outputs` fields). The same
+  (`nonzero_results` counts tasks whose last result is not `0`, leaving
+  out `0x41301` (running) and `0x41303` (has not run yet), as the weekly
+  fleet-health audit does; `outputs_known` counts non-null `outputs` fields). The same
   line with a UTC time and exit code is appended to `~/.cache/task-health.log`
   (`TASK_HEALTH_LOG`); a `--dry-run` line is printed but not logged. Exit `0` on
   success, `1` on a PowerShell, clone or push failure.
