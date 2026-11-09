@@ -163,8 +163,8 @@ issue.
   five would have cleared the observed worst case by about a minute.
 
 This is the gap `Invoke-WslBackup`'s own wake guard (`-MinMinutesSinceWake`,
-via the private `Get-LastWakeTime`) now closes directly, rather than relying
-on the scheduled task's own timing: any run — the daily trigger, an hourly
+via the private `Get-LastWakeTime`) closes it directly, whatever the
+scheduled task's own timing: any run — the daily trigger, an hourly
 retry, or a manual invocation — checks minutes-since-boot-or-resume itself
 and defers (`DeferredRecentWake`) rather than attempt the export inside the
 transition window. Any other work that adds a boot/resume-adjacent trigger
@@ -187,8 +187,8 @@ sight; it isn't one.
 before the pty rules run. This **fails safe to busy** on anything it doesn't
 recognise — the file is Claude Code-internal and undocumented (observed in
 2.1.282), so a missing file, a non-zero exit, a parse error, a pid mismatch,
-or any status other than exactly `idle` all count as busy, same as before
-this existed. `Invoke-WslBackup` also `SIGTERM`s the idle sessions it finds,
+or any status other than exactly `idle` all count as busy.
+`Invoke-WslBackup` also `SIGTERM`s the idle sessions it finds,
 immediately before the export, the same way it does for the Remote
 Control session — they're resumable afterwards with `claude --resume`.
 
@@ -416,7 +416,7 @@ full. Keep the job ids, and add no `name:`, `matrix` or `concurrency:`;
 itself a git repository. Claude Code can write `.git/info/exclude` into it
 anyway, leaving a `.git` directory that holds only `info/exclude` — no `HEAD`
 file, no `objects` folder. While that stub exists, Claude Code treats `~/repos`
-as a git repository. The commit that added this note records when it happened.
+as a git repository.
 
 - **Symptom.** claude.ai Project "Work locally" threads with Worktree on never
   start. `claude rc` prints `Failed to create worktree ... Failed to resolve
@@ -473,7 +473,7 @@ task health, and `_agent-guidance`'s weekly fleet-health audit reads it.
 Scheduler stores it with the offset in effect at registration
 (`...-04:00`). Such a trigger fires at a fixed UTC instant, so every daily task
 registered during daylight time ran an hour early after the November 2026
-clock change (issue 89). Every trigger therefore goes through the private
+clock change. Every trigger therefore goes through the private
 `ConvertTo-WslLocalTimeTrigger`, which writes the boundary back as local time
 with no offset; Task Scheduler then keeps the wall-clock time across the
 change. A new trigger must go through it too; `tests/Tasks.Tests.ps1` fails
