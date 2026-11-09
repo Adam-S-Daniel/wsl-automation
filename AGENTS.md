@@ -163,7 +163,7 @@ issue.
   five would have cleared the observed worst case by about a minute.
 
 This is the gap `Invoke-WslBackup`'s own wake guard (`-MinMinutesSinceWake`,
-via the private `Get-LastWakeTime`) closes it directly, whatever the
+via the private `Get-LastWakeTime`) closes, whatever the
 scheduled task's own timing: any run — the daily trigger, an hourly
 retry, or a manual invocation — checks minutes-since-boot-or-resume itself
 and defers (`DeferredRecentWake`) rather than attempt the export inside the
