@@ -471,7 +471,16 @@ Describe 'Invoke-DockerWslIntegrationWatchdog' {
 
 Describe 'Send-WslAutomationAlert' {
 
+    BeforeAll {
+        $script:savedAlertRepo = $env:WSL_AUTOMATION_ALERT_REPO
+    }
+
+    AfterAll {
+        $env:WSL_AUTOMATION_ALERT_REPO = $script:savedAlertRepo
+    }
+
     BeforeEach {
+        $env:WSL_AUTOMATION_ALERT_REPO = 'example-owner/fastmail-actions'
         $script:logFile = Join-Path $TestDrive 'alert.log'
         Remove-Item -LiteralPath $script:logFile -ErrorAction SilentlyContinue
         Mock -ModuleName WslAutomation Show-WslAutomationToast { $true }
@@ -488,7 +497,7 @@ Describe 'Send-WslAutomationAlert' {
         }
         Should -Invoke -ModuleName WslAutomation Invoke-GhExe -Times 1 -Exactly -ParameterFilter {
             $Arguments.Count -eq 9 -and
-            ($Arguments -join '|') -eq 'workflow|run|send-self-alert.yml|--repo|Adam-S-Daniel/fastmail-actions|-f|subject=A subject|-f|body=A body'
+            ($Arguments -join '|') -eq 'workflow|run|send-self-alert.yml|--repo|example-owner/fastmail-actions|-f|subject=A subject|-f|body=A body'
         }
     }
 
@@ -509,6 +518,24 @@ Describe 'Send-WslAutomationAlert' {
         Should -Invoke -ModuleName WslAutomation Invoke-GhExe -Times 1 -Exactly -ParameterFilter {
             ($Arguments -join '|') -eq 'workflow|run|other.yml|--repo|example/repo|-f|subject=s|-f|body=b'
         }
+    }
+
+    It 'skips the email, naming the variable, when no workflow repository is set, and still shows the toast' {
+        $env:WSL_AUTOMATION_ALERT_REPO = $null
+
+        $result = Invoke-TestSendAlert -Subject 's' -Body 'b' -LogFile $script:logFile
+
+        $result.Toast | Should -BeTrue
+        $result.Email | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Invoke-GhExe -Times 0 -Exactly
+        $lines = @(Get-Content -LiteralPath $script:logFile)
+        $lines.Count | Should -Be 2
+        $lines[1] | Should -Match 'alert email: skipped \(WSL_AUTOMATION_ALERT_REPO is not set'
+    }
+
+    It 'has no built-in workflow repository' {
+        $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..' 'src' 'WslAutomation' 'Private' 'Send-WslAutomationAlert.ps1') -Raw
+        $source | Should -Not -Match 'fastmail-actions'
     }
 
     It 'logs one outcome line per channel' {
@@ -563,7 +590,16 @@ Describe 'Send-WslAutomationAlert' {
 
 Describe 'Invoke-DockerWslIntegrationWatchdog subject through the real alert function' {
 
+    BeforeAll {
+        $script:savedAlertRepo = $env:WSL_AUTOMATION_ALERT_REPO
+    }
+
+    AfterAll {
+        $env:WSL_AUTOMATION_ALERT_REPO = $script:savedAlertRepo
+    }
+
     BeforeEach {
+        $env:WSL_AUTOMATION_ALERT_REPO = 'example-owner/fastmail-actions'
         $script:settingsPath = Join-Path $TestDrive 'settings-store.json'
         $script:logFile = Join-Path $TestDrive 'watchdog.log'
         $script:statePath = Join-Path $TestDrive 'watchdog-state.json'
@@ -582,7 +618,7 @@ Describe 'Invoke-DockerWslIntegrationWatchdog subject through the real alert fun
         $result.Status | Should -Be 'IntegrationNotConfigured'
         Should -Invoke -ModuleName WslAutomation Invoke-GhExe -Times 1 -Exactly -ParameterFilter {
             $Arguments.Count -eq 9 -and
-            ($Arguments[0..6] -join '|') -eq 'workflow|run|send-self-alert.yml|--repo|Adam-S-Daniel/fastmail-actions|-f|subject=Docker Desktop WSL integration no longer includes Debian2, via "Docker WSL Integration Watchdog" https://github.com/Adam-S-Daniel/wsl-automation/blob/main/scripts/ensure-docker-wsl-integration.ps1' -and
+            ($Arguments[0..6] -join '|') -eq 'workflow|run|send-self-alert.yml|--repo|example-owner/fastmail-actions|-f|subject=Docker Desktop WSL integration no longer includes Debian2, via "Docker WSL Integration Watchdog" https://github.com/Adam-S-Daniel/wsl-automation/blob/main/scripts/ensure-docker-wsl-integration.ps1' -and
             $Arguments[7] -eq '-f' -and
             $Arguments[8].StartsWith('body=') -and $Arguments[8] -match 'Debian2'
         }

@@ -1020,11 +1020,14 @@ up the new PATH.
      `Recovered`.
   7. Still broken is `Unrecovered`: an alert suggesting Quit Docker Desktop,
      `wsl --shutdown`, start Docker Desktop again.
-- **Alerts** are a Windows toast plus an email through the
-  [`send-self-alert.yml`](https://github.com/Adam-S-Daniel/fastmail-actions) workflow of
-  `Adam-S-Daniel/fastmail-actions`, dispatched with `gh workflow run`. The email needs
-  `gh` authenticated for your user and the repository secrets `SELF_ALERT_FROM` and
-  `SELF_ALERT_TO` in that repository. That repository is public, so subjects and bodies are
+- **Alerts** are a Windows toast plus an email through a `send-self-alert.yml` workflow
+  (the one in [`fastmail-actions`](https://github.com/Adam-S-Daniel/fastmail-actions) is an
+  example), dispatched with `gh workflow run`. Name its repository, as owner/name, in the
+  Windows user environment variable `WSL_AUTOMATION_ALERT_REPO`, for example
+  `[Environment]::SetEnvironmentVariable('WSL_AUTOMATION_ALERT_REPO', '<owner>/fastmail-actions', 'User')`;
+  there is no built-in value, and while it is unset the email is skipped and the log
+  line names the variable. The email also needs `gh` authenticated for your user and the
+  repository secrets `SELF_ALERT_FROM` and `SELF_ALERT_TO` in that repository. That repository is public, so subjects and bodies are
   fixed text plus the distro name, never a host name, user name or log text, and the
   `gh` output is never logged. Each email subject ends with
   `, via "Docker WSL Integration Watchdog" <link to the script>`. An alert is sent
