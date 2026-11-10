@@ -3,7 +3,7 @@ function Send-WslAutomationAlert {
     .SYNOPSIS
         Alerts the owner through a toast and a self-alert email.
     .DESCRIPTION
-        Shows a toast (Show-WslAutomationToast) and dispatches the fastmail-actions self-alert
+        Shows a toast (Show-WslAutomationToast) and dispatches a self-alert email
         workflow with gh (Invoke-GhExe, an argument array - never a shell string). Each channel
         is attempted independently and logs one outcome-only line to -LogFile. The gh output is
         never logged: it could carry an HTTP error body. Never throws.
@@ -20,7 +20,9 @@ function Send-WslAutomationAlert {
     .PARAMETER LogFile
         Log file that receives the per-channel outcome lines.
     .PARAMETER WorkflowRepo
-        Repository that owns the email workflow. Defaults to 'Adam-S-Daniel/fastmail-actions'.
+        Repository that owns the email workflow, as owner/name. Defaults to the user environment
+        variable WSL_AUTOMATION_ALERT_REPO. There is no built-in value: when neither is set, the
+        email is skipped and the log line names the variable to set; the toast is still shown.
     .PARAMETER WorkflowFile
         Workflow file to dispatch. Defaults to 'send-self-alert.yml'.
     .EXAMPLE
@@ -40,7 +42,7 @@ function Send-WslAutomationAlert {
 
         [string]$ToastMessage,
 
-        [string]$WorkflowRepo = 'Adam-S-Daniel/fastmail-actions',
+        [string]$WorkflowRepo = $env:WSL_AUTOMATION_ALERT_REPO,
 
         [string]$WorkflowFile = 'send-self-alert.yml'
     )
@@ -60,6 +62,10 @@ function Send-WslAutomationAlert {
 
     $emailOk = $false
     $emailExitCode = -1
+    if ([string]::IsNullOrWhiteSpace($WorkflowRepo)) {
+        Write-WslAutomationLog -Message 'alert email: skipped (WSL_AUTOMATION_ALERT_REPO is not set; set it to the owner/name of the repository with the self-alert workflow)' -LogFile $LogFile
+        return [pscustomobject]@{ Toast = $toastOk; Email = $false }
+    }
     try {
         $ghResult = Invoke-GhExe -Arguments @('workflow', 'run', $WorkflowFile, '--repo', $WorkflowRepo, '-f', "subject=$Subject", '-f', "body=$Body")
         $emailExitCode = $ghResult.ExitCode
