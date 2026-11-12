@@ -31,6 +31,7 @@ Export-ModuleMember -Function @(
     'Write-WslMemorySample',
     'Set-CcstatuslineStatusLine',
     'Invoke-CodexCloudEnvironmentSync',
+    'Invoke-ClaudeSettingsSync',
     'Invoke-DockerWslIntegrationWatchdog',
     'Update-WslAutomationRepo',
     'Set-AgentWorkspaceTrust',

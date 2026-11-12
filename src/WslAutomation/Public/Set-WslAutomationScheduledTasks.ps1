@@ -10,7 +10,7 @@ function Set-WslAutomationScheduledTasks {
         Desktop WSL integration watchdog.
 
     .DESCRIPTION
-        Creates thirteen Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates fourteen Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
         running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
@@ -19,7 +19,9 @@ function Set-WslAutomationScheduledTasks {
         'codex remote-control start'; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
         on its own short repeating interval; and a WSL memory log task that runs
         scripts/log-wsl-memory.ps1 on its own short repeating interval, appending one row of
-        Windows and WSL memory statistics to a CSV; and a Codex Cloud environment sync task that runs
+        Windows and WSL memory statistics to a CSV; and a Claude settings sync task that runs
+        scripts/sync-claude-settings.ps1 on its own repeating interval (a dry run unless
+        -ClaudeSettingsSyncLive); and a Codex Cloud environment sync task that runs
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
         distro once a day, calling wsl.exe directly so no pwsh is involved; and a session miner
@@ -36,9 +38,9 @@ function Set-WslAutomationScheduledTasks {
         than session 0, and the alert toast needs the user's desktop. conhost.exe --headless runs
         its pwsh without a console window, so the interactive run does not flash one.
 
-        The backup, keeper, ccstatusline and memory log tasks run as background S4U tasks (session 0),
+        The backup, keeper, ccstatusline, memory log and Claude settings sync tasks run as background S4U tasks (session 0),
         so they never flash a console window on the desktop; both launchers are interactive (they
-        must show a terminal) and on-demand (no trigger). The four pwsh-based S4U tasks require
+        must show a terminal) and on-demand (no trigger). The five pwsh-based S4U tasks require
         an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath and
         scripts/grant-keeper-batch-logon.ps1. The usage census, session miner, memory curation, waiting feed and task health tasks are S4U too, but
         their action is wsl.exe itself, so they need no pwsh at all.
@@ -49,7 +51,7 @@ function Set-WslAutomationScheduledTasks {
         That now includes the backup task, which used to keep an existing task's Settings and
         Principal: re-running this function is what switches an existing backup task from the
         interactive 'wsl --export' backup to the background restic one in place. Re-running
-        this function is idempotent for all thirteen tasks.
+        this function is idempotent for all fourteen tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -148,6 +150,18 @@ function Set-WslAutomationScheduledTasks {
         %LOCALAPPDATA%\WslMemoryLog, resolved when the task is registered and passed to the task
         explicitly so it does not depend on the task's own environment.
 
+    .PARAMETER ClaudeSettingsSyncTaskName
+        Name of the scheduled task that syncs Claude Code settings.json between Windows and WSL.
+        Defaults to 'Claude Settings Sync'.
+
+    .PARAMETER ClaudeSettingsSyncIntervalMinutes
+        How often, in minutes, the Claude settings sync task repeats indefinitely. Defaults to 15.
+
+    .PARAMETER ClaudeSettingsSyncLive
+        Let the Claude settings sync task write settings files. Without it the task passes
+        -DryRun to scripts/sync-claude-settings.ps1, which plans and logs but writes nothing.
+        Re-run this function with the switch to turn writes on, and without it to turn them off.
+
     .PARAMETER CodexCloudEnvironmentSyncTaskName
         Name of the scheduled task that reconciles Codex Cloud environments. Defaults to
         'Codex Cloud Environment Sync'.
@@ -243,7 +257,7 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
-        Registers (or updates) all thirteen scheduled tasks using default names, backup time, and
+        Registers (or updates) all fourteen scheduled tasks using default names, backup time, and
         keeper/ccstatusline/memory log intervals, the twice-daily Codex Cloud environment sync, and the
         daily usage census publish, the daily session miner, the weekly memory curation, the every-minute waiting feed publish, the daily task health
         publish, and the Docker WSL integration watchdog.
@@ -295,6 +309,12 @@ function Set-WslAutomationScheduledTasks {
         [int]$MemoryLogIntervalMinutes = 5,
 
         [string]$MemoryLogDir = (Join-Path $env:LOCALAPPDATA 'WslMemoryLog'),
+
+        [string]$ClaudeSettingsSyncTaskName = 'Claude Settings Sync',
+
+        [int]$ClaudeSettingsSyncIntervalMinutes = 15,
+
+        [switch]$ClaudeSettingsSyncLive,
 
         [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
 
@@ -610,6 +630,39 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Claude settings sync task: Windows <-> WSL settings.json ---------------
+    # Background-only like the ccstatusline sync, so S4U/session 0 with the same MSI pwsh and
+    # batch-logon requirements. The wrapper runs the adam-agentskills sync script unattended and
+    # only while the distro is already running, so it never boots WSL. It plans only (-DryRun)
+    # until -ClaudeSettingsSyncLive is given. StartWhenAvailable is on: a run missed while the
+    # machine slept is caught up once, and the wrapper itself skips while the distro is down, so
+    # a catch-up inside the post-wake WSL transition does nothing worse than skip.
+    $claudeSettingsSyncScriptPath = Join-Path $ScriptsDir 'sync-claude-settings.ps1'
+    $claudeSettingsSyncLiveArgument = if ($ClaudeSettingsSyncLive) { ' -Live' } else { '' }
+    $claudeSettingsSyncArguments = "-NoProfile -File `"$claudeSettingsSyncScriptPath`" -DistroName $DistroName$claudeSettingsSyncLiveArgument"
+    $claudeSettingsSyncAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $claudeSettingsSyncArguments
+
+    $claudeSettingsSyncTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes $ClaudeSettingsSyncIntervalMinutes) | ConvertTo-WslLocalTimeTrigger
+
+    $claudeSettingsSyncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+    $claudeSettingsSyncPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingClaudeSettingsSyncTask = Get-ScheduledTask -TaskName $ClaudeSettingsSyncTaskName -ErrorAction SilentlyContinue
+    if ($existingClaudeSettingsSyncTask) {
+        if ($PSCmdlet.ShouldProcess($ClaudeSettingsSyncTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $ClaudeSettingsSyncTaskName -Action $claudeSettingsSyncAction -Trigger $claudeSettingsSyncTrigger `
+                -Settings $claudeSettingsSyncSettings -Principal $claudeSettingsSyncPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($ClaudeSettingsSyncTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $ClaudeSettingsSyncTaskName -Action $claudeSettingsSyncAction -Trigger $claudeSettingsSyncTrigger `
+                -Settings $claudeSettingsSyncSettings -Principal $claudeSettingsSyncPrincipal
+        }
+    }
+
     # --- Codex Cloud environment sync: exactly two daily triggers ---------
     # This S4U task is background-only like the keeper and ccstatusline sync. It deliberately
     # has no StartWhenAvailable setting: it preserves the exact noon/midnight attempts and a
@@ -913,6 +966,8 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Memory log task '$MemoryLogTaskName' (background/S4U): $memoryLogArguments (repeats every $MemoryLogIntervalMinutes min, indefinitely)" -InformationAction Continue
+    $claudeSettingsSyncMode = if ($ClaudeSettingsSyncLive) { 'live' } else { 'dry run' }
+    Write-Information -MessageData "Claude settings sync task '$ClaudeSettingsSyncTaskName' (background/S4U, $claudeSettingsSyncMode): $claudeSettingsSyncArguments (repeats every $ClaudeSettingsSyncIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue
     Write-Information -MessageData "Session miner task '$SessionMinerTaskName' (background/S4U): $WslExePath $sessionMinerArguments (daily at $SessionMinerTime)" -InformationAction Continue

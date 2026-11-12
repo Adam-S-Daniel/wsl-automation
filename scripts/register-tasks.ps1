@@ -17,7 +17,7 @@
 .PARAMETER ScriptsDir
     Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
     wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1, log-wsl-memory.ps1, sync-codex-cloud-environments.ps1, ensure-docker-wsl-integration.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
+    sync-ccstatusline-config.ps1, log-wsl-memory.ps1, sync-claude-settings.ps1, sync-codex-cloud-environments.ps1, ensure-docker-wsl-integration.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
     Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
@@ -75,6 +75,18 @@
 .PARAMETER MemoryLogDir
     Directory the memory log task writes samples.csv to. Defaults to
     %LOCALAPPDATA%\WslMemoryLog.
+
+.PARAMETER ClaudeSettingsSyncTaskName
+    Name of the scheduled task that syncs Claude Code settings.json between Windows and WSL.
+    Defaults to 'Claude Settings Sync'.
+
+.PARAMETER ClaudeSettingsSyncIntervalMinutes
+    How often, in minutes, the Claude settings sync task repeats indefinitely. Defaults to 15.
+
+.PARAMETER ClaudeSettingsSyncLive
+    Let the Claude settings sync task write. Without it the task only plans (a dry run) and
+    logs one outcome line per run. Re-run this script with the switch once the dry-run logs
+    look right.
 
 .PARAMETER CodexCloudEnvironmentSyncTaskName
     Name of the scheduled task that reconciles Codex Cloud environments at midnight and noon.
@@ -193,6 +205,12 @@ param(
 
     [string]$MemoryLogDir = (Join-Path $env:LOCALAPPDATA 'WslMemoryLog'),
 
+    [string]$ClaudeSettingsSyncTaskName = 'Claude Settings Sync',
+
+    [int]$ClaudeSettingsSyncIntervalMinutes = 15,
+
+    [switch]$ClaudeSettingsSyncLive,
+
     [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
 
     [string]$UsageCensusTaskName = 'Usage Census Publish',
@@ -268,6 +286,9 @@ try {
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -MemoryLogTaskName $MemoryLogTaskName -MemoryLogIntervalMinutes $MemoryLogIntervalMinutes `
         -MemoryLogDir $MemoryLogDir `
+        -ClaudeSettingsSyncTaskName $ClaudeSettingsSyncTaskName `
+        -ClaudeSettingsSyncIntervalMinutes $ClaudeSettingsSyncIntervalMinutes `
+        -ClaudeSettingsSyncLive:$ClaudeSettingsSyncLive `
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
         -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime `
         -SessionMinerTaskName $SessionMinerTaskName -SessionMinerTime $SessionMinerTime `
