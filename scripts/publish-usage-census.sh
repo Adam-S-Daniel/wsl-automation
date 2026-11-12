@@ -18,6 +18,18 @@
 # task-settings.sh and config/settings.env.example); when it is missing the run
 # logs a line naming it and exits 2.
 #
+# After a publish that pushed a changed census, it dispatches skills-evals'
+# explorer-data.yml on main (`gh workflow run`), so the Evals Explorer and the
+# dashboard rebuild from the new census the same day instead of at the
+# workflow's next 09:41 UTC cron. "Pushed a changed census" is the publisher's
+# summary line carrying the public note `; published;` (skills-evals
+# scripts/publish_usage_census.sh sets public_note="published" only after a
+# verified push; unchanged and --dry-run runs print other notes). The dispatch
+# targets the GitHub owner/repo parsed from SKILLS_EVALS_URL. A failed dispatch,
+# or a URL that names no GitHub repository, does not undo the push: it adds
+# one status phrase to the log line and makes the exit code 5 (unless the
+# publisher already failed, whose code is kept), so Task Health shows it.
+#
 # Environment seams (for tests):
 #   USAGE_CENSUS_LOG   log file (default: ~/.cache/usage-census.log)
 set -euo pipefail
@@ -51,6 +63,25 @@ if git clone --quiet --depth 1 -- "$url" "$tmp/skills-evals" >/dev/null 2>&1; th
 else
     out='usage census: could not clone skills-evals'
     rc=1
+fi
+
+# Rebuild the explorer data after a real publish (see the header).
+if [[ $out == *'; published;'* ]]; then
+    repo=''
+    if [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]]; then
+        repo="${BASH_REMATCH[2]}/${BASH_REMATCH[3]%.git}"
+    fi
+    gh_rc=0
+    if [[ -z $repo ]]; then
+        status='failed (SKILLS_EVALS_URL names no GitHub owner/repo)'
+    elif gh workflow run explorer-data.yml --repo "$repo" --ref main >/dev/null 2>&1; then
+        status='requested'
+    else
+        gh_rc=$?
+        status="failed (gh exit $gh_rc)"
+    fi
+    out+=$'\n'"explorer dispatch: $status"
+    if [[ $status == failed* && $rc == 0 ]]; then rc=5; fi
 fi
 
 # Collapse newlines (dropping a trailing one) so each run is exactly one log line.
