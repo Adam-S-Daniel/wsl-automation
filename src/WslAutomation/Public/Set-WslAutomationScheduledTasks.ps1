@@ -639,20 +639,35 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Catch-up settings shared by the three daily wsl.exe publish tasks ---
+    # Usage census, session miner and task health run once a day; a laptop asleep at that minute
+    # used to skip the day (Task Scheduler result 0x800710E0, 2147946720 - Session Miner went
+    # two days without a real run). StartWhenAvailable now runs the missed task once the machine
+    # wakes. The backup keeps it off because wsl --export dies inside WSL's post-wake transition
+    # window; these scripts only need a working wsl.exe, so a catch-up that lands in that window
+    # and fails is retried (3 times, 10 minutes apart - past the ~270 s window) instead.
+    $catchUpSettingsParams = @{
+        AllowStartIfOnBatteries    = $true
+        DontStopIfGoingOnBatteries = $true
+        StartWhenAvailable         = $true
+        RestartCount               = 3
+        RestartInterval            = New-TimeSpan -Minutes 10
+        ExecutionTimeLimit         = New-TimeSpan -Minutes 15
+        MultipleInstances          = 'IgnoreNew'
+    }
+
     # --- Usage census publish: one daily trigger, wsl.exe as the action -----
     # Background-only like the Codex Cloud sync, but the action is wsl.exe DIRECTLY (no pwsh in
     # between) with --cd into the scripts directory and bash running the wrapper. As an S4U task
     # it runs in session 0, so no console window can ever appear. The owner's WSL git
     # authenticates through `gh auth git-credential` with a file-stored token, which works in an
-    # S4U logon. There is deliberately no StartWhenAvailable: a missed day stays missed (the
-    # census's 14-day freshness window and 6-day re-publish absorb it), and a catch-up at wake
-    # would land in WSL's post-wake transition window (see AGENTS.md). $ScriptsDir was trimmed of
+    # S4U logon. StartWhenAvailable is on (see the catch-up settings above): a missed day is caught up on
+    # wake, and the restart settings retry a run that hits WSL's post-wake window (see AGENTS.md). $ScriptsDir was trimmed of
     # any trailing backslash above, which would otherwise escape the closing quote.
     $usageCensusArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-usage-census.sh"
     $usageCensusAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $usageCensusArguments
     $usageCensusTrigger = New-ScheduledTaskTrigger -Daily -At $UsageCensusTime | ConvertTo-WslLocalTimeTrigger
-    $usageCensusSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
+    $usageCensusSettings = New-ScheduledTaskSettingsSet @catchUpSettingsParams
     $usageCensusPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
 
     $existingUsageCensusTask = Get-ScheduledTask -TaskName $UsageCensusTaskName -ErrorAction SilentlyContinue
@@ -677,8 +692,7 @@ function Set-WslAutomationScheduledTasks {
     $sessionMinerArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./run-session-miner.sh"
     $sessionMinerAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $sessionMinerArguments
     $sessionMinerTrigger = New-ScheduledTaskTrigger -Daily -At $SessionMinerTime | ConvertTo-WslLocalTimeTrigger
-    $sessionMinerSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
+    $sessionMinerSettings = New-ScheduledTaskSettingsSet @catchUpSettingsParams
     $sessionMinerPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
 
     $existingSessionMinerTask = Get-ScheduledTask -TaskName $SessionMinerTaskName -ErrorAction SilentlyContinue
@@ -750,15 +764,14 @@ function Set-WslAutomationScheduledTasks {
     }
 
     # --- Task health publish: one daily trigger, wsl.exe as the action ------
-    # Built exactly like the usage census (wsl.exe directly, S4U, session 0, no StartWhenAvailable):
-    # a missed day stays missed, since the snapshot is only a heartbeat the cloud audit compares
+    # Built exactly like the usage census (wsl.exe directly, S4U, session 0, shared catch-up settings):
+    # a missed day is caught up on wake, since the snapshot is only a heartbeat the cloud audit compares
     # against its own clock. The script makes one Windows PowerShell call for task states, which
     # an S4U logon may make unelevated; the 15 minute limit is generous for one call and a push.
     $taskHealthArguments = "--distribution $DistroName --cd `"$ScriptsDir`" --exec /bin/bash ./publish-task-health.sh"
     $taskHealthAction = New-ScheduledTaskAction -Execute $WslExePath -Argument $taskHealthArguments
     $taskHealthTrigger = New-ScheduledTaskTrigger -Daily -At $TaskHealthTime | ConvertTo-WslLocalTimeTrigger
-    $taskHealthSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew
+    $taskHealthSettings = New-ScheduledTaskSettingsSet @catchUpSettingsParams
     $taskHealthPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
 
     $existingTaskHealthTask = Get-ScheduledTask -TaskName $TaskHealthTaskName -ErrorAction SilentlyContinue
