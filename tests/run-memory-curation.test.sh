@@ -206,6 +206,17 @@ rc=0
 bash "$script" >/dev/null 2>&1 || rc=$?
 assert_eq "$rc" 0 'run after a failure succeeds again'
 
+# `claude` lives only in ~/.local/bin, which a non-login wsl.exe --exec shell lacks from PATH
+# (the 2026-11-09 exit 127): the script must still find it.
+mkdir -p "$HOME/.local/bin"
+mv -- "$test_root/bin/claude" "$HOME/.local/bin/claude"
+: >"$CLAUDE_CALLS"
+rc=0
+bash "$script" >/dev/null 2>&1 || rc=$?
+assert_eq "$rc" 0 'claude found in ~/.local/bin when it is not on PATH'
+assert_eq "$(wc -l <"$CLAUDE_CALLS" | tr -d ' ')" 1 'claude from ~/.local/bin is called once'
+mv -- "$HOME/.local/bin/claude" "$test_root/bin/claude"
+
 # --dry-run never calls claude and audits every memory dir.
 : >"$CLAUDE_CALLS"
 rc=0

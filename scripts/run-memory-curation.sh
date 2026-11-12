@@ -48,6 +48,10 @@ wsl_automation_task_bootstrap "$scripts_dir/run-memory-curation.sh" 0 300 "$@"
 # shellcheck source=scripts/task-settings.sh
 . "$scripts_dir/task-settings.sh"
 
+# The task starts a non-login shell (wsl.exe --exec), whose PATH lacks ~/.local/bin, the only
+# place `claude` is installed; without this the run exits 127. Append it so system tools win.
+PATH="$PATH:$HOME/.local/bin"
+
 dry_run=0
 for arg in "$@"; do
     if [[ $arg == --dry-run ]]; then dry_run=1; fi

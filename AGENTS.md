@@ -87,6 +87,17 @@ the backup's own wake guard (`Invoke-WslResticBackup`, and the manual
 retry still catches up a missed day within the same day, without racing the
 wake; once a run succeeds, the rest of the day's retries skip silently.
 
+### The three daily publish tasks catch up a missed run, with restarts
+
+`Usage Census Publish`, `Session Miner` and `Task Health Publish` set
+`StartWhenAvailable` (plus `RestartCount 3`, `RestartInterval 10 min`); a
+laptop asleep at their minute otherwise skipped the day (result 2147946720,
+`0x800710E0`; the miner went 11-10 to 11-12 without a run). The backup stays
+off it (above) because `wsl --export` dies in the post-wake window; these
+scripts only need a working `wsl.exe`, and the restart interval clears that
+window if a catch-up lands in it. Memory Curation and the other tasks are
+unchanged.
+
 ### The daily backup is a live restic backup, not `wsl --export`
 
 The `WSL Ubuntu Daily Backup` task runs `Invoke-WslResticBackup`: restic as
