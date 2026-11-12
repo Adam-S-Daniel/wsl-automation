@@ -785,15 +785,18 @@ up the new PATH.
   for what the census records.
 - After a run that pushed a changed census (the publisher's summary says
   `; published;`), it runs
-  `gh workflow run explorer-data.yml --repo <owner/repo> --ref main`, with
-  owner/repo parsed from `SKILLS_EVALS_URL`, so the
+  `gh workflow run explorer-data.yml` inside the clone it just made (so `gh`
+  resolves the repository from the clone's origin; the workflow runs only on the
+  default branch), so the
   [Evals Explorer data](https://github.com/Adam-S-Daniel/skills-evals/blob/main/.github/workflows/explorer-data.yml)
   rebuilds the same day instead of at its 09:41 UTC cron. Unchanged and
-  `--dry-run` runs dispatch nothing. A failed dispatch (or a `SKILLS_EVALS_URL`
-  that names no GitHub repository) keeps the push, appends
+  `--dry-run` runs dispatch nothing. A failed or timed-out dispatch keeps the push, appends
   `explorer dispatch: failed (...)` to the log line and exits `5` (a publisher
-  failure keeps its own code), so Task Health shows it. Needs `gh` logged in with
-  the `workflow` scope.
+  failure keeps its own code), so Task Health shows it. Needs `gh` logged in with a token that can
+  dispatch workflows on that repository (classic token or OAuth login: `repo`;
+  fine-grained: Actions write). It uses the owner's workstation login, like the
+  census push itself, rather than a GitHub App, because this task already runs
+  as the owner on this machine.
 - The action is `wsl.exe` directly, with no pwsh in between:
 
   ```

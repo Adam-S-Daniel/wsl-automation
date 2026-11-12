@@ -25,8 +25,8 @@
 # summary line carrying the public note `; published;` (skills-evals
 # scripts/publish_usage_census.sh sets public_note="published" only after a
 # verified push; unchanged and --dry-run runs print other notes). The dispatch
-# targets the GitHub owner/repo parsed from SKILLS_EVALS_URL. A failed dispatch,
-# or a URL that names no GitHub repository, does not undo the push: it adds
+# runs inside the clone, so gh resolves the repository from its origin. A
+# failed or timed-out dispatch does not undo the push: it adds
 # one status phrase to the log line and makes the exit code 5 (unless the
 # publisher already failed, whose code is kept), so Task Health shows it.
 #
@@ -67,18 +67,12 @@ fi
 
 # Rebuild the explorer data after a real publish (see the header).
 if [[ $out == *'; published;'* ]]; then
-    repo=''
-    if [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]]; then
-        repo="${BASH_REMATCH[2]}/${BASH_REMATCH[3]%.git}"
-    fi
-    gh_rc=0
-    if [[ -z $repo ]]; then
-        status='failed (SKILLS_EVALS_URL names no GitHub owner/repo)'
-    elif gh workflow run explorer-data.yml --repo "$repo" --ref main >/dev/null 2>&1; then
+    # Run inside the clone: gh resolves the repository from its origin, and
+    # the workflow only runs on the default branch, so no --ref.
+    if (cd "$tmp/skills-evals" && timeout --kill-after=5s 60s gh workflow run explorer-data.yml >/dev/null 2>&1); then
         status='requested'
     else
-        gh_rc=$?
-        status="failed (gh exit $gh_rc)"
+        status="failed (gh exit $?)"
     fi
     out+=$'\n'"explorer dispatch: $status"
     if [[ $status == failed* && $rc == 0 ]]; then rc=5; fi

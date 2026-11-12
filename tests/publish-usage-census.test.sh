@@ -195,7 +195,7 @@ assert_match "$out" 'args:--dry-run' 'the clone from the settings file reaches t
 export GH_CALLS="$test_root/gh-calls"
 cat >"$test_root/bin/gh" <<'EOF_STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$GH_CALLS"
+printf '%s @ %s\n' "$*" "$(git config --get remote.origin.url)" >>"$GH_CALLS"
 echo 'https://github.com/example-owner/run-url-must-not-be-logged'
 exit "${GH_EXIT:-0}"
 EOF_STUB
@@ -210,14 +210,15 @@ run_mapped() {
         SKILLS_EVALS_URL="$gh_url" bash "$script" "$@" 2>&1
 }
 
-# (g) A published census dispatches explorer-data.yml on main for owner/repo from the URL.
+# (g) A published census dispatches explorer-data.yml from inside the clone, with no --repo or --ref.
 rc=0
 out=$(STUB_OUTPUT="$published" run_mapped) || rc=$?
 assert_eq "$rc" 0 'a published census with a good dispatch exits 0'
 assert_eq "$(gh_calls)" 1 'a published census dispatches once'
-assert_eq "$(sed -n 1p "$GH_CALLS")" 'workflow run explorer-data.yml --repo example-owner/example-evals --ref main' 'dispatch names the workflow, the repo from the URL (no .git) and main'
+assert_eq "$(sed -n 1p "$GH_CALLS")" "workflow run explorer-data.yml @ $gh_url" 'dispatch runs in the clone (origin is the GitHub URL) with no --repo or --ref'
 assert_match "$(tail -n 1 "$log_file")" ' exit=0 .*; published; .* \| explorer dispatch: requested$' 'a requested dispatch is logged'
 [[ $(tail -n 1 "$log_file") != *run-url-must-not-be-logged* ]] || fail "gh output must not reach the log"
+[[ $out != *run-url-must-not-be-logged* ]] || fail "gh output must not reach stdout"
 pass
 
 # (h) Unchanged and dry-run notes do not dispatch.
@@ -238,6 +239,7 @@ assert_eq "$rc" 5 'a failed dispatch after a good publish exits 5'
 assert_eq "$(gh_calls)" 2 'the failed dispatch was attempted'
 assert_match "$(tail -n 1 "$log_file")" ' exit=5 .* \| explorer dispatch: failed \(gh exit 4\)$' 'a failed dispatch is logged with the gh exit code only'
 [[ $(tail -n 1 "$log_file") != *example-owner* ]] || fail 'the log line must not name the repository'
+[[ $out != *run-url-must-not-be-logged* ]] || fail 'the gh error body must not reach stdout'
 pass
 
 # (j) A publisher failure keeps its own exit code even when the dispatch also fails
@@ -247,11 +249,11 @@ out=$(GH_EXIT=4 STUB_EXIT=1 STUB_OUTPUT="$published" run_mapped) || rc=$?
 assert_eq "$rc" 1 'the publisher exit code wins over a failed dispatch'
 assert_match "$out" 'explorer dispatch: failed \(gh exit 4\)' 'the failed dispatch is still reported'
 
-# (k) A published census from a URL that names no GitHub repository: no gh call, exit 5.
+# (k) A timed-out dispatch (timeout exits 124) logs it and exits 5.
 rc=0
-out=$(STUB_OUTPUT="$published" bash "$script" 2>&1) || rc=$?
-assert_eq "$rc" 5 'a non-GitHub URL after a publish exits 5'
-assert_match "$out" 'explorer dispatch: failed \(SKILLS_EVALS_URL names no GitHub owner/repo\)' 'the unparseable URL is named'
-assert_eq "$(gh_calls)" 3 'a non-GitHub URL does not call gh'
+out=$(GH_EXIT=124 STUB_OUTPUT="$published" run_mapped) || rc=$?
+assert_eq "$rc" 5 'a timed-out dispatch exits 5'
+assert_match "$out" 'explorer dispatch: failed \(gh exit 124\)' 'the timeout is reported with exit 124'
+assert_match "$(tail -n 1 "$log_file")" ' exit=5 .* \| explorer dispatch: failed \(gh exit 124\)$' 'the timeout is logged'
 
 printf 'PASS: %s assertions\n' "$passed"
