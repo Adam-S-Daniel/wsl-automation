@@ -24,6 +24,9 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   "Waiting feed task" below).
 - A daily publish of this machine's task health, counts and timestamps only,
   for the cloud fleet-health audit (see "Task health publish task" below).
+- A Claude settings sync: every 15 minutes, Claude Code's `settings.json` is merged
+  between Windows and WSL (a dry run until you turn writes on; see "Claude settings
+  sync task" below).
 - A memory log: every 5 minutes, one CSV row of Windows and WSL memory
   statistics, to show whether `.wslconfig`'s `memory=` limit is right (see
   "WSL memory log task" below).
@@ -203,7 +206,7 @@ there is nothing for the keeper to wait out.
 ### Checkout update before every scripted task
 
 Every task action that runs a repo script (backup, keeper, ccstatusline sync,
-memory log, Codex Cloud sync, usage census, session miner, memory curation, waiting feed, task health, and the Docker watchdog) first updates that same
+memory log, Claude settings sync, Codex Cloud sync, usage census, session miner, memory curation, waiting feed, task health, and the Docker watchdog) first updates that same
 checkout through one updater, `Update-WslAutomationRepo`, before it loads any
 task code. The two on-demand launcher actions invoke their CLIs directly and have
 no repo script to update. All six run from the one Windows checkout; the Bash
@@ -216,7 +219,7 @@ updater:
 
 | Entry | Bootstrap | Tries | Bounded by |
 | --- | --- | --- | --- |
-| PowerShell (backup, keeper, ccstatusline, memory log, Codex Cloud, Docker watchdog) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
+| PowerShell (backup, keeper, ccstatusline, memory log, Claude settings sync, Codex Cloud, Docker watchdog) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
 | Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: session miner (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: memory curation (weekly) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
@@ -678,6 +681,48 @@ up the new PATH.
 - To stop it, run `Disable-ScheduledTask -TaskName 'WSL Memory Log'` (or
   `Unregister-ScheduledTask` to remove it). Re-running `register-tasks.ps1`
   puts it back.
+
+### Claude settings sync task (default name: `Claude Settings Sync`)
+
+- Runs `scripts\sync-claude-settings.ps1` (`Invoke-ClaudeSettingsSync`) every 15
+  minutes (`-ClaudeSettingsSyncIntervalMinutes`) as a background S4U task for the
+  current Windows user (same MSI PowerShell and batch-logon prerequisites as the
+  keeper), with `StartWhenAvailable` on so one run missed while the machine slept
+  is caught up. It runs the `Sync-ClaudeSettings.ps1` script of the
+  `sync-cc-settings-between-wsl-and-windows` skill from the `adam-agentskills`
+  clone beside this repository (`D:\repos\<owner>\adam-agentskills`, kept current by the
+  clone-sync task), unattended: a three-way merge of the Windows and WSL
+  `settings.json` against a snapshot of its last result. A value only one side
+  changed wins, a delete propagates, and a value both sides changed differently
+  is left alone and counted.
+- **It plans only until you turn writes on.** Registered as above (or by
+  `register-tasks.ps1` with no extra switch), the task passes no `-Live`, so the
+  script runs with `-DryRun` and writes no settings, backup or snapshot. Re-run
+  `register-tasks.ps1 ... -ClaudeSettingsSyncLive` to switch the same task to
+  live, and re-run it without the switch to go back to a dry run.
+- **It never starts WSL.** It runs only while the distro is already running and
+  logs `skipped` otherwise.
+- **What it logs.** One line per run in
+  `%LOCALAPPDATA%\wsl-automation\claude-settings-sync.log`, the script's own
+  summary: `sync-claude-settings mode=dry-run outcome=planned snapshot=absent
+  windows=write(N keys) wsl=nochange conflicts=C`. Counts and fixed words only;
+  a failure logs the exit code and nothing the script printed. The key-level
+  report (key names and same / changed / added / removed markers, never values)
+  is written, replacing the last, to
+  `%LOCALAPPDATA%\wsl-automation\claude-settings-sync-report.txt`: read it
+  before turning writes on.
+- **What stays per OS.** Keys that carry a command, an absolute path or an
+  OS-specific choice (`hooks`, `statusLine`, `permissions.additionalDirectories`,
+  the `adam-non-coding-local` plugin entries, and the rest of the skill's
+  per-file list) are never copied across.
+- **Conflicts with `setup.sh --owner-machine`.** `setup.sh` also writes
+  `settings.json` (marketplaces and plugin enablement, in each home). Its
+  per-OS decision, `adam-non-coding-local` off on Linux and on for Windows, is
+  one of the per-file keys, and the rest it writes identically in both homes,
+  so the two do not fight. Re-run `setup.sh --owner-machine` after a plugin
+  change as before; the next sync run carries it across.
+- To stop it, run `Disable-ScheduledTask -TaskName 'Claude Settings Sync'` (or
+  `Unregister-ScheduledTask` to remove it).
 
 ### Codex Cloud environment sync task (default name: `Codex Cloud Environment Sync`)
 
