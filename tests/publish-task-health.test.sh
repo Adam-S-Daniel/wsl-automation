@@ -152,7 +152,7 @@ remote_jq() { remote_json | jq -r "$1"; }
 # --- --dry-run first: nothing is cloned, written, logged or pushed --------------
 run_health --dry-run
 assert_eq "$rc" 0 'dry run exits 0'
-assert_eq "$out" 'task health: tasks=4 missing=2 nonzero_results=1 outputs_known=7 published=dry-run' 'dry run prints the counts line'
+assert_eq "$out" 'task health: tasks=4 missing=2 nonzero_results=0 outputs_known=7 published=dry-run' 'dry run prints the counts line'
 assert_eq "$(remote_head)" none 'dry run creates no branch'
 assert_eq "$(find "$test_root/clone" -mindepth 1 2>/dev/null | wc -l | tr -d " ")" 0 'dry run does not even clone'
 assert_eq "$(log_count)" 0 'dry run is not logged'
@@ -160,7 +160,7 @@ assert_eq "$(log_count)" 0 'dry run is not logged'
 # --- First publish: shape and values -------------------------------------------
 run_health
 assert_eq "$rc" 0 'first publish exits 0'
-assert_eq "$out" 'task health: tasks=4 missing=2 nonzero_results=1 outputs_known=7 published=yes' 'first publish line'
+assert_eq "$out" 'task health: tasks=4 missing=2 nonzero_results=0 outputs_known=7 published=yes' 'first publish line'
 assert_eq "$(commit_count)" 1 'first publish pushes one commit'
 assert_eq "$(git --git-dir="$remote" ls-tree --name-only "$feed_ref")" task-health.json 'the tree holds only task-health.json'
 assert_eq "$(remote_jq 'keys_unsorted | join(",")')" 'generated_utc,outputs,schema,tasks' 'top-level keys are sorted'
@@ -208,7 +208,7 @@ pass
 
 # --- The log line is counts only ------------------------------------------------
 assert_eq "$(log_count)" 1 'a publishing run is logged'
-assert_match "$(sed -n 1p "$TASK_HEALTH_LOG")" '^2026-09-21T14:13:20Z exit=0 task health: tasks=4 missing=2 nonzero_results=1 outputs_known=7 published=yes$' 'log line format'
+assert_match "$(sed -n 1p "$TASK_HEALTH_LOG")" '^2026-09-21T14:13:20Z exit=0 task health: tasks=4 missing=2 nonzero_results=0 outputs_known=7 published=yes$' 'log line format'
 assert_no_match "$(cat "$TASK_HEALTH_LOG")$out" "$test_root|Task A|SECRET|/home" 'log and output carry no path, name or log text'
 
 # --- A second publish replaces the single commit --------------------------------
@@ -344,10 +344,28 @@ TASK_HEALTH_NOW=$((now + 200200)) run_health --dry-run
 assert_eq "$rc" 0 'the state-codes run exits 0'
 assert_match "$out" ' nonzero_results=1 ' 'running and has-not-run are not counted; a real failure is'
 
+# --- A Disabled task's old failure is history, not a current failure ----------
+# The Codex tasks are registered disabled by default; their last result must not
+# keep the nonzero count up. An enabled failing task still counts.
+cat >"$FX/ps.json" <<'EOF_JSON'
+[
+  {"name": "Task A", "state": "Disabled", "last_run_utc": null, "last_result": 2147942405,
+   "last_result_hex": "0x80070005", "next_run_utc": null},
+  {"name": "Task B", "state": "Disabled", "last_run_utc": null, "last_result": 1,
+   "last_result_hex": "0x1", "next_run_utc": null},
+  {"name": "Task Gone", "state": "Ready", "last_run_utc": null, "last_result": 1,
+   "last_result_hex": "0x1", "next_run_utc": null}
+]
+EOF_JSON
+TASK_HEALTH_NOW=$((now + 200300)) run_health --dry-run
+assert_eq "$rc" 0 'the disabled-task run exits 0'
+assert_match "$out" ' nonzero_results=1 ' 'two disabled failures are not counted; the enabled failure is'
+
 # The default task list (used when TASK_HEALTH_TASKS is unset) covers every registered task,
 # including the Docker WSL integration watchdog.
 default_line=$(grep -m1 '^readonly default_tasks=' "$script")
 assert_match "$default_line" 'Task Health Publish,Docker WSL Integration Watchdog' 'the default list ends with the watchdog'
 default_count=$(grep -o ',' <<<"$default_line" | wc -l)
-assert_eq "$default_count" 11 'the default list names twelve tasks'
+assert_eq "$default_count" 12 'the default list names thirteen tasks'
+assert_match "$default_line" 'ccstatusline Config Sync,WSL Memory Log,Codex Cloud' 'the default list includes the memory log task'
 printf 'PASS: %s assertions\n' "$passed"

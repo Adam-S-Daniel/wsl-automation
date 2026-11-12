@@ -259,6 +259,12 @@ outlive the tab (or the command can return and close it), so a check on the
 tab could relaunch it every interval. Keep it that way. The daemon has no pty, so
 `Test-WslActivity` does not count it as activity.
 
+Both Codex tasks (that launcher and `Codex Cloud Environment Sync`) are
+registered **disabled** unless `register-tasks.ps1` gets `-EnableCodexTasks`, and
+then the keeper task's action carries `-NoCodexRemoteControl`. Keep the two
+together: a disabled launcher with a keeper that still tries to start it fails
+every interval.
+
 ### Never leave an interactive prompt in a scheduled-task code path
 
 `Read-Host`, `pause`, and any `-Confirm` prompt must be unreachable when a

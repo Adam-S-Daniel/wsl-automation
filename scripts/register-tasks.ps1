@@ -80,6 +80,13 @@
     Name of the scheduled task that reconciles Codex Cloud environments at midnight and noon.
     Defaults to 'Codex Cloud Environment Sync'.
 
+.PARAMETER EnableCodexTasks
+    Enables the two Codex tasks (the Codex remote control launcher and the Codex Cloud environment
+    sync). Off by default: both are still registered or updated, then disabled, and the keeper task
+    is given -NoCodexRemoteControl so it does not try to start the disabled launcher. With this
+    switch both tasks are enabled (even if currently disabled) and the keeper runs without
+    -NoCodexRemoteControl. Re-running without it disables them again.
+
 .PARAMETER UsageCensusTaskName
     Name of the scheduled task that publishes the daily usage census from WSL. Defaults to
     'Usage Census Publish'.
@@ -152,7 +159,8 @@
     ./register-tasks.ps1 -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
     Registers (or updates) all the scheduled tasks from an elevated prompt, using default names,
-    backup time, and intervals.
+    backup time, and intervals. The Codex tasks are left disabled; add -EnableCodexTasks to
+    enable them.
 
 .EXAMPLE
     ./register-tasks.ps1 -BackupDir 'C:\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic' -WhatIf
@@ -194,6 +202,8 @@ param(
     [string]$MemoryLogDir = (Join-Path $env:LOCALAPPDATA 'WslMemoryLog'),
 
     [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
+
+    [switch]$EnableCodexTasks,
 
     [string]$UsageCensusTaskName = 'Usage Census Publish',
 
@@ -268,7 +278,7 @@ try {
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
         -MemoryLogTaskName $MemoryLogTaskName -MemoryLogIntervalMinutes $MemoryLogIntervalMinutes `
         -MemoryLogDir $MemoryLogDir `
-        -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
+        -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName -EnableCodexTasks:$EnableCodexTasks `
         -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime `
         -SessionMinerTaskName $SessionMinerTaskName -SessionMinerTime $SessionMinerTime `
         -MemoryCurationTaskName $MemoryCurationTaskName -MemoryCurationTime $MemoryCurationTime `

@@ -95,8 +95,11 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         # Scheduler no matter what the implementation calls.
         Mock -ModuleName WslAutomation Register-WslScheduledTask { }
         Mock -ModuleName WslAutomation Set-WslScheduledTask { }
+        Mock -ModuleName WslAutomation Set-WslScheduledTaskEnabled { }
         Mock -ModuleName WslAutomation Register-ScheduledTask { }
         Mock -ModuleName WslAutomation Set-ScheduledTask { }
+        Mock -ModuleName WslAutomation Enable-ScheduledTask { }
+        Mock -ModuleName WslAutomation Disable-ScheduledTask { }
         Mock -ModuleName WslAutomation Unregister-ScheduledTask { }
         Mock -ModuleName WslAutomation Rename-Item { }
 
@@ -1357,6 +1360,132 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
     }
+    Context 'Codex tasks are disabled unless -EnableCodexTasks is passed' {
+
+        BeforeEach {
+            # Records the order of registrations and enable/disable calls, so a task is shown to
+            # be registered (or updated) first and switched afterward.
+            $script:callOrder = [System.Collections.Generic.List[string]]::new()
+            Mock -ModuleName WslAutomation Register-WslScheduledTask { $script:callOrder.Add("register:$TaskName") }
+            Mock -ModuleName WslAutomation Set-WslScheduledTask { $script:callOrder.Add("update:$TaskName") }
+            Mock -ModuleName WslAutomation Set-WslScheduledTaskEnabled { $script:callOrder.Add("enabled=${Enabled}:$TaskName") }
+            Mock -ModuleName WslAutomation Get-ScheduledTask { $null }
+        }
+
+        It 'registers both Codex tasks and then disables them by default' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'Codex Remote Control Launcher' }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'Codex Cloud Environment Sync' }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 2 -Exactly
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Remote Control Launcher' -and $Enabled -eq $false
+            }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Cloud Environment Sync' -and $Enabled -eq $false
+            }
+            $script:callOrder.IndexOf('register:Codex Remote Control Launcher') | Should -BeLessThan $script:callOrder.IndexOf('enabled=False:Codex Remote Control Launcher')
+            $script:callOrder.IndexOf('register:Codex Cloud Environment Sync') | Should -BeLessThan $script:callOrder.IndexOf('enabled=False:Codex Cloud Environment Sync')
+        }
+
+        It 'appends -NoCodexRemoteControl to the keeper action by default, and to no other action' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
+
+            $keeperAction = $script:capturedActions | Where-Object { $_.Argument -match 'ensure-claude-session\.ps1' }
+            $keeperAction.Argument | Should -Match ' -DistroName Debian -NoCodexRemoteControl$'
+            @($script:capturedActions | Where-Object { $_.Argument -match 'NoCodexRemoteControl' }).Count | Should -Be 1
+        }
+
+        It 'enables both Codex tasks and leaves -NoCodexRemoteControl off the keeper with -EnableCodexTasks' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -EnableCodexTasks -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 2 -Exactly
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Remote Control Launcher' -and $Enabled -eq $true
+            }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Codex Cloud Environment Sync' -and $Enabled -eq $true
+            }
+            $keeperAction = $script:capturedActions | Where-Object { $_.Argument -match 'ensure-claude-session\.ps1' }
+            $keeperAction.Argument | Should -Match ' -DistroName Debian$'
+            $keeperAction.Argument | Should -Not -Match 'NoCodexRemoteControl'
+        }
+
+        It 'honors -CodexLauncherTaskName and -CodexCloudEnvironmentSyncTaskName when switching' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -CodexLauncherTaskName 'My Codex Tab' -CodexCloudEnvironmentSyncTaskName 'My Codex Sync' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'My Codex Tab' -and $Enabled -eq $false
+            }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'My Codex Sync' -and $Enabled -eq $false
+            }
+        }
+
+        It 'updates already-registered Codex tasks in place and then disables them by default' {
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -in 'Codex Remote Control Launcher', 'Codex Cloud Environment Sync') {
+                    return [pscustomobject]@{ TaskName = $TaskName; State = 'Disabled' }
+                }
+                return $null
+            }
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter { $TaskName -like 'Codex*' }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'Codex Remote Control Launcher' }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'Codex Cloud Environment Sync' }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 2 -Exactly -ParameterFilter { $Enabled -eq $false }
+            $script:callOrder.IndexOf('update:Codex Cloud Environment Sync') | Should -BeLessThan $script:callOrder.IndexOf('enabled=False:Codex Cloud Environment Sync')
+        }
+
+        It 'enables already-registered, disabled Codex tasks when -EnableCodexTasks is passed' {
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -in 'Codex Remote Control Launcher', 'Codex Cloud Environment Sync') {
+                    return [pscustomobject]@{ TaskName = $TaskName; State = 'Disabled' }
+                }
+                return $null
+            }
+
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -EnableCodexTasks -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 2 -Exactly -ParameterFilter { $Enabled -eq $true }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 0 -Exactly -ParameterFilter { $Enabled -eq $false }
+        }
+
+        It 'neither disables nor enables anything under -WhatIf' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WhatIf | Out-Null
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -EnableCodexTasks -WhatIf | Out-Null
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTaskEnabled -Times 0 -Exactly
+        }
+
+        It 'says in the summary whether the Codex tasks are enabled or disabled' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -InformationVariable disabledInfo | Out-Null
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -EnableCodexTasks -Confirm:$false -InformationVariable enabledInfo | Out-Null
+
+            $disabledCodexLines = @($disabledInfo | ForEach-Object { "$_" } | Where-Object { $_ -match '^Codex (remote control launcher|Cloud) task' })
+            $disabledCodexLines.Count | Should -Be 2
+            $disabledCodexLines | ForEach-Object { $_ | Should -Match '\(.*disabled; pass -EnableCodexTasks to enable' }
+            @($disabledInfo | ForEach-Object { "$_" } | Where-Object { $_ -match '^Keeper task' }) | Should -Match 'NoCodexRemoteControl'
+
+            $enabledCodexLines = @($enabledInfo | ForEach-Object { "$_" } | Where-Object { $_ -match '^Codex (remote control launcher|Cloud) task' })
+            $enabledCodexLines.Count | Should -Be 2
+            $enabledCodexLines | ForEach-Object { $_ | Should -Match ', enabled\)' }
+            @($enabledInfo | ForEach-Object { "$_" } | Where-Object { $_ -match '^Keeper task' }) | Should -Not -Match 'NoCodexRemoteControl'
+        }
+    }
+
     Context 'legacy script archiving' {
 
         BeforeEach {

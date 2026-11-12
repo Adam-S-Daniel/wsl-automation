@@ -13,7 +13,8 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   `codex remote-control start` (Codex's app-server daemon with remote
   control enabled) running.
 - A scheduled-task installer that wires both of the above into Windows Task
-  Scheduler.
+  Scheduler. The Codex tasks are registered disabled unless it is given
+  `-EnableCodexTasks`.
 - A daily usage census publish (see "Usage census task" below).
 - A daily session miner run that turns your own Claude Code transcripts into
   redacted lesson proposals (see "Session miner task" below).
@@ -185,6 +186,13 @@ there is nothing for the keeper to wait out.
    This creates/updates the scheduled tasks described below. Re-running it is
    safe and idempotent - it will update the existing tasks in place rather
    than duplicating them.
+
+   The two Codex tasks (`Codex Remote Control Launcher` and `Codex Cloud
+   Environment Sync`) are registered but **disabled by default**, and the
+   keeper is registered with `-NoCodexRemoteControl` so it does not try to
+   start the disabled launcher. Add `-EnableCodexTasks` to enable both (and
+   drop `-NoCodexRemoteControl` from the keeper); re-running without it
+   disables them again.
 
 5. **Windows ccstatusline runtime (once per machine).** Run
    `.\scripts\install-ccstatusline.ps1` from a normal PowerShell 7 prompt; see
@@ -517,7 +525,8 @@ command is built around not exporting out from under a live session.
 - **Codex remote control.** After the Claude handling, if Codex's
   remote-control daemon is not running (`Test-CodexRemoteControl`, via
   `pgrep -af codex`), it triggers the Codex remote control launcher task
-  below. `-NoCodexRemoteControl` turns this off.
+  below. `-NoCodexRemoteControl` turns this off, and `register-tasks.ps1`
+  passes it to the keeper task unless you give it `-EnableCodexTasks`.
 - **WSL user manager.** After the backup lock wait and before the session
   work, if the default user's systemd user manager (`user@<uid>.service`) has
   died - it takes `/run/user/<uid>` with it, which breaks new shells, snap apps
@@ -567,6 +576,9 @@ command is built around not exporting out from under a live session.
 
 ### Codex remote control launcher task (default name: `Codex Remote Control Launcher`)
 
+- **Disabled by default.** `register-tasks.ps1` registers or updates it and
+  then disables it; pass `-EnableCodexTasks` to enable it (the keeper then
+  runs without `-NoCodexRemoteControl`).
 - Built exactly like the Claude Code launcher above - interactive, on demand,
   no trigger of its own, `wt.exe` as the action - but the tab is titled
   "Codex Remote Control" and runs
@@ -669,6 +681,8 @@ up the new PATH.
 
 ### Codex Cloud environment sync task (default name: `Codex Cloud Environment Sync`)
 
+- **Disabled by default.** `register-tasks.ps1` registers or updates it and
+  then disables it; pass `-EnableCodexTasks` to enable it.
 - Runs `scripts\sync-codex-cloud-environments.ps1` at exactly 00:00 and 12:00.
   A missed time remains missed; it does not use `-StartWhenAvailable` or wake
   the computer.
@@ -982,7 +996,7 @@ up the new PATH.
   ```
 
   - `schema`: always `1`. `generated_utc`: when the snapshot was made (UTC).
-  - `tasks`: one entry per registered task, in a fixed order (all twelve
+  - `tasks`: one entry per registered task, in a fixed order (all thirteen
     wsl-automation tasks, this one included). `state` is the Task Scheduler
     state (`Ready`, `Running`, `Disabled`, ...) or `missing` when the task is
     not registered, in which case every other field is `null`. `last_result`
@@ -1003,10 +1017,12 @@ up the new PATH.
     `~/.cache/session-miner.log`, `memory-curation.log`, `usage-census.log` and
     `waiting-feed.log`. Anything unavailable is `null`.
 - Output is one counts-only line per run, for example
-  `task health: tasks=12 missing=0 nonzero_results=0 outputs_known=10 published=yes`
-  (`nonzero_results` counts tasks whose last result is not `0`, leaving
+  `task health: tasks=13 missing=0 nonzero_results=0 outputs_known=10 published=yes`
+  (`nonzero_results` counts enabled tasks whose last result is not `0`, leaving
   out `0x41301` (running) and `0x41303` (has not run yet), as the weekly
-  fleet-health audit does; `outputs_known` counts non-null `outputs` fields). The same
+  fleet-health audit does, and any `Disabled` task, whose last result is history
+  (the Codex tasks are disabled by default); `outputs_known` counts non-null
+  `outputs` fields). The same
   line with a UTC time and exit code is appended to `~/.cache/task-health.log`
   (`TASK_HEALTH_LOG`); a `--dry-run` line is printed but not logged. Exit `0` on
   success, `1` on a PowerShell, clone or push failure.
@@ -1228,7 +1244,9 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
   back too; end it again and it stays gone, since the next live run refreshes
   the snapshot.
 - Codex's remote-control daemon is checked, and started if missing, on every
-  run, after the Claude handling, through its own launcher task.
+  run, after the Claude handling, through its own launcher task. (Skipped when
+  the keeper runs with `-NoCodexRemoteControl`, which is how
+  `register-tasks.ps1` registers it unless `-EnableCodexTasks` is passed.)
 
 ## Testing
 
