@@ -217,13 +217,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all ten background tasks as S4U in session 0, where no desktop window can flash' {
+        It 'runs all eleven background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The backup, keeper, ccstatusline sync, memory log, Codex Cloud sync, usage census, session miner,
+            # The backup, keeper, ccstatusline sync, memory log, Claude settings sync, Codex Cloud sync, usage census, session miner,
             # memory curation, waiting feed publish, and task health publish are windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 10 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 11 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -238,6 +238,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $ccstatuslineAction.Argument | Should -Not -Match 'WindowStyle'
             $memoryLogAction = $script:capturedActions | Where-Object { $_.Argument -match 'log-wsl-memory\.ps1' }
             $memoryLogAction.Argument | Should -Not -Match 'WindowStyle'
+            $claudeSettingsSyncAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-claude-settings\.ps1' }
+            $claudeSettingsSyncAction.Argument | Should -Not -Match 'WindowStyle'
         }
 
         It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running a Remote Control session, and no trigger of its own' {
@@ -408,6 +410,62 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
+        It 'creates the Claude settings sync task as a dry run by default, threading DistroName' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
+
+            $syncAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-claude-settings\.ps1' }
+
+            $syncAction.Execute | Should -Be 'C:\fake\pwsh.exe'
+            $syncAction.Argument | Should -Be "-NoProfile -File `"$(Join-Path $script:scriptsDir 'sync-claude-settings.ps1')`" -DistroName Debian"
+        }
+
+        It 'passes -Live to the Claude settings sync only when -ClaudeSettingsSyncLive is given' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -ClaudeSettingsSyncLive -Confirm:$false
+
+            $syncAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-claude-settings\.ps1' }
+            $syncAction.Argument | Should -Match ' -Live$'
+        }
+
+        It 'registers the Claude settings sync as S4U, every 15 minutes, catching up a missed run once, on battery, one instance at a time' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Settings Sync' -and
+                $Trigger.IsOnce -eq $true -and $Trigger.Repetition.Interval -eq 'PT15M' -and
+                $Principal.LogonType -eq 'S4U' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME" -and
+                $Settings.DisallowStartIfOnBatteries -eq $false -and $Settings.StopIfGoingOnBatteries -eq $false -and
+                $Settings.StartWhenAvailable -eq $true -and $Settings.WakeToRun -eq $false -and
+                $Settings.ExecutionTimeLimit.TotalMinutes -eq 5 -and $Settings.MultipleInstances -eq 'IgnoreNew'
+            }
+        }
+
+        It 'honors -ClaudeSettingsSyncTaskName and -ClaudeSettingsSyncIntervalMinutes' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -ClaudeSettingsSyncIntervalMinutes 30 -ClaudeSettingsSyncTaskName 'Custom Settings Sync'
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Settings Sync' -and $Trigger.Repetition.Interval -eq 'PT30M'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Settings Sync'
+            }
+        }
+
+        It 'registers nothing for the Claude settings sync under -WhatIf' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WhatIf | Out-Null
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Settings Sync'
+            }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Settings Sync'
+            }
+        }
+
         It 'registers the Codex Cloud sync task with only midnight and noon triggers and no catch-up setting' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
@@ -469,7 +527,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 10 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 11 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -538,7 +596,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Session Miner' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 10 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 11 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -1075,6 +1133,30 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the Claude settings sync task already exists' {
+
+        BeforeEach {
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'Claude Settings Sync') {
+                    return [pscustomobject]@{ TaskName = 'Claude Settings Sync' }
+                }
+                return $null
+            }
+        }
+
+        It 'updates it in place, so re-running with -ClaudeSettingsSyncLive switches it from dry run to live' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -ClaudeSettingsSyncLive -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Settings Sync' -and $Action.Argument -match ' -Live$' -and $Principal.LogonType -eq 'S4U'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'Claude Settings Sync'
+            }
+        }
+    }
+
     Context 'when the Codex remote control launcher task already exists' {
 
         BeforeEach {
@@ -1568,12 +1650,12 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all eleven script actions among thirteen registered task actions' {
-        $script:actionCount | Should -Be 13
-        $script:actionScripts.Count | Should -Be 11
+    It 'covers all twelve script actions among fourteen registered task actions' {
+        $script:actionCount | Should -Be 14
+        $script:actionScripts.Count | Should -Be 12
         @($script:actionScripts | Sort-Object) | Should -Be @(
             'ensure-claude-session.ps1', 'ensure-docker-wsl-integration.ps1', 'log-wsl-memory.ps1', 'publish-task-health.sh', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
-            'sync-ccstatusline-config.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
+            'sync-ccstatusline-config.ps1', 'sync-claude-settings.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }
 
@@ -1611,6 +1693,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         @{ Entry = 'ensure-docker-wsl-integration.ps1'; Work = 'Invoke-DockerWslIntegrationWatchdog' },
         @{ Entry = 'log-wsl-memory.ps1'; Work = 'Write-WslMemorySample' },
         @{ Entry = 'sync-ccstatusline-config.ps1'; Work = 'Update-CcstatuslineConfig' },
+        @{ Entry = 'sync-claude-settings.ps1'; Work = 'Invoke-ClaudeSettingsSync' },
         @{ Entry = 'sync-codex-cloud-environments.ps1'; Work = 'Invoke-CodexCloudEnvironmentSync' },
         @{ Entry = 'wsl-restic-backup.ps1'; Work = 'Invoke-WslResticBackup' }
     ) {
