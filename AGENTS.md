@@ -129,7 +129,7 @@ one-way robocopy into the OneDrive-synced backup dir. `Invoke-WslBackup`
 
 ### `wsl --export` stops the running distro
 
-Verified 2026-09-25 on BOXY (WSL 2.7.14): a throwaway distro's shell was
+Verified 2026-09-25 on the durable workstation (WSL 2.7.14): a throwaway distro's shell was
 watching `dmesg -w` when a backup export ran against it, and the export
 killed it exactly as `wsl --shutdown` would. The production journal shows the
 same thing on every real backup, right after the export starts:
