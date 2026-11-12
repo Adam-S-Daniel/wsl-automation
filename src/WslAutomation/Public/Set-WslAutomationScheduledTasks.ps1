@@ -53,6 +53,11 @@ function Set-WslAutomationScheduledTasks {
         interactive 'wsl --export' backup to the background restic one in place. Re-running
         this function is idempotent for all fourteen tasks.
 
+        The two Codex tasks (the Codex remote control launcher and the Codex Cloud environment
+        sync) are disabled by default: they are registered or updated like the rest and then
+        disabled, and the keeper is told not to start the Codex launcher
+        (-NoCodexRemoteControl). Pass -EnableCodexTasks to turn them on.
+
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
         deferred (a recent wake, or WSL in active use) - or one simply missed because the machine
@@ -166,6 +171,14 @@ function Set-WslAutomationScheduledTasks {
         Name of the scheduled task that reconciles Codex Cloud environments. Defaults to
         'Codex Cloud Environment Sync'.
 
+    .PARAMETER EnableCodexTasks
+        Enables the two Codex tasks (the Codex remote control launcher and the Codex Cloud
+        environment sync). Off by default: both are still registered or updated, but then
+        disabled, and the keeper task is given -NoCodexRemoteControl so it does not try to start
+        the disabled launcher every interval. With this switch both tasks are explicitly enabled
+        (so it turns an already-disabled task back on) and the keeper runs without
+        -NoCodexRemoteControl. Re-running without it disables them again.
+
     .PARAMETER UsageCensusTaskName
         Name of the scheduled task that publishes the daily usage census from WSL. Defaults to
         'Usage Census Publish'.
@@ -258,7 +271,8 @@ function Set-WslAutomationScheduledTasks {
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
         Registers (or updates) all fourteen scheduled tasks using default names, backup time, and
-        keeper/ccstatusline/memory log intervals, the twice-daily Codex Cloud environment sync, and the
+        keeper/ccstatusline/memory log intervals, the twice-daily Codex Cloud environment sync (left
+        disabled, as is the Codex launcher, without -EnableCodexTasks), and the
         daily usage census publish, the daily session miner, the weekly memory curation, the every-minute waiting feed publish, the daily task health
         publish, and the Docker WSL integration watchdog.
 
@@ -317,6 +331,8 @@ function Set-WslAutomationScheduledTasks {
         [switch]$ClaudeSettingsSyncLive,
 
         [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
+
+        [switch]$EnableCodexTasks,
 
         [string]$UsageCensusTaskName = 'Usage Census Publish',
 
@@ -454,7 +470,10 @@ function Set-WslAutomationScheduledTasks {
     # the desktop: session 0 has no interactive desktop to draw one on. It therefore does not (and
     # cannot) open the terminal itself; when a session needs starting it triggers the interactive
     # launcher task below.
-    $keeperArguments = "-NoProfile -File `"$keeperScriptPath`" -DistroName $DistroName"
+    # Without -EnableCodexTasks the Codex launcher is disabled below, so the keeper is told not to
+    # try to start it (every interval) with -NoCodexRemoteControl.
+    $keeperCodexArgument = if ($EnableCodexTasks) { '' } else { ' -NoCodexRemoteControl' }
+    $keeperArguments = "-NoProfile -File `"$keeperScriptPath`" -DistroName $DistroName$keeperCodexArgument"
     $keeperAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $keeperArguments
 
     # A Store-packaged pwsh (per-user WindowsApps alias or version-pinned WindowsApps package
@@ -887,6 +906,17 @@ function Set-WslAutomationScheduledTasks {
         }
     }
 
+    # --- Codex tasks: disabled unless -EnableCodexTasks ----------------------
+    # Both are registered or updated above exactly as always, so they exist and their definitions
+    # stay current, and only then switched. Enabling is explicit too, so passing -EnableCodexTasks
+    # turns an already-disabled task back on. Re-running without the switch leaves them disabled.
+    $codexTaskVerb = if ($EnableCodexTasks) { 'Enable' } else { 'Disable' }
+    foreach ($codexTaskName in @($CodexLauncherTaskName, $CodexCloudEnvironmentSyncTaskName)) {
+        if ($PSCmdlet.ShouldProcess($codexTaskName, "$codexTaskVerb scheduled task")) {
+            Set-WslScheduledTaskEnabled -TaskName $codexTaskName -Enabled ([bool]$EnableCodexTasks)
+        }
+    }
+
     # --- Archive legacy scripts this module supersedes ----------------------
     $archiveTimestamp = Get-Date -Format 'yyyyMMdd'
 
@@ -976,12 +1006,13 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Backup task '$BackupTaskName' (background/S4U, live restic backup): $backupArguments (daily at $BackupTime, retrying every $BackupRetryIntervalMinutes min for up to 1 day; allowed on battery)" -InformationAction Continue
     Write-Information -MessageData "Keeper task '$KeeperTaskName' (background/S4U): $keeperArguments (repeats every $KeeperIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
-    Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
+    $codexTaskState = if ($EnableCodexTasks) { 'enabled' } else { 'disabled; pass -EnableCodexTasks to enable' }
+    Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand, $codexTaskState): $WtPath $codexLauncherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Memory log task '$MemoryLogTaskName' (background/S4U): $memoryLogArguments (repeats every $MemoryLogIntervalMinutes min, indefinitely)" -InformationAction Continue
     $claudeSettingsSyncMode = if ($ClaudeSettingsSyncLive) { 'live' } else { 'dry run' }
     Write-Information -MessageData "Claude settings sync task '$ClaudeSettingsSyncTaskName' (background/S4U, $claudeSettingsSyncMode): $claudeSettingsSyncArguments (repeats every $ClaudeSettingsSyncIntervalMinutes min, indefinitely)" -InformationAction Continue
-    Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
+    Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U, $codexTaskState): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue
     Write-Information -MessageData "Session miner task '$SessionMinerTaskName' (background/S4U): $WslExePath $sessionMinerArguments (daily at $SessionMinerTime)" -InformationAction Continue
     Write-Information -MessageData "Memory curation task '$MemoryCurationTaskName' (background/S4U): $WslExePath $memoryCurationArguments (weekly on Monday at $MemoryCurationTime)" -InformationAction Continue
