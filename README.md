@@ -283,7 +283,7 @@ its placeholder values with yours.
 
 | Key | Task that uses it |
 | --- | --- |
-| `SKILLS_EVALS_URL` | Usage census and Session miner (the skills-evals repository to clone) |
+| `SKILLS_EVALS_URL` | Usage census and Session miner (the skills-evals repository to clone; the census also dispatches its `explorer-data.yml`) |
 | `AGENT_GUIDANCE_URL` | Memory curation (the `_agent-guidance` repository to clone) |
 | `WAITING_FEED_URL` | Waiting feed (the feed repository it pushes to) |
 | `TASK_HEALTH_URL` | Task health publish (the repository it pushes to) |
@@ -783,6 +783,20 @@ up the new PATH.
   because the local checkout may be on any feature branch. See
   [CENSUS.md](https://github.com/Adam-S-Daniel/skills-evals/blob/main/evals/usage/CENSUS.md)
   for what the census records.
+- After a run that pushed a changed census (the publisher's summary says
+  `; published;`), it runs
+  `gh workflow run explorer-data.yml` inside the clone it just made (so `gh`
+  resolves the repository from the clone's origin; the workflow runs only on the
+  default branch), so the
+  [Evals Explorer data](https://github.com/Adam-S-Daniel/skills-evals/blob/main/.github/workflows/explorer-data.yml)
+  rebuilds the same day instead of at its 09:41 UTC cron. Unchanged and
+  `--dry-run` runs dispatch nothing. A failed or timed-out dispatch keeps the push, appends
+  `explorer dispatch: failed (...)` to the log line and exits `5` (a publisher
+  failure keeps its own code), so Task Health shows it. Needs `gh` logged in with a token that can
+  dispatch workflows on that repository (classic token or OAuth login: `repo`;
+  fine-grained: Actions write). It uses the owner's workstation login, like the
+  census push itself, rather than a GitHub App, because this task already runs
+  as the owner on this machine.
 - The action is `wsl.exe` directly, with no pwsh in between:
 
   ```

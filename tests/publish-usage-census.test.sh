@@ -189,4 +189,71 @@ out=$(env -u SKILLS_EVALS_URL WSL_AUTOMATION_SETTINGS="$test_root/settings.env" 
 assert_eq "$rc" 0 'SKILLS_EVALS_URL from the settings file is used'
 assert_match "$out" 'args:--dry-run' 'the clone from the settings file reaches the publish script'
 
+# --- Explorer dispatch after a real publish -----------------------------------------------
+# A stub gh records its arguments; a git insteadOf rule maps a GitHub-shaped
+# SKILLS_EVALS_URL to the local fixture, so nothing touches the network.
+export GH_CALLS="$test_root/gh-calls"
+cat >"$test_root/bin/gh" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf '%s @ %s\n' "$*" "$(git config --get remote.origin.url)" >>"$GH_CALLS"
+echo 'https://github.com/example-owner/run-url-must-not-be-logged'
+exit "${GH_EXIT:-0}"
+EOF_STUB
+chmod +x "$test_root/bin/gh"
+gh_url='https://github.com/example-owner/example-evals.git'
+gh_calls() {
+    if [[ -f $GH_CALLS ]]; then wc -l <"$GH_CALLS" | tr -d ' '; else echo 0; fi
+}
+published='census: 3 skills; published; private events: 2 new of 5'
+run_mapped() {
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.file://$fixture.insteadOf" GIT_CONFIG_VALUE_0="$gh_url" \
+        SKILLS_EVALS_URL="$gh_url" bash "$script" "$@" 2>&1
+}
+
+# (g) A published census dispatches explorer-data.yml from inside the clone, with no --repo or --ref.
+rc=0
+out=$(STUB_OUTPUT="$published" run_mapped) || rc=$?
+assert_eq "$rc" 0 'a published census with a good dispatch exits 0'
+assert_eq "$(gh_calls)" 1 'a published census dispatches once'
+assert_eq "$(sed -n 1p "$GH_CALLS")" "workflow run explorer-data.yml @ $gh_url" 'dispatch runs in the clone (origin is the GitHub URL) with no --repo or --ref'
+assert_match "$(tail -n 1 "$log_file")" ' exit=0 .*; published; .* \| explorer dispatch: requested$' 'a requested dispatch is logged'
+[[ $(tail -n 1 "$log_file") != *run-url-must-not-be-logged* ]] || fail "gh output must not reach the log"
+[[ $out != *run-url-must-not-be-logged* ]] || fail "gh output must not reach stdout"
+pass
+
+# (h) Unchanged and dry-run notes do not dispatch.
+for note in 'census: 3 skills; unchanged, nothing published; private events: 0 new of 5' \
+    'census: 3 skills; dry run, committed locally and pushed nothing; private events: 0 new of 5, dry run'; do
+    rc=0
+    out=$(STUB_OUTPUT="$note" run_mapped --dry-run) || rc=$?
+    assert_eq "$rc" 0 "no publish exits 0 ($note)"
+    [[ $out != *'explorer dispatch'* ]] || fail "no dispatch status without a publish ($note)"
+    pass
+done
+assert_eq "$(gh_calls)" 1 'unchanged and dry-run runs do not dispatch'
+
+# (i) A failed dispatch keeps the push, logs a non-identifying status and exits 5.
+rc=0
+out=$(GH_EXIT=4 STUB_OUTPUT="$published" run_mapped) || rc=$?
+assert_eq "$rc" 5 'a failed dispatch after a good publish exits 5'
+assert_eq "$(gh_calls)" 2 'the failed dispatch was attempted'
+assert_match "$(tail -n 1 "$log_file")" ' exit=5 .* \| explorer dispatch: failed \(gh exit 4\)$' 'a failed dispatch is logged with the gh exit code only'
+[[ $(tail -n 1 "$log_file") != *example-owner* ]] || fail 'the log line must not name the repository'
+[[ $out != *run-url-must-not-be-logged* ]] || fail 'the gh error body must not reach stdout'
+pass
+
+# (j) A publisher failure keeps its own exit code even when the dispatch also fails
+# (the public census can publish before the private events fail).
+rc=0
+out=$(GH_EXIT=4 STUB_EXIT=1 STUB_OUTPUT="$published" run_mapped) || rc=$?
+assert_eq "$rc" 1 'the publisher exit code wins over a failed dispatch'
+assert_match "$out" 'explorer dispatch: failed \(gh exit 4\)' 'the failed dispatch is still reported'
+
+# (k) A timed-out dispatch (timeout exits 124) logs it and exits 5.
+rc=0
+out=$(GH_EXIT=124 STUB_OUTPUT="$published" run_mapped) || rc=$?
+assert_eq "$rc" 5 'a timed-out dispatch exits 5'
+assert_match "$out" 'explorer dispatch: failed \(gh exit 124\)' 'the timeout is reported with exit 124'
+assert_match "$(tail -n 1 "$log_file")" ' exit=5 .* \| explorer dispatch: failed \(gh exit 124\)$' 'the timeout is logged'
+
 printf 'PASS: %s assertions\n' "$passed"
