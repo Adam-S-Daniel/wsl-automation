@@ -3,9 +3,9 @@
 <#
 .SYNOPSIS
     Wrapper script for Set-WslAutomationScheduledTasks; installs or updates the WSL backup,
-    Claude Code session keeper, ccstatusline config sync, Codex Cloud environment sync, and usage
-    census publish, session miner, memory curation, waiting feed, and task health scheduled tasks,
-    and the Docker Desktop WSL integration watchdog.
+    Claude Code session keeper, ccstatusline config sync, WSL memory log, Codex Cloud environment
+    sync, and usage census publish, session miner, memory curation, waiting feed, and task health
+    scheduled tasks, and the Docker Desktop WSL integration watchdog.
 
 .DESCRIPTION
     Thin wrapper that imports the WslAutomation module and calls
@@ -17,7 +17,7 @@
 .PARAMETER ScriptsDir
     Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
     wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
-    sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, ensure-docker-wsl-integration.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
+    sync-ccstatusline-config.ps1, log-wsl-memory.ps1, sync-codex-cloud-environments.ps1, ensure-docker-wsl-integration.ps1, publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, and publish-task-health.sh.
     Defaults to the directory this script lives in.
 
 .PARAMETER BackupDir
@@ -64,6 +64,17 @@
 
 .PARAMETER CcstatuslineIntervalMinutes
     How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults to 5.
+
+.PARAMETER MemoryLogTaskName
+    Name of the scheduled task that logs WSL and Windows memory statistics. Defaults to
+    'WSL Memory Log'.
+
+.PARAMETER MemoryLogIntervalMinutes
+    How often, in minutes, the memory log task repeats indefinitely. Defaults to 5.
+
+.PARAMETER MemoryLogDir
+    Directory the memory log task writes samples.csv to. Defaults to
+    %LOCALAPPDATA%\WslMemoryLog.
 
 .PARAMETER CodexCloudEnvironmentSyncTaskName
     Name of the scheduled task that reconciles Codex Cloud environments at midnight and noon.
@@ -176,6 +187,12 @@ param(
 
     [int]$CcstatuslineIntervalMinutes = 5,
 
+    [string]$MemoryLogTaskName = 'WSL Memory Log',
+
+    [int]$MemoryLogIntervalMinutes = 5,
+
+    [string]$MemoryLogDir = (Join-Path $env:LOCALAPPDATA 'WslMemoryLog'),
+
     [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
 
     [string]$UsageCensusTaskName = 'Usage Census Publish',
@@ -249,6 +266,8 @@ try {
         -BackupRetryIntervalMinutes $BackupRetryIntervalMinutes `
         -KeeperIntervalMinutes $KeeperIntervalMinutes -CcstatuslineTaskName $CcstatuslineTaskName `
         -CcstatuslineIntervalMinutes $CcstatuslineIntervalMinutes -PwshPath $PwshPath `
+        -MemoryLogTaskName $MemoryLogTaskName -MemoryLogIntervalMinutes $MemoryLogIntervalMinutes `
+        -MemoryLogDir $MemoryLogDir `
         -CodexCloudEnvironmentSyncTaskName $CodexCloudEnvironmentSyncTaskName `
         -UsageCensusTaskName $UsageCensusTaskName -UsageCensusTime $UsageCensusTime `
         -SessionMinerTaskName $SessionMinerTaskName -SessionMinerTime $SessionMinerTime `
