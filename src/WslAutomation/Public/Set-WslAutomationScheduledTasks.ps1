@@ -4,20 +4,22 @@ function Set-WslAutomationScheduledTasks {
     <#
     .SYNOPSIS
         Registers or updates the scheduled tasks that drive WSL backups, the Claude Code
-        session keeper and its two launchers, ccstatusline config sync, Codex Cloud environment
-        sync, the daily usage census publish, the daily session miner, the weekly memory curation,
+        session keeper and its two launchers, ccstatusline config sync, the WSL memory log, Codex
+        Cloud environment sync, the daily usage census publish, the daily session miner, the weekly memory curation,
         the every-minute waiting feed publish, the daily task health publish, and the Docker
         Desktop WSL integration watchdog.
 
     .DESCRIPTION
-        Creates twelve Windows Scheduled Tasks, or updates them in place if they already exist:
+        Creates thirteen Windows Scheduled Tasks, or updates them in place if they already exist:
         a daily backup task that runs scripts/wsl-restic-backup.ps1 (a live restic backup of the
         running distro - see Invoke-WslResticBackup); a session-keeper task that
         runs scripts/ensure-claude-session.ps1 on a short repeating interval; an on-demand
         launcher task the keeper triggers to actually open a Remote Control Claude Code session
         in Windows Terminal; a second on-demand launcher task the keeper triggers to run
         'codex remote-control start'; and a ccstatusline config sync task that runs scripts/sync-ccstatusline-config.ps1
-        on its own short repeating interval; and a Codex Cloud environment sync task that runs
+        on its own short repeating interval; and a WSL memory log task that runs
+        scripts/log-wsl-memory.ps1 on its own short repeating interval, appending one row of
+        Windows and WSL memory statistics to a CSV; and a Codex Cloud environment sync task that runs
         scripts/sync-codex-cloud-environments.ps1 at midnight and noon while the distro is running;
         and a usage census publish task that runs scripts/publish-usage-census.sh inside the
         distro once a day, calling wsl.exe directly so no pwsh is involved; and a session miner
@@ -34,9 +36,9 @@ function Set-WslAutomationScheduledTasks {
         than session 0, and the alert toast needs the user's desktop. conhost.exe --headless runs
         its pwsh without a console window, so the interactive run does not flash one.
 
-        The backup, keeper and ccstatusline tasks run as background S4U tasks (session 0), so
-        they never flash a console window on the desktop; both launchers are interactive (they
-        must show a terminal) and on-demand (no trigger). The three pwsh-based S4U tasks require
+        The backup, keeper, ccstatusline and memory log tasks run as background S4U tasks (session 0),
+        so they never flash a console window on the desktop; both launchers are interactive (they
+        must show a terminal) and on-demand (no trigger). The four pwsh-based S4U tasks require
         an MSI PowerShell 7 and the "Log on as a batch job" right - see -PwshPath and
         scripts/grant-keeper-batch-logon.ps1. The usage census, session miner, memory curation, waiting feed and task health tasks are S4U too, but
         their action is wsl.exe itself, so they need no pwsh at all.
@@ -47,7 +49,7 @@ function Set-WslAutomationScheduledTasks {
         That now includes the backup task, which used to keep an existing task's Settings and
         Principal: re-running this function is what switches an existing backup task from the
         interactive 'wsl --export' backup to the background restic one in place. Re-running
-        this function is idempotent for all twelve tasks.
+        this function is idempotent for all thirteen tasks.
 
         The backup task's trigger fires daily at -BackupTime and then repeats every
         -BackupRetryIntervalMinutes for the following day, so a run Invoke-WslBackup itself
@@ -65,7 +67,7 @@ function Set-WslAutomationScheduledTasks {
     .PARAMETER ScriptsDir
         Directory containing wsl-restic-backup.ps1 (and the wsl-restic-backup.sh and
         wsl-restic-excludes.txt it runs), ensure-claude-session.ps1, and
-        sync-ccstatusline-config.ps1, sync-codex-cloud-environments.ps1, and
+        sync-ccstatusline-config.ps1, log-wsl-memory.ps1, sync-codex-cloud-environments.ps1, and
         publish-usage-census.sh, run-session-miner.sh, run-memory-curation.sh, publish-waiting-feed.sh and publish-task-health.sh.
 
     .PARAMETER BackupDir
@@ -133,6 +135,18 @@ function Set-WslAutomationScheduledTasks {
     .PARAMETER CcstatuslineIntervalMinutes
         How often, in minutes, the ccstatusline config sync task repeats indefinitely. Defaults
         to 5.
+
+    .PARAMETER MemoryLogTaskName
+        Name of the scheduled task that logs WSL and Windows memory statistics. Defaults to
+        'WSL Memory Log'.
+
+    .PARAMETER MemoryLogIntervalMinutes
+        How often, in minutes, the memory log task repeats indefinitely. Defaults to 5.
+
+    .PARAMETER MemoryLogDir
+        Directory the memory log task writes samples.csv to. Defaults to
+        %LOCALAPPDATA%\WslMemoryLog, resolved when the task is registered and passed to the task
+        explicitly so it does not depend on the task's own environment.
 
     .PARAMETER CodexCloudEnvironmentSyncTaskName
         Name of the scheduled task that reconciles Codex Cloud environments. Defaults to
@@ -229,8 +243,8 @@ function Set-WslAutomationScheduledTasks {
     .EXAMPLE
         Set-WslAutomationScheduledTasks -ScriptsDir 'C:\Users\<you>\repos\wsl-automation\scripts' -BackupDir 'C:\Users\<you>\OneDrive\Backups\WSL' -ResticRepoDir 'D:\Backups\wsl-restic'
 
-        Registers (or updates) all twelve scheduled tasks using default names, backup time, and
-        keeper/ccstatusline intervals, the twice-daily Codex Cloud environment sync, and the
+        Registers (or updates) all thirteen scheduled tasks using default names, backup time, and
+        keeper/ccstatusline/memory log intervals, the twice-daily Codex Cloud environment sync, and the
         daily usage census publish, the daily session miner, the weekly memory curation, the every-minute waiting feed publish, the daily task health
         publish, and the Docker WSL integration watchdog.
 
@@ -275,6 +289,12 @@ function Set-WslAutomationScheduledTasks {
         [string]$CcstatuslineTaskName = 'ccstatusline Config Sync',
 
         [int]$CcstatuslineIntervalMinutes = 5,
+
+        [string]$MemoryLogTaskName = 'WSL Memory Log',
+
+        [int]$MemoryLogIntervalMinutes = 5,
+
+        [string]$MemoryLogDir = (Join-Path $env:LOCALAPPDATA 'WslMemoryLog'),
 
         [string]$CodexCloudEnvironmentSyncTaskName = 'Codex Cloud Environment Sync',
 
@@ -328,6 +348,7 @@ function Set-WslAutomationScheduledTasks {
     $BackupDir = $BackupDir.TrimEnd('\')
     $ResticRepoDir = $ResticRepoDir.TrimEnd('\')
     $ScriptsDir = $ScriptsDir.TrimEnd('\')
+    $MemoryLogDir = $MemoryLogDir.TrimEnd('\')
     $PwshPath = $PwshPath.TrimEnd('\')
 
     # --- Backup task: action + daily trigger repeating over the following day ---------------
@@ -554,6 +575,38 @@ function Set-WslAutomationScheduledTasks {
         if ($PSCmdlet.ShouldProcess($CcstatuslineTaskName, 'Register scheduled task')) {
             Register-WslScheduledTask -TaskName $CcstatuslineTaskName -Action $ccstatuslineAction -Trigger $ccstatuslineTrigger `
                 -Settings $ccstatuslineSettings -Principal $ccstatuslinePrincipal
+        }
+    }
+
+    # --- WSL memory log task: periodic CSV sample ----------------------------
+    # Background-only like the ccstatusline sync, so it is S4U/session 0 as well (no console
+    # flash every interval) with the same MSI pwsh and batch-logon requirements. It reads WSL's
+    # memory the way the ccstatusline sync reads its config, but only while the VM is already
+    # running, so it never boots it. The log directory is resolved here, at install time, and
+    # passed explicitly: an S4U task should not rely on the environment it runs in.
+    $memoryLogScriptPath = Join-Path $ScriptsDir 'log-wsl-memory.ps1'
+    $memoryLogArguments = "-NoProfile -File `"$memoryLogScriptPath`" -LogDir `"$MemoryLogDir`" -DistroName $DistroName"
+    $memoryLogAction = New-ScheduledTaskAction -Execute $PwshPath -Argument $memoryLogArguments
+
+    # Same indefinite-repetition construction as the keeper and ccstatusline triggers above.
+    $memoryLogTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes $MemoryLogIntervalMinutes) | ConvertTo-WslLocalTimeTrigger
+
+    $memoryLogSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+    $memoryLogPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
+
+    $existingMemoryLogTask = Get-ScheduledTask -TaskName $MemoryLogTaskName -ErrorAction SilentlyContinue
+    if ($existingMemoryLogTask) {
+        if ($PSCmdlet.ShouldProcess($MemoryLogTaskName, 'Update scheduled task')) {
+            Set-WslScheduledTask -TaskName $MemoryLogTaskName -Action $memoryLogAction -Trigger $memoryLogTrigger `
+                -Settings $memoryLogSettings -Principal $memoryLogPrincipal
+        }
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($MemoryLogTaskName, 'Register scheduled task')) {
+            Register-WslScheduledTask -TaskName $MemoryLogTaskName -Action $memoryLogAction -Trigger $memoryLogTrigger `
+                -Settings $memoryLogSettings -Principal $memoryLogPrincipal
         }
     }
 
@@ -872,6 +925,7 @@ function Set-WslAutomationScheduledTasks {
     Write-Information -MessageData "Launcher task '$LauncherTaskName' (interactive, on-demand): $WtPath $launcherArguments" -InformationAction Continue
     Write-Information -MessageData "Codex remote control launcher task '$CodexLauncherTaskName' (interactive, on-demand): $WtPath $codexLauncherArguments" -InformationAction Continue
     Write-Information -MessageData "ccstatusline task '$CcstatuslineTaskName' (background/S4U): $ccstatuslineArguments (repeats every $CcstatuslineIntervalMinutes min, indefinitely)" -InformationAction Continue
+    Write-Information -MessageData "Memory log task '$MemoryLogTaskName' (background/S4U): $memoryLogArguments (repeats every $MemoryLogIntervalMinutes min, indefinitely)" -InformationAction Continue
     Write-Information -MessageData "Codex Cloud task '$CodexCloudEnvironmentSyncTaskName' (background/S4U): $codexCloudSyncArguments (daily at 00:00 and 12:00)" -InformationAction Continue
     Write-Information -MessageData "Usage census task '$UsageCensusTaskName' (background/S4U): $WslExePath $usageCensusArguments (daily at $UsageCensusTime)" -InformationAction Continue
     Write-Information -MessageData "Session miner task '$SessionMinerTaskName' (background/S4U): $WslExePath $sessionMinerArguments (daily at $SessionMinerTime)" -InformationAction Continue

@@ -217,13 +217,13 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
-        It 'runs all nine background tasks as S4U in session 0, where no desktop window can flash' {
+        It 'runs all ten background tasks as S4U in session 0, where no desktop window can flash' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
-            # The backup, keeper, ccstatusline sync, Codex Cloud sync, usage census, session miner, memory curation,
-            # waiting feed publish, and task health publish are windowless background tasks.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 9 -Exactly -ParameterFilter {
+            # The backup, keeper, ccstatusline sync, memory log, Codex Cloud sync, usage census, session miner,
+            # memory curation, waiting feed publish, and task health publish are windowless background tasks.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 10 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U'
             }
         }
@@ -236,6 +236,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $keeperAction.Argument | Should -Not -Match 'WindowStyle'
             $ccstatuslineAction = $script:capturedActions | Where-Object { $_.Argument -match 'sync-ccstatusline-config\.ps1' }
             $ccstatuslineAction.Argument | Should -Not -Match 'WindowStyle'
+            $memoryLogAction = $script:capturedActions | Where-Object { $_.Argument -match 'log-wsl-memory\.ps1' }
+            $memoryLogAction.Argument | Should -Not -Match 'WindowStyle'
         }
 
         It 'registers the interactive launcher task with a wt.exe action that opens the distro profile running a Remote Control session, and no trigger of its own' {
@@ -330,6 +332,82 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             }
         }
 
+        It 'creates the memory log task with an action that runs log-wsl-memory.ps1 with a quoted -LogDir and DistroName' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -MemoryLogDir 'C:\Logs\Mem Log' -Confirm:$false
+
+            $memoryLogAction = $script:capturedActions | Where-Object { $_.Argument -match 'log-wsl-memory\.ps1' }
+
+            $memoryLogAction | Should -Not -BeNullOrEmpty
+            $memoryLogAction.Execute | Should -Be 'C:\fake\pwsh.exe'
+            $memoryLogAction.Argument | Should -Be "-NoProfile -File `"$(Join-Path $script:scriptsDir 'log-wsl-memory.ps1')`" -LogDir `"C:\Logs\Mem Log`" -DistroName Debian"
+        }
+
+        It 'passes -LogDir resolved from LOCALAPPDATA at install time by default' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            $memoryLogAction = $script:capturedActions | Where-Object { $_.Argument -match 'log-wsl-memory\.ps1' }
+            $memoryLogAction.Argument | Should -Match ([regex]::Escape("-LogDir `"$(Join-Path $env:LOCALAPPDATA 'WslMemoryLog')`" "))
+        }
+
+        It 'trims a trailing separator from -MemoryLogDir so it cannot escape the closing quote' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -MemoryLogDir 'C:\Logs\Mem\' -Confirm:$false
+
+            $memoryLogAction = $script:capturedActions | Where-Object { $_.Argument -match 'log-wsl-memory\.ps1' }
+            $memoryLogAction.Argument | Should -Match ([regex]::Escape('-LogDir "C:\Logs\Mem" '))
+        }
+
+        It 'registers the memory log task as S4U with a once/repeating trigger at the configured interval' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log' -and
+                $Action.Argument -match 'log-wsl-memory\.ps1' -and
+                $Trigger.IsOnce -eq $true -and
+                $Trigger.Repetition.Interval -eq 'PT5M' -and
+                $Principal.LogonType -eq 'S4U' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
+            }
+        }
+
+        It 'honors -MemoryLogTaskName and -MemoryLogIntervalMinutes' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false -MemoryLogIntervalMinutes 10 -MemoryLogTaskName 'Custom Memory Log'
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'Custom Memory Log' -and $Trigger.Repetition.Interval -eq 'PT10M'
+            }
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log'
+            }
+        }
+
+        It 'gives the memory log task the on-battery, 5 minute limit, one-instance settings' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log' -and
+                $Settings.DisallowStartIfOnBatteries -eq $false -and $Settings.StopIfGoingOnBatteries -eq $false -and
+                $Settings.ExecutionTimeLimit.TotalMinutes -eq 5 -and $Settings.MultipleInstances -eq 'IgnoreNew' -and
+                $Settings.StartWhenAvailable -eq $false -and $Settings.WakeToRun -eq $false
+            }
+        }
+
+        It 'registers nothing for the memory log task under -WhatIf' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -WhatIf | Out-Null
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log'
+            }
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log'
+            }
+        }
+
         It 'registers the Codex Cloud sync task with only midnight and noon triggers and no catch-up setting' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -DistroName 'Debian' -Confirm:$false
@@ -391,7 +469,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Usage Census Publish' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 9 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 10 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -460,7 +538,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
                 $TaskName -eq 'Session Miner' -and $Principal.UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 9 -Exactly -ParameterFilter {
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskPrincipal -Times 10 -Exactly -ParameterFilter {
                 $LogonType -eq 'S4U' -and $UserId -eq "$env:USERDOMAIN\$env:USERNAME"
             }
         }
@@ -958,6 +1036,45 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
         }
     }
 
+    Context 'when the memory log task already exists' {
+
+        BeforeEach {
+            $script:existingMemoryLogTask = [pscustomobject]@{
+                TaskName  = 'WSL Memory Log'
+                Settings  = [pscustomobject]@{ ExistingSettings = $true }
+                Principal = [pscustomobject]@{ ExistingPrincipal = $true }
+            }
+
+            Mock -ModuleName WslAutomation Get-ScheduledTask {
+                if ($TaskName -eq 'WSL Memory Log') {
+                    return $script:existingMemoryLogTask
+                }
+                return $null
+            }
+        }
+
+        It 'updates it in place with a rebuilt action, trigger, settings and principal' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Set-WslScheduledTask -Times 1 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log' -and
+                $Action.Argument -match 'log-wsl-memory\.ps1' -and
+                $Trigger.Repetition.Interval -eq 'PT5M' -and
+                $Settings.FakeSettings -and $Principal.FakePrincipal -and $Principal.LogonType -eq 'S4U'
+            }
+        }
+
+        It 'does not create a second memory log task via Register-WslScheduledTask' {
+            Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
+                -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
+
+            Should -Invoke -ModuleName WslAutomation Register-WslScheduledTask -Times 0 -Exactly -ParameterFilter {
+                $TaskName -eq 'WSL Memory Log'
+            }
+        }
+    }
+
     Context 'when the Codex remote control launcher task already exists' {
 
         BeforeEach {
@@ -1451,11 +1568,11 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
         $script:actionCount = $actions.Count
     }
 
-    It 'covers all ten script actions among twelve registered task actions' {
-        $script:actionCount | Should -Be 12
-        $script:actionScripts.Count | Should -Be 10
+    It 'covers all eleven script actions among thirteen registered task actions' {
+        $script:actionCount | Should -Be 13
+        $script:actionScripts.Count | Should -Be 11
         @($script:actionScripts | Sort-Object) | Should -Be @(
-            'ensure-claude-session.ps1', 'ensure-docker-wsl-integration.ps1', 'publish-task-health.sh', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
+            'ensure-claude-session.ps1', 'ensure-docker-wsl-integration.ps1', 'log-wsl-memory.ps1', 'publish-task-health.sh', 'publish-usage-census.sh', 'publish-waiting-feed.sh', 'run-memory-curation.sh', 'run-session-miner.sh',
             'sync-ccstatusline-config.ps1', 'sync-codex-cloud-environments.ps1', 'wsl-restic-backup.ps1'
         )
     }
@@ -1492,6 +1609,7 @@ Describe 'Scheduled task checkout bootstrap coverage (PowerShell AST)' {
     It 'bootstraps <Entry> before importing and invoking task code' -ForEach @(
         @{ Entry = 'ensure-claude-session.ps1'; Work = 'Invoke-ClaudeSessionKeeper' },
         @{ Entry = 'ensure-docker-wsl-integration.ps1'; Work = 'Invoke-DockerWslIntegrationWatchdog' },
+        @{ Entry = 'log-wsl-memory.ps1'; Work = 'Write-WslMemorySample' },
         @{ Entry = 'sync-ccstatusline-config.ps1'; Work = 'Update-CcstatuslineConfig' },
         @{ Entry = 'sync-codex-cloud-environments.ps1'; Work = 'Invoke-CodexCloudEnvironmentSync' },
         @{ Entry = 'wsl-restic-backup.ps1'; Work = 'Invoke-WslResticBackup' }
