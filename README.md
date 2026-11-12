@@ -23,6 +23,9 @@ PowerShell automation for a WSL2 Ubuntu distro on Windows:
   "Waiting feed task" below).
 - A daily publish of this machine's task health, counts and timestamps only,
   for the cloud fleet-health audit (see "Task health publish task" below).
+- A memory log: every 5 minutes, one CSV row of Windows and WSL memory
+  statistics, to show whether `.wslconfig`'s `memory=` limit is right (see
+  "WSL memory log task" below).
 - A watchdog that repairs Docker Desktop's WSL integration when it breaks after a
   reboot, and alerts you when it cannot (see "Docker WSL integration watchdog
   task" below).
@@ -192,7 +195,7 @@ there is nothing for the keeper to wait out.
 ### Checkout update before every scripted task
 
 Every task action that runs a repo script (backup, keeper, ccstatusline sync,
-Codex Cloud sync, usage census, session miner, memory curation, waiting feed, task health, and the Docker watchdog) first updates that same
+memory log, Codex Cloud sync, usage census, session miner, memory curation, waiting feed, task health, and the Docker watchdog) first updates that same
 checkout through one updater, `Update-WslAutomationRepo`, before it loads any
 task code. The two on-demand launcher actions invoke their CLIs directly and have
 no repo script to update. All six run from the one Windows checkout; the Bash
@@ -205,7 +208,7 @@ updater:
 
 | Entry | Bootstrap | Tries | Bounded by |
 | --- | --- | --- | --- |
-| PowerShell (backup, keeper, ccstatusline, Codex Cloud, Docker watchdog) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
+| PowerShell (backup, keeper, ccstatusline, memory log, Codex Cloud, Docker watchdog) | `scripts/update-task-checkout.ps1` (`Initialize-WslAutomationTask`) | every run | 30 s per Git call |
 | Bash in WSL: usage census (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: session miner (daily) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
 | Bash in WSL: memory curation (weekly) | `scripts/update-task-checkout.sh` | every run | 300 s overall |
@@ -632,6 +635,37 @@ ccstatusline versions, backs up `settings.json` before editing it, and refuses
 to replace a different existing `statusLine` unless you pass `-Force`. Restart
 Windows Terminal (and any Windows Claude Code sessions) afterwards so they pick
 up the new PATH.
+
+### WSL memory log task (default name: `WSL Memory Log`)
+
+- Runs `scripts\log-wsl-memory.ps1` (`Write-WslMemorySample`) every 5 minutes
+  (`-MemoryLogIntervalMinutes`) as a background S4U task for the current
+  Windows user (same MSI PowerShell and batch-logon prerequisites as the
+  keeper). It exists to show over time whether `.wslconfig`'s `memory=` limit is
+  right: how much of the machine the WSL VM really uses, and how hard it is
+  pressed.
+- Appends one row to `%LOCALAPPDATA%\WslMemoryLog\samples.csv` (`-MemoryLogDir`;
+  the path is resolved when you register the task and passed to it
+  explicitly). The file is created with a header on the first run and only
+  ever grows, by about 300 rows a day, so trim it or delete it when you have
+  your answer.
+- Columns, in this order, all sizes in GB to two decimals: `Time` (local),
+  `Win_TotalGB`, `Win_AvailGB`, `Win_StandbyGB`, `Win_ModifiedGB`,
+  `Win_CommitGB`, `Win_CommitLimitGB`, `Win_PagefilePct` (one decimal),
+  `Win_CompressionGB`, `Chrome_PrivateGB`, `VmmemWSL_WSGB`, `VmmemWSL_PrivGB`,
+  `OtherVmmem_WSGB`, `OtherVmmem_PrivGB`, `WSL_Running` (1 or 0), then from
+  inside the distro `WSL_TotalGB`, `WSL_UsedGB` (total minus available),
+  `WSL_AvailGB`, `WSL_CacheGB` (cached plus buffers), `WSL_AnonGB`,
+  `WSL_SwapUsedGB`, `WSL_CommittedGB`, and `WSL_PSISome300` /
+  `WSL_PSIFull300` (the 5-minute memory pressure averages).
+- It never starts WSL. The distro is read only while the `vmmemWSL` process
+  exists; otherwise `WSL_Running` is `0` and the `WSL_*` columns are empty. A
+  failed read of the distro leaves them empty too, and the row is still
+  written. The Windows counter names are English, so it needs an English
+  Windows.
+- To stop it, run `Disable-ScheduledTask -TaskName 'WSL Memory Log'` (or
+  `Unregister-ScheduledTask` to remove it). Re-running `register-tasks.ps1`
+  puts it back.
 
 ### Codex Cloud environment sync task (default name: `Codex Cloud Environment Sync`)
 

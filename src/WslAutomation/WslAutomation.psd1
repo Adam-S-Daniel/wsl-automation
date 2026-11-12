@@ -22,6 +22,7 @@
         'Invoke-ClaudeSessionKeeper',
         'Set-WslAutomationScheduledTasks',
         'Update-CcstatuslineConfig',
+        'Write-WslMemorySample',
         'Set-CcstatuslineStatusLine',
         'Invoke-CodexCloudEnvironmentSync',
         'Invoke-DockerWslIntegrationWatchdog',
