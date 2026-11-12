@@ -81,7 +81,7 @@ Describe 'Update-CcstatuslineConfig' -Skip:(-not $IsWindows) {
 
     It 'derives the WSL user via whoami when -SourcePath and -WslUser are not given' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 0; Output = @('passp') }
+            [pscustomobject]@{ ExitCode = 0; Output = @('fictional-dev') }
         }
 
         Update-CcstatuslineConfig -DistroName 'Ubuntu' -DestinationPath $script:dst `
@@ -99,7 +99,7 @@ Describe 'Update-CcstatuslineConfig' -Skip:(-not $IsWindows) {
     It 'invokes whoami with --exec, never --' {
         # Regression: wsl.exe -- <cmd> hands the command line to the distro's default shell.
         Mock -ModuleName WslAutomation Invoke-WslExe {
-            [pscustomobject]@{ ExitCode = 0; Output = @('passp') }
+            [pscustomobject]@{ ExitCode = 0; Output = @('fictional-dev') }
         }
 
         Update-CcstatuslineConfig -DistroName 'Ubuntu' -DestinationPath $script:dst `
@@ -121,8 +121,8 @@ Describe 'Update-CcstatuslineConfig' -Skip:(-not $IsWindows) {
             [pscustomobject]@{
                 ExitCode = 0
                 Output   = @(
-                    "wsl: Failed to start the systemd user session for 'passp'. See journalctl for more details.",
-                    'passp'
+                    "wsl: Failed to start the systemd user session for 'fictional-dev'. See journalctl for more details.",
+                    'fictional-dev'
                 )
             }
         }
@@ -136,7 +136,7 @@ Describe 'Update-CcstatuslineConfig' -Skip:(-not $IsWindows) {
 
         $result.Status | Should -Be 'SourceUnavailable'
         $logContent = Get-Content -LiteralPath (Join-Path $TestDrive 'sync.log') -Raw
-        $logContent | Should -Match ([regex]::Escape('\\wsl.localhost\Ubuntu\home\passp\.config\ccstatusline\settings.json'))
+        $logContent | Should -Match ([regex]::Escape('\\wsl.localhost\Ubuntu\home\fictional-dev\.config\ccstatusline\settings.json'))
         $logContent | Should -Not -Match 'Failed to start'
     }
 
@@ -144,7 +144,7 @@ Describe 'Update-CcstatuslineConfig' -Skip:(-not $IsWindows) {
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{
                 ExitCode = 0
-                Output   = @("wsl: Failed to start the systemd user session for 'passp'. See journalctl for more details.")
+                Output   = @("wsl: Failed to start the systemd user session for 'fictional-dev'. See journalctl for more details.")
             }
         }
 

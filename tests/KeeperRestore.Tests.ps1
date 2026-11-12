@@ -703,9 +703,9 @@ Describe 'Get-ClaudeAgentSessions' {
             [pscustomobject]@{
                 ExitCode = 0
                 Output   = @(
-                    ('[{"pid":1411684,"id":"c2165965","cwd":"/home/passp/repos","kind":"background","startedAt":1790962276692,' +
+                    ('[{"pid":1411684,"id":"c2165965","cwd":"/home/fictional-dev/repos","kind":"background","startedAt":1790962276692,' +
                         '"sessionId":"c2165965-516f-5d82-ad4d-afa62ee6a8ed","name":"a title","status":"idle","state":"blocked"},' +
-                        '{"pid":2,"id":"d1","cwd":"/home/passp","kind":"interactive","sessionId":"d1d1d1d1-0000-4000-8000-000000000000"}]')
+                        '{"pid":2,"id":"d1","cwd":"/home/fictional-dev","kind":"interactive","sessionId":"d1d1d1d1-0000-4000-8000-000000000000"}]')
                 )
             }
         }
@@ -714,7 +714,7 @@ Describe 'Get-ClaudeAgentSessions' {
 
         @($sessions).Count | Should -Be 2
         $sessions[0].SessionId | Should -Be 'c2165965-516f-5d82-ad4d-afa62ee6a8ed'
-        $sessions[0].Cwd | Should -Be '/home/passp/repos'
+        $sessions[0].Cwd | Should -Be '/home/fictional-dev/repos'
         $sessions[0].Kind | Should -Be 'background'
         $sessions[1].Kind | Should -Be 'interactive'
         # Only these four fields are carried; the session's name/title never is.
