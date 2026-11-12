@@ -8,6 +8,7 @@ workflows:
     '.github/workflows/ci.yml':
         - 'actions/checkout@v6.0.3'
         - 'adam-s-daniel/verify-actions-lock@v1.1.0'
+    '.github/workflows/dependabot-auto-merge.yml': []
     '.github/workflows/scheduled-run-health.yml': []
 dependencies:
     'actions/checkout@v6.0.3':
