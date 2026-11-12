@@ -75,6 +75,8 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 ExecutionTimeLimit         = $ExecutionTimeLimit
                 MultipleInstances          = $MultipleInstances
                 WakeToRun                  = [bool]$WakeToRun
+                RestartCount               = $RestartCount
+                RestartInterval            = $RestartInterval
             }
         }
 
@@ -475,14 +477,20 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Trigger.Count -eq 2 -and $Trigger[0].IsDaily -and $Trigger[0].At -eq '00:00' -and
                 $Trigger[1].IsDaily -and $Trigger[1].At -eq '12:00'
             }
-            # The Codex Cloud sync, usage census, session miner, and task health tasks share these settings.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 4 -Exactly -ParameterFilter {
+            # The Codex Cloud sync alone uses these settings (no catch-up).
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
             }
+            # Usage census, session miner and task health share the catch-up settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
+                $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $StartWhenAvailable -and
+                $RestartCount -eq 3 -and $RestartInterval.TotalMinutes -eq 10
+            }
         }
 
-        It 'registers the usage census task as a direct wsl.exe action with one daily trigger, S4U, and no catch-up setting' {
+        It 'registers the usage census task as a direct wsl.exe action with one daily trigger, S4U, and catch-up with restarts' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
@@ -492,10 +500,16 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 @($Trigger).Count -eq 1 -and $Trigger.IsDaily -and $Trigger.At -eq '12:37' -and
                 $Principal.FakePrincipal
             }
-            # The Codex Cloud sync, usage census, session miner, and task health tasks share these settings.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 4 -Exactly -ParameterFilter {
+            # The Codex Cloud sync alone uses these settings (no catch-up).
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
+            }
+            # Usage census, session miner and task health share the catch-up settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
+                $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $StartWhenAvailable -and
+                $RestartCount -eq 3 -and $RestartInterval.TotalMinutes -eq 10
             }
 
             $censusAction = @($script:capturedActions | Where-Object { $_.Argument -match 'publish-usage-census\.sh' })
@@ -545,7 +559,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $censusAction.Argument | Should -Not -Match '\\"'
         }
 
-        It 'registers the session miner task as a direct wsl.exe action with one daily trigger, S4U, and no catch-up setting' {
+        It 'registers the session miner task as a direct wsl.exe action with one daily trigger, S4U, and catch-up with restarts' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
@@ -555,10 +569,16 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 @($Trigger).Count -eq 1 -and $Trigger.IsDaily -and $Trigger.At -eq '12:47' -and
                 $Principal.FakePrincipal
             }
-            # The Codex Cloud sync, usage census, session miner, and task health tasks share these settings.
-            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 4 -Exactly -ParameterFilter {
+            # The Codex Cloud sync alone uses these settings (no catch-up).
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 1 -Exactly -ParameterFilter {
                 $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
                 $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable
+            }
+            # Usage census, session miner and task health share the catch-up settings.
+            Should -Invoke -ModuleName WslAutomation New-ScheduledTaskSettingsSet -Times 3 -Exactly -ParameterFilter {
+                $ExecutionTimeLimit.TotalMinutes -eq 15 -and $MultipleInstances -eq 'IgnoreNew' -and
+                $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $StartWhenAvailable -and
+                $RestartCount -eq 3 -and $RestartInterval.TotalMinutes -eq 10
             }
 
             $minerAction = @($script:capturedActions | Where-Object { $_.Argument -match 'run-session-miner\.sh' })
@@ -668,7 +688,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
             $curationAction.Argument | Should -Not -Match '\\"'
         }
 
-        It 'registers the task health task as a direct wsl.exe action with one daily trigger, S4U, and no catch-up setting' {
+        It 'registers the task health task as a direct wsl.exe action with one daily trigger, S4U, and catch-up with restarts' {
             Set-WslAutomationScheduledTasks -ScriptsDir $script:scriptsDir -BackupDir $script:backupDir -ResticRepoDir $script:resticRepoDir `
                 -PwshPath 'C:\fake\pwsh.exe' -Confirm:$false
 
@@ -679,7 +699,7 @@ Describe 'Set-WslAutomationScheduledTasks' -Skip:(-not $IsWindows) {
                 $Principal.FakePrincipal -and
                 $Settings.ExecutionTimeLimit.TotalMinutes -eq 15 -and $Settings.MultipleInstances -eq 'IgnoreNew' -and
                 -not $Settings.DisallowStartIfOnBatteries -and -not $Settings.StopIfGoingOnBatteries -and
-                -not $Settings.StartWhenAvailable
+                $Settings.StartWhenAvailable -and $Settings.RestartCount -eq 3
             }
 
             $healthAction = @($script:capturedActions | Where-Object { $_.Argument -match 'publish-task-health\.sh' })
