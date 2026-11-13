@@ -80,6 +80,10 @@ fi
 printf '%s' "${CURL_STATUS:-200}"
 EOF_STUB
 chmod +x "$test_root/bin/curl"
+# Fixed machine identity, so the masking of it is testable.
+printf '#!/bin/sh\necho fixtureuser\n' >"$test_root/bin/id"
+printf '#!/bin/sh\necho fixturehost\n' >"$test_root/bin/hostname"
+chmod +x "$test_root/bin/id" "$test_root/bin/hostname"
 export PATH="$test_root/bin:$PATH"
 
 # Never read the real settings file: point it at one that does not exist.
@@ -124,6 +128,7 @@ page p3 \
 # b2 gets a long title with a token in it, b3 an ask with credentials in it.
 jq --arg t "SECRETTITLE-cse_b2 ghp_abcdefghijklmnop0123 $(printf 'y%.0s' {1..300})" \
     '(.data[] | select(.id == "cse_b2") | .title) = $t
+     | (.data[] | select(.id == "cse_b1") | .title) = "Fix /home/fixtureuser/x on Fixturehost, C:\\Users\\fixtureuser\\y, -home-fixtureuser-repos"
      | (.data[] | select(.id == "cse_b3") | .external_metadata) =
        {post_turn_summary: {needs_action: "Use sk-ant-api03-ABCDEFGH12345678 and Bearer abcdefghijklmnopqrstuvwxyz0123"}}' \
     "$FX/page2.json" >"$FX/page2.tmp" && mv "$FX/page2.tmp" "$FX/page2.json"
@@ -247,6 +252,8 @@ assert_eq "$(ask_of b2)" null 'no summary gives a null ask'
 assert_eq "$(ask_of b3)" 'Use sk-ant-[redacted] and Bearer [redacted]' 'credential shapes in the ask are masked'
 assert_eq "$(remote_jq '.items[] | select(.id == "cse_b2") | .title | length')" 200 'a long title is capped at 200 characters'
 assert_match "$(remote_jq '.items[] | select(.id == "cse_b2") | .title')" '^SECRETTITLE-cse_b2 ghp_\[redacted\] y' 'credential shapes in the title are masked'
+assert_eq "$(remote_jq '.items[] | select(.id == "cse_b1") | .title')" 'Fix /home/example-user/x on the dev box, C:\Users\example-user\y, -home-example-user-repos' 'the account name and hostname are masked in the title'
+assert_no_match "$(remote_feed)" 'fixtureuser|[Ff]ixturehost' 'no machine identity reaches the feed'
 assert_no_match "$(remote_feed)" 'ghp_abcdefghijklmnop0123|sk-ant-api03|abcdefghijklmnopqrstuvwxyz0123' 'no credential reaches the feed'
 assert_eq "$(remote_jq '.items[] | select(.id == "cse_b1") | .ask | length')" 400 'a long ask is capped at 400 characters'
 assert_eq "$(remote_jq '.items[] | select(.id == "cse_a1") | .unread')" true 'unread is carried'

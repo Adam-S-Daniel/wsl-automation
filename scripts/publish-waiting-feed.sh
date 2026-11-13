@@ -254,7 +254,14 @@ rm -f -- "$header_file"
 
 # --- Build the new feed ---------------------------------------------------
 if [[ -z $err ]]; then
-    jq -s '
+    # Names to mask in session text, as regex-escaped literals (empty: none).
+    esc() { printf '%s' "$1" | sed 's/[][\.^$*+?(){}|]/\&/g'; }
+    id_user=$(id -un 2>/dev/null || true)
+    id_host=$(hostname -s 2>/dev/null || true)
+    user_re='' host_re=''
+    if ((${#id_user} >= 3)); then user_re=$(esc "$id_user"); fi
+    if ((${#id_host} >= 4)); then host_re=$(esc "$id_host"); fi
+    jq -s --arg user_re "$user_re" --arg host_re "$host_re" '
         # The API exposes no project or thread ids, so every item links to its
         # plain session page. Change the link form here only.
         def link: "https://claude.ai/code/session_" + (.id | sub("^cse_"; ""));
@@ -275,7 +282,13 @@ if [[ -z $err ]]; then
         # Session text is copied to GitHub, so mask obvious credential shapes.
         def redact:
             gsub("(?<k>sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abposr]-|AKIA|ASIA|AIza)[A-Za-z0-9_\\-]{8,}"; "\(.k)[redacted]")
-            | gsub("(?i)(?<k>bearer\\s+)[A-Za-z0-9._~+/=-]{16,}"; "\(.k)[redacted]");
+            | gsub("(?i)(?<k>bearer\\s+)[A-Za-z0-9._~+/=-]{16,}"; "\(.k)[redacted]")
+            # The identity of this machine: the feed is checked by the agent-checks
+            # local-identity pre-push hook, which refuses a push whose file holds
+            # the account name in a home path or the hostname.
+            | gsub("(?<p>/home/|/Users/|\\\\{1,2}(home|Users)\\\\{1,2})[^/\\\\\\s\"]+"; "\(.p)example-user")
+            | if $user_re != "" then gsub("-home-" + $user_re + "-"; "-home-example-user-") else . end
+            | if $host_re != "" then gsub("(?<![A-Za-z0-9_-])" + $host_re + "(?![A-Za-z0-9_-])"; "the dev box"; "i") else . end;
         def ask:
             (.external_metadata.post_turn_summary? // {}) as $s
             | ((($s.needs_action? | nonempty) // ($s.status_detail? | nonempty)) // null)
