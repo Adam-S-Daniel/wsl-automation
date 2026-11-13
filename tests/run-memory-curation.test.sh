@@ -51,7 +51,30 @@ printf 'SUMMARYSECRET curated things\n'
 exit "${CLAUDE_EXIT:-0}"
 EOF_STUB
 chmod +x "$test_root/bin/"*
-export PATH="$test_root/bin:$PATH"
+
+# Stand-in for the caller's PATH: a directory holding a second, failing `claude` that
+# logs every call, put first on the PATH this test inherits, as a developer machine
+# has the real one. The runs below must never reach it; the end of the file asserts
+# its log stayed empty.
+export CALLER_CLAUDE_CALLS="$test_root/caller-claude-calls"
+mkdir -p "$test_root/caller-bin"
+cat >"$test_root/caller-bin/claude" <<'EOF_STUB'
+#!/usr/bin/env bash
+printf 'call\n' >>"$CALLER_CLAUDE_CALLS"
+exit 1
+EOF_STUB
+chmod +x "$test_root/caller-bin/claude"
+: >"$CALLER_CLAUDE_CALLS"
+PATH="$test_root/caller-bin:$PATH"
+
+# Build PATH from the stub directory and the system directories only, never from the
+# caller's PATH, so no real `claude` is reachable. git and python3 may live outside
+# the system directories (/usr/local/bin), so link them in from where the caller has them.
+mkdir -p "$test_root/tools"
+for tool in git python3; do
+    ln -s -- "$(command -v "$tool")" "$test_root/tools/$tool"
+done
+export PATH="$test_root/bin:$test_root/tools:/usr/bin:/bin"
 
 # Never read the real settings file: point it at one that does not exist.
 export WSL_AUTOMATION_SETTINGS="$test_root/no-such-settings.env"
@@ -346,5 +369,8 @@ rc=0
 out=$(env -u AGENT_GUIDANCE_URL WSL_AUTOMATION_SETTINGS="$test_root/settings.env" bash "$script" --dry-run 2>&1) || rc=$?
 assert_eq "$rc" 0 'AGENT_GUIDANCE_URL from the settings file is used'
 assert_match "$(last_log)" ' exit=0 memory curation: mode=dry-run ' 'the clone from the settings file reaches the audits'
+
+# No run above reached a `claude` from the caller's PATH.
+assert_eq "$(wc -l <"$CALLER_CLAUDE_CALLS" | tr -d ' ')" 0 "a claude on the caller's PATH is never called"
 
 printf 'PASS: %s assertions\n' "$passed"
