@@ -883,7 +883,9 @@ up the new PATH.
 - Runs as a background S4U task for the current Windows user (session 0), with
   the session miner's settings except for a 3 hour execution limit: allowed on
   battery, ignores a second overlapping instance, no `-StartWhenAvailable`. The
-  wrapper stops Claude itself after 2 hours (`MEMORY_CURATION_TIMEOUT`).
+  wrapper stops Claude itself after 2 hours (`MEMORY_CURATION_TIMEOUT`) and
+  runs it on Sonnet, whatever the machine's default model is
+  (`MEMORY_CURATION_MODEL`).
 - Run it now: `Start-ScheduledTask -TaskName 'Memory Curation'`. To try it
   without starting Claude, run `bash scripts/run-memory-curation.sh --dry-run`
   in WSL: it runs the routine's `memory_audit.py` over every memory directory

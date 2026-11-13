@@ -36,6 +36,9 @@
 #   WINDOWS_CLAUDE_HOME          Windows-side Claude config dir; when unset it is resolved at run time
 #   CLAUDE_BIN                   Claude Code executable (default: claude)
 #   MEMORY_CURATION_TIMEOUT      seconds Claude may run before it is stopped (default: 7200)
+#   MEMORY_CURATION_MODEL        model Claude runs on (default: sonnet). Without --model the run takes
+#                                the machine's default model, which can cost twice as much for
+#                                merging and archiving a few dozen short notes.
 #   MEMORY_CURATION_CLONE_ROOTS  colon-separated repo clone roots (default: ~/repos:/mnt/d/repos)
 set -euo pipefail
 
@@ -61,6 +64,7 @@ log=${MEMORY_CURATION_LOG:-$HOME/.cache/memory-curation.log}
 summary=${MEMORY_CURATION_SUMMARY:-$HOME/.cache/memory-curation/last-summary.md}
 claude_bin=${CLAUDE_BIN:-claude}
 claude_timeout=${MEMORY_CURATION_TIMEOUT:-7200}
+claude_model=${MEMORY_CURATION_MODEL:-sonnet}
 mkdir -p -- "$(dirname -- "$log")"
 
 if ! wsl_automation_require_setting AGENT_GUIDANCE_URL; then
@@ -174,7 +178,7 @@ if git clone --quiet --depth 1 -- "$url" "$tmp/_agent-guidance" >/dev/null 2>&1;
         (umask 077; : >"$summary")
         chmod 600 -- "$summary"
         (cd -- "$clone" && timeout --kill-after=60s "$claude_timeout" "$claude_bin" -p "$prompt" \
-            --permission-mode auto ${add_dirs[@]+"${add_dirs[@]}"}) >"$summary" 2>&1 || rc=$?
+            --model "$claude_model" --permission-mode auto ${add_dirs[@]+"${add_dirs[@]}"}) >"$summary" 2>&1 || rc=$?
         cat -- "$summary"
     fi
     notes_after=$(count_notes)

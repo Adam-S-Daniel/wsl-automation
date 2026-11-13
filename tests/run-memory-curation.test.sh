@@ -165,12 +165,13 @@ assert_contains "$prompt" "$win_home/projects/*/memory/" 'prompt names the Windo
 assert_contains "$prompt" "$test_root/roots-one" 'prompt names an existing clone root'
 assert_lacks "$prompt" 'no-such-root' 'prompt omits a missing clone root'
 assert_contains "$argv" $'--permission-mode\nauto' 'permission mode auto'
+assert_contains "$argv" $'--model\nsonnet' 'the model is sonnet unless MEMORY_CURATION_MODEL says otherwise'
 assert_eq "$(grep -cx -- '--add-dir' "$CLAUDE_ARGV")" 2 'one --add-dir per home'
 assert_contains "$argv" $'--add-dir\n'"$wsl_home/projects" 'WSL projects dir added'
 assert_contains "$argv" $'--add-dir\n'"$win_home/projects" 'Windows projects dir added'
 assert_match "$(cat "$CLAUDE_CWD")" '/_agent-guidance\|doc$' 'claude runs in the fresh clone'
 assert_eq "$(sed -n 1p "$TIMEOUT_CALLS")" "--kill-after=5s 300s $test_root/bin/pwsh.exe -NoProfile -File $repository_root/scripts/update-task-checkout.ps1 -UpdateOnly" 'bootstrap deadline and arguments'
-assert_eq "$(sed -n 2p "$TIMEOUT_CALLS")" '--kill-after=60s 7200 claude -p '"$prompt"' --permission-mode auto --add-dir '"$wsl_home/projects"' --add-dir '"$win_home/projects" 'claude runs under the default 2h timeout'
+assert_eq "$(sed -n 2p "$TIMEOUT_CALLS")" '--kill-after=60s 7200 claude -p '"$prompt"' --model sonnet --permission-mode auto --add-dir '"$wsl_home/projects"' --add-dir '"$win_home/projects" 'claude runs under the default 2h timeout'
 assert_contains "$out" 'SUMMARYSECRET curated things' 'summary is printed to stdout'
 
 # Summary file: written, private, and exactly Claude's output.
@@ -289,6 +290,10 @@ assert_match "$(last_log)" ' homes=1 windows_home=unresolved dirs=1 notes_before
 # MEMORY_CURATION_TIMEOUT reaches timeout.
 MEMORY_CURATION_TIMEOUT=90 bash "$script" >/dev/null 2>&1
 assert_match "$(tail -n 1 "$TIMEOUT_CALLS")" '^--kill-after=60s 90 claude ' 'MEMORY_CURATION_TIMEOUT overrides the default'
+
+# MEMORY_CURATION_MODEL reaches claude.
+MEMORY_CURATION_MODEL=opus bash "$script" >/dev/null 2>&1
+assert_contains "$(cat "$CLAUDE_ARGV")" $'--model\nopus' 'MEMORY_CURATION_MODEL overrides the default'
 
 # Offline/failed bootstrap still runs and preserves Claude's status.
 rc=0
