@@ -418,7 +418,7 @@ git -C "$other" checkout --quiet --detach "origin/$feed_ref"
 printf '%s\n' 'hand edit' >"$other/NOTE"
 git -C "$other" add NOTE
 git -C "$other" -c user.name=x -c user.email=x@example.com commit --quiet -m 'hand edit'
-AGENT_CHECKS_LOCAL_USER= AGENT_CHECKS_LOCAL_HOST= git -C "$other" push --quiet origin "HEAD:refs/heads/$feed_ref"
+AGENT_CHECKS_LOCAL_USER='' AGENT_CHECKS_LOCAL_HOST='' git -C "$other" push --quiet origin "HEAD:refs/heads/$feed_ref"
 t=$((t + 5000))
 page p2 "$a1" "$(item a9 active blocked 14 '[]' claude_code_cli 'Yet another' '')" >"$FX/page1.json"
 WAITING_FEED_NOW=$t run_feed
