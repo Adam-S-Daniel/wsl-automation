@@ -349,10 +349,17 @@ elif $publish; then
     # One parentless commit replaces the branch, so the history holds only the
     # current feed. The lease refuses the push if the remote moved since fetch.
     lease=(--force-with-lease="$feed_branch:$prev_head")
+    # The feed carries session titles on purpose, and titles often name this
+    # machine, so the agent-checks local-identity check
+    # would refuse every push (from 2026-11-12 it refused one a minute for
+    # 20 hours). Empty values turn that one check off for this push only, as
+    # the runner documents; push-to-default and the other guards still run.
+    # The feed repository is private.
     if blob=$("${git_feed[@]}" hash-object -w -- "$new_feed") &&
         tree=$(printf '100644 blob %s\tfeed.json\n' "$blob" | "${git_feed[@]}" mktree) &&
         new_head=$("${git_feed[@]}" commit-tree "$tree" -m "$message" 2>/dev/null) &&
-        timeout 60 "${git_feed[@]}" push --quiet "${lease[@]}" origin "$new_head:refs/heads/$feed_branch" >/dev/null 2>&1; then
+        AGENT_CHECKS_LOCAL_USER='' AGENT_CHECKS_LOCAL_HOST='' \
+            timeout 60 "${git_feed[@]}" push --quiet "${lease[@]}" origin "$new_head:refs/heads/$feed_branch" >/dev/null 2>&1; then
         published=yes
     else
         # Nothing local changed, so the next run sees the change again.

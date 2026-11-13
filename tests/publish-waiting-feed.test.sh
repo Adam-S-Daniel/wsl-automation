@@ -150,12 +150,15 @@ GIT_CONFIG_GLOBAL=/dev/null git -C "$seed" add AGENTS.md
 GIT_CONFIG_GLOBAL=/dev/null git -C "$seed" -c user.name=x -c user.email=x@example.com commit --quiet -m 'fleet delivery'
 GIT_CONFIG_GLOBAL=/dev/null git -C "$seed" push --quiet "$remote" HEAD:main
 main_seed=$(git --git-dir="$remote" rev-parse main)
-# Like the fleet's agent-checks pre-push hook: refuse a push to main, and a
-# push made while the index holds staged changes.
+# Like the fleet's agent-checks pre-push hook: refuse a push to main, a push
+# made while the index holds staged changes, and (like local-identity, since
+# the feed names this machine) a push that left the identity lookup on.
 mkdir -p "$test_root/hooks"
 cat >"$test_root/hooks/pre-push" <<'HOOK'
 #!/usr/bin/env bash
 git diff --cached --quiet || { echo 'test hook: staged index' >&2; exit 1; }
+[[ ${AGENT_CHECKS_LOCAL_USER-unset} == '' && ${AGENT_CHECKS_LOCAL_HOST-unset} == '' ]] ||
+    { echo 'test hook: local identity' >&2; exit 1; }
 while read -r _ _ remote_ref _; do
     [[ $remote_ref == refs/heads/main ]] && { echo 'test hook: push to main' >&2; exit 1; }
 done
@@ -415,7 +418,7 @@ git -C "$other" checkout --quiet --detach "origin/$feed_ref"
 printf '%s\n' 'hand edit' >"$other/NOTE"
 git -C "$other" add NOTE
 git -C "$other" -c user.name=x -c user.email=x@example.com commit --quiet -m 'hand edit'
-git -C "$other" push --quiet origin "HEAD:refs/heads/$feed_ref"
+AGENT_CHECKS_LOCAL_USER='' AGENT_CHECKS_LOCAL_HOST='' git -C "$other" push --quiet origin "HEAD:refs/heads/$feed_ref"
 t=$((t + 5000))
 page p2 "$a1" "$(item a9 active blocked 14 '[]' claude_code_cli 'Yet another' '')" >"$FX/page1.json"
 WAITING_FEED_NOW=$t run_feed
