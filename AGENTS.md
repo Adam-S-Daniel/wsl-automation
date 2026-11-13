@@ -400,8 +400,8 @@ change their own linger) and starts the manager.
 ### CI: three required checks that always run
 
 `.github/workflows/ci.yml` has three jobs, `shell` (ubuntu), `test` (windows)
-and `test-linux` (ubuntu), intended as required status checks; they are made
-required in repo-settings' `fleet.yml` after this lands. A required check
+and `test-linux` (ubuntu). repo-settings' `fleet.yml` requires all three, plus
+`agent-checks`. A required check
 cannot use `on.paths` (a skipped check blocks the merge), so all three run on
 every pull request and skip early instead: each job's `salient` step diffs the
 pull request's base and head and gates every later step on it, and a final
