@@ -750,8 +750,21 @@ up the new PATH.
   set -euo pipefail
   cd /workspace/<target-repository>
   if [[ -f package-lock.json ]]; then npm ci; fi
-  CODEX_HOME="${CODEX_HOME:-/opt/codex}" bash .claude/hooks/fleet-memory.sh --codex-cloud
+  fleet_pin_commit=<pinned _agent-guidance commit>
+  fleet_pin_sha256=<SHA-256 of fleet-memory.sh at that commit>
+  fleet_guidance_install() ( ... )   # _agent-guidance's docs/codex-cloud.md recipe
+  fleet_guidance_install || exit 1
   ```
+
+  Fleet repositories no longer carry `.claude/hooks/fleet-memory.sh`
+  ([_agent-guidance ADR 0043](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0043-the-owner-only-guidance-leaves-the-consumer-repos.md)),
+  so the guidance step downloads that installer from `_agent-guidance` at a
+  pinned commit, checks its SHA-256, and runs it with `--codex-cloud` and
+  `base.md` from `_agent-guidance`'s `main` as the payload. A failed download,
+  digest check or commit lookup fails setup. The function is
+  [`docs/codex-cloud.md`](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/codex-cloud.md)'s
+  recipe; the pin is `fleet_pin_commit` and `fleet_pin_sha256` in
+  `scripts/sync-codex-cloud-environments.sh`, bumped together.
 
   A repository without `skills.lock` reports a healthy skills skip. An enrolled repository
   must also contain its delivered `.claude/hooks/skills-bootstrap.sh`; a missing

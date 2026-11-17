@@ -58,10 +58,25 @@ while (($#)); do
             if [[ $2 == query=* ]]; then query=${2#query=}; fi
             shift 2
             ;;
-        --silent|--show-error|--get|--fail|--location) shift ;;
+        --silent|--show-error|--get|--fail|--location|-q|-fsS) shift ;;
+        --proto|--connect-timeout|--max-time|--max-filesize) shift 2 ;;
         *) url=$1; shift ;;
     esac
 done
+if [[ $url == https://raw.githubusercontent.com/Adam-S-Daniel/_agent-guidance/*/.claude/hooks/fleet-memory.sh ]]; then
+    printf '%s\n' "installer:${url#https://raw.githubusercontent.com/Adam-S-Daniel/_agent-guidance/}" >>"$FAKE_DOWNLOAD_LOG"
+    if [[ ${FAKE_INSTALLER_TAMPER:-0} == 1 ]]; then
+        printf '%s\n' 'tampered installer' >"$output"
+    else
+        cp "$FAKE_INSTALLER_FILE" "$output"
+    fi
+    exit 0
+fi
+if [[ $url == https://raw.githubusercontent.com/Adam-S-Daniel/_agent-guidance/*/agents-md/base.md ]]; then
+    printf '%s\n' "payload:${url#https://raw.githubusercontent.com/Adam-S-Daniel/_agent-guidance/}" >>"$FAKE_DOWNLOAD_LOG"
+    printf '%s\n' '# AGENTS.md' '' '> **Managed by [`_agent-guidance`].**' 'fake payload' >"$output"
+    exit 0
+fi
 if [[ $url == https://raw.githubusercontent.com/Adam-S-Daniel/adam-agentskills/*/.claude/hooks/skills-bootstrap.sh ]]; then
     printf '%s\n' 'download' >>"$FAKE_DOWNLOAD_LOG"
     if [[ ${FAKE_BOOTSTRAP_TAMPER:-0} == 1 ]]; then
@@ -118,13 +133,41 @@ EOF
     cat >"$test_root/bin/sha256sum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if (($# == 0)); then
+    # The recipe's reuse check hashes a cached installer from stdin; no fake
+    # digest matches the pin, so every setup run downloads and verifies.
+    cat >/dev/null
+    printf '%s  -\n' '0000000000000000000000000000000000000000000000000000000000000000'
+    exit 0
+fi
 [[ "$*" == '--check --status' ]] || exit 2
 IFS=' ' read -r digest file
 [[ $digest =~ ^[a-f0-9]{64}$ ]] || exit 3
-cmp -s -- "$FAKE_BOOTSTRAP_FILE" "$file"
+if [[ $digest == "$FAKE_FLEET_PIN_SHA256" ]]; then
+    cmp -s -- "$FAKE_INSTALLER_FILE" "$file"
+else
+    cmp -s -- "$FAKE_BOOTSTRAP_FILE" "$file"
+fi
+EOF
+    # git fake: the recipe's commit-only fetch of _agent-guidance's main. Any
+    # other git command goes to the real binary.
+    real_git=$(command -v git)
+    cat >"$test_root/bin/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ \$* == *' fetch '*'https://github.com/Adam-S-Daniel/_agent-guidance refs/heads/main' ]]; then
+    printf 'fetch\\n' >>"\$FAKE_DOWNLOAD_LOG"
+    [[ \${FAKE_GUIDANCE_FETCH_FAIL:-0} != 1 ]] || exit 128
+    exit 0
+fi
+if [[ \$* == *' log -1 --no-show-signature --format=%H %ct FETCH_HEAD' ]]; then
+    printf '%s\\n' '1111111111111111111111111111111111111111 1700000000'
+    exit 0
+fi
+exec "$real_git" "\$@"
 EOF
     chmod 755 "$test_root/bin/codex" "$test_root/bin/gh" "$test_root/bin/curl"
-    chmod 755 "$test_root/bin/npm" "$test_root/bin/sha256sum"
+    chmod 755 "$test_root/bin/npm" "$test_root/bin/sha256sum" "$test_root/bin/git"
 }
 
 run_sync() {
@@ -191,11 +234,23 @@ mkdir -p "$test_root/workspace/example-repo/.claude/hooks"
 printf '%s\n' '{"version":1}' >"$test_root/workspace/example-repo/skills.lock"
 printf '%s\n' 'lockfileVersion: 3' >"$test_root/workspace/example-repo/package-lock.json"
 printf '%s\n' '# delivered hook marker' >"$test_root/workspace/example-repo/.claude/hooks/skills-bootstrap.sh"
-cat >"$test_root/workspace/example-repo/.claude/hooks/fleet-memory.sh" <<'EOF'
+# ADR 0043: the checkout carries no fleet-memory.sh; setup downloads the pinned
+# installer instead. The fake records its payload so the test sees base.md.
+cat >"$test_root/installer-fixture.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'memory:%s:%s:%s\n' "$PWD" "$CODEX_HOME" "$*" >>"$FAKE_RUN_LOG"
+head -n 1 "$FLEET_GUIDANCE_PAYLOAD" | grep -qxF '# AGENTS.md'
+printf 'memory:%s:%s:%s:%s\n' "$PWD" "$CODEX_HOME" "$FLEET_GUIDANCE_PAYLOAD_STAMP" "$*" >>"$FAKE_RUN_LOG"
 EOF
+fleet_pin_commit=$(sed -n "s/^readonly fleet_pin_commit='\\([0-9a-f]\\{40\\}\\)'$/\\1/p" "$script")
+fleet_pin_sha256=$(sed -n "s/^readonly fleet_pin_sha256='\\([0-9a-f]\\{64\\}\\)'$/\\1/p" "$script")
+[[ -n $fleet_pin_commit && -n $fleet_pin_sha256 ]] || fail 'installer pin constants not found'
+[[ $expected_script == *"fleet_pin_commit=$fleet_pin_commit"* && $expected_script == *"fleet_pin_sha256=$fleet_pin_sha256"* ]] || fail 'setup does not carry the installer pin'
+[[ $expected_script != *'.claude/hooks/fleet-memory.sh --codex-cloud'* ]] || fail 'setup still runs the checkout copy of fleet-memory.sh'
+# shellcheck disable=SC2016 # the literal text of the generated line
+[[ $expected_script == *'hook_dir="${CODEX_HOME:-/opt/codex}/fleet-guidance"'* ]] || fail 'setup lost the /opt/codex default'
+export FAKE_FLEET_PIN_SHA256=$fleet_pin_sha256
+export CODEX_HOME="$test_root/opt-codex"
 cat >"$test_root/bootstrap-fixture.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -209,20 +264,29 @@ run_setup() {
     rm -f "$test_root/download-events"
     PATH="$test_root/bin:$PATH" FAKE_RUN_LOG="$test_root/setup-events" \
         FAKE_DOWNLOAD_LOG="$test_root/download-events" FAKE_BOOTSTRAP_FILE="$test_root/bootstrap-fixture.sh" \
+        FAKE_INSTALLER_FILE="$test_root/installer-fixture.sh" \
         bash "$test_root/target-setup.sh" >"$result_file" 2>&1
+}
+skill_downloads() {
+    grep -c '^download$' "$test_root/download-events" 2>/dev/null || true
 }
 run_setup "$test_root/opted-in.out"
 grep -qxF "npm:$test_root/workspace/example-repo:ci" "$test_root/setup-events" || fail 'npm ci was not conditional on a lockfile'
-grep -qxF "memory:$test_root/workspace/example-repo:/opt/codex:--codex-cloud" "$test_root/setup-events" || fail 'memory hook did not run in selected checkout'
-grep -qxF "skills:$test_root/workspace/example-repo:/opt/codex:--codex-cloud" "$test_root/setup-events" || fail 'reviewed bootstrap did not run for enrolled repository'
-[[ $(wc -l <"$test_root/download-events") -eq 1 ]] || fail 'enrolled repository did not download once'
+grep -qxF "memory:$test_root/workspace/example-repo:$CODEX_HOME:1700000000:--codex-cloud" "$test_root/setup-events" || fail 'pinned installer did not run in selected checkout with the main payload'
+grep -qxF "installer:$fleet_pin_commit/.claude/hooks/fleet-memory.sh" "$test_root/download-events" || fail 'installer was not downloaded at the pinned commit'
+grep -qxF 'payload:1111111111111111111111111111111111111111/agents-md/base.md' "$test_root/download-events" || fail 'payload was not taken from the fetched main commit'
+grep -qxF 'fleet-guidance-source: _agent-guidance@1111111111111111111111111111111111111111' "$test_root/opted-in.out" || fail 'setup did not report its guidance source'
+[[ -f $CODEX_HOME/fleet-guidance/fleet-memory-$fleet_pin_sha256.sh ]] || fail 'verified installer was not kept at its digest path'
+grep -qxF "skills:$test_root/workspace/example-repo:$CODEX_HOME:--codex-cloud" "$test_root/setup-events" || fail 'reviewed bootstrap did not run for enrolled repository'
+[[ $(skill_downloads) -eq 1 ]] || fail 'enrolled repository did not download once'
 
 rm "$test_root/workspace/example-repo/skills.lock" "$test_root/workspace/example-repo/package-lock.json" \
     "$test_root/workspace/example-repo/.claude/hooks/skills-bootstrap.sh"
 run_setup "$test_root/lockless.out"
 grep -qxF 'skills: skipped (no skills.lock in selected repository)' "$test_root/lockless.out" || fail 'lockless skip was not explicit'
-[[ ! -e $test_root/download-events ]] || fail 'lockless repository downloaded a bootstrap'
+[[ $(skill_downloads) -eq 0 ]] || fail 'lockless repository downloaded a bootstrap'
 [[ $(wc -l <"$test_root/setup-events") -eq 1 ]] || fail 'lockless repository ran npm or bootstrap'
+grep -q '^memory:' "$test_root/setup-events" || fail 'lockless repository skipped the guidance installer'
 [[ ! -e $test_root/workspace/example-repo/skills.lock ]] || fail 'lockless repository was enrolled'
 
 ln -s "$test_root/bootstrap-fixture.sh" "$test_root/workspace/example-repo/skills.lock"
@@ -230,7 +294,7 @@ if run_setup "$test_root/symlink-lock.out"; then
     fail 'symlink skills lock was accepted'
 fi
 grep -qxF 'skills: DEGRADED (selected repository has an invalid skills.lock)' "$test_root/symlink-lock.out" || fail 'invalid lock failure was unclear'
-[[ ! -e $test_root/download-events ]] || fail 'invalid lock downloaded a bootstrap'
+[[ $(skill_downloads) -eq 0 ]] || fail 'invalid lock downloaded a bootstrap'
 rm "$test_root/workspace/example-repo/skills.lock"
 
 printf '%s\n' '{"version":1}' >"$test_root/workspace/example-repo/skills.lock"
@@ -238,9 +302,24 @@ if run_setup "$test_root/missing-hook.out"; then
     fail 'missing delivered hook was accepted'
 fi
 grep -qxF 'skills: DEGRADED (enrolled repository is missing its delivered bootstrap hook)' "$test_root/missing-hook.out" || fail 'missing hook failure was unclear'
-[[ ! -e $test_root/download-events ]] || fail 'missing hook downloaded a bootstrap'
+[[ $(skill_downloads) -eq 0 ]] || fail 'missing hook downloaded a bootstrap'
 
 printf '%s\n' '# delivered hook marker' >"$test_root/workspace/example-repo/.claude/hooks/skills-bootstrap.sh"
+rm -rf "$CODEX_HOME/fleet-guidance"
+export FAKE_INSTALLER_TAMPER=1
+if run_setup "$test_root/tampered-installer.out"; then
+    fail 'tampered guidance installer was accepted'
+fi
+unset FAKE_INSTALLER_TAMPER
+[[ ! -s $test_root/setup-events || $(grep -c '^\(memory\|skills\):' "$test_root/setup-events") -eq 0 ]] || fail 'tampered installer or later steps ran'
+[[ ! -e $CODEX_HOME/fleet-guidance/fleet-memory-$fleet_pin_sha256.sh ]] || fail 'tampered installer was kept'
+export FAKE_GUIDANCE_FETCH_FAIL=1
+if run_setup "$test_root/fetch-failure.out"; then
+    fail 'setup continued without the guidance payload'
+fi
+unset FAKE_GUIDANCE_FETCH_FAIL
+[[ ! -s $test_root/setup-events || $(grep -c '^\(memory\|skills\):' "$test_root/setup-events") -eq 0 ]] || fail 'setup ran a hook without the guidance payload'
+
 FAKE_BOOTSTRAP_TAMPER=1
 export FAKE_BOOTSTRAP_TAMPER
 if run_setup "$test_root/tampered.out"; then
@@ -248,7 +327,7 @@ if run_setup "$test_root/tampered.out"; then
 fi
 unset FAKE_BOOTSTRAP_TAMPER
 grep -qxF 'skills: DEGRADED (reviewed bootstrap digest mismatch)' "$test_root/tampered.out" || fail 'digest mismatch was unclear'
-[[ $(wc -l <"$test_root/setup-events") -eq 1 ]] || fail 'tampered bootstrap ran'
+[[ $(grep -c '^skills:' "$test_root/setup-events") -eq 0 ]] || fail 'tampered bootstrap ran'
 
 cat >"$test_root/draining-bootstrap.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -268,6 +347,7 @@ cat >/dev/null
 printf 'skills:%s:%s:%s\n' "$CLAUDE_PROJECT_DIR" "$CODEX_HOME" "$*" >>"$FAKE_RUN_LOG"
 EOF
 PATH="$test_root/bin:$PATH" FAKE_BOOTSTRAP_FILE="$test_root/draining-bootstrap.sh" \
+    FAKE_INSTALLER_FILE="$test_root/installer-fixture.sh" \
     FAKE_DOWNLOAD_LOG="$test_root/download-events" FAKE_RUN_LOG="$test_root/open-stdin-events" \
     python3 - "$test_root" <<'PY'
 import os
@@ -468,4 +548,4 @@ if run_sync "$test_root/mismatched-name.out" --dry-run; then
 fi
 grep -qxF 'repository inventory item has an invalid GitHub repository path' "$test_root/mismatched-name.out" || fail 'mismatched path failure was not sanitized'
 
-printf '%s\n' 'PASS: 28 Codex Cloud environment sync behaviors'
+printf '%s\n' 'PASS: 30 Codex Cloud environment sync behaviors'
