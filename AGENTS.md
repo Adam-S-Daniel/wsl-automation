@@ -205,9 +205,9 @@ sight; it isn't one.
 `~/.claude/sessions/<pid>.json` (one `wsl --exec` call per pid, `status`
 `busy` vs `idle`) and excludes an idle session, and everything it spawned,
 before the pty rules run. This **fails safe to busy** on anything it doesn't
-recognise — the file is Claude Code-internal and undocumented (observed in
-2.1.282), so a missing file, a non-zero exit, a parse error, a pid mismatch,
-or any status other than exactly `idle` all count as busy.
+recognize — the file is Claude Code-internal and undocumented and may
+change in any release, so a missing file, a non-zero exit, a parse error,
+a pid mismatch, or any status other than exactly `idle` all count as busy.
 `Invoke-WslBackup` also `SIGTERM`s the idle sessions it finds,
 immediately before the export, the same way it does for the Remote
 Control session — they're resumable afterwards with `claude --resume`.
@@ -498,11 +498,11 @@ task health, and `_agent-guidance`'s weekly fleet-health audit reads it.
 `New-ScheduledTaskTrigger` in pwsh 7 writes `StartBoundary` in UTC, and Task
 Scheduler stores it with the offset in effect at registration
 (`...-04:00`). Such a trigger fires at a fixed UTC instant, so every daily task
-registered during daylight time ran an hour early after the November 2026
-clock change. Every trigger therefore goes through the private
+registered during daylight time ran an hour early once standard time
+began. Every trigger therefore goes through the private
 `ConvertTo-WslLocalTimeTrigger`, which writes the boundary back as local time
 with no offset; Task Scheduler then keeps the wall-clock time across the
-change. A new trigger must go through it too; `tests/Tasks.Tests.ps1` fails
+clock change. A new trigger must go through it too; `tests/Tasks.Tests.ps1` fails
 otherwise.
 
 ### Docker Desktop WSL integration breaks after reboot; the watchdog repairs it
