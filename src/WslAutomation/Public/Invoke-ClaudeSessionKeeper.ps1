@@ -267,7 +267,12 @@ function Invoke-ClaudeSessionKeeper {
     }
 
     $codexLaunched = $false
-    if (-not $NoCodexRemoteControl -and -not (Test-CodexRemoteControl -DistroName $DistroName)) {
+    $codexRunning = if ($NoCodexRemoteControl) { $true } else { Test-CodexRemoteControl -DistroName $DistroName }
+    if ($null -eq $codexRunning) {
+        # A failed probe: launching could start a second daemon. The next interval probes again.
+        Write-WslAutomationLog -Message 'Could not tell whether codex remote-control is running (wsl probe failed); not launching' -LogFile $LogFile
+    }
+    elseif (-not $codexRunning) {
         if ($DryRun) {
             Write-WslAutomationLog -Message 'DryRun: would run codex remote-control start' -LogFile $LogFile
         }

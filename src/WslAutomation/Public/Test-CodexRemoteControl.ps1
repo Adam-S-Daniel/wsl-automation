@@ -42,14 +42,23 @@ function Test-CodexRemoteControl {
         [string]$Pattern = '^(?:\d+\s+)?(?:\S*/)?(?:node\s+(?:\S*/)?)?codex\s+(?:remote-control\s+start(?:\s|$)|app-server(?=(?:\s.*)?\s--remote-control(?:\s|$))(?=(?:\s.*)?\s--managed-daemon(?:\s|$)))'
     )
 
-    if ((Get-WslDistroState -DistroName $DistroName) -ne 'Running') {
+    # Like Test-ClaudeSession: $null means the probe failed and the answer is unknown.
+    $distroState = Get-WslDistroState -DistroName $DistroName
+    if ($distroState -eq 'Unknown') {
+        return $null
+    }
+    if ($distroState -ne 'Running') {
         return $false
     }
 
     $result = Invoke-WslExe -Arguments @('-d', $DistroName, '--', 'pgrep', '-af', 'codex')
 
-    if ($result.ExitCode -ne 0) {
+    # pgrep exits 1 for "no match"; any other failure leaves the answer unknown.
+    if ($result.ExitCode -eq 1) {
         return $false
+    }
+    if ($result.ExitCode -ne 0) {
+        return $null
     }
 
     $daemonLines = $result.Output | Where-Object { $_ -match $Pattern }
