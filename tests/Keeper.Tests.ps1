@@ -77,6 +77,21 @@ Describe 'Invoke-ClaudeSessionKeeper' {
         Should -Invoke -ModuleName WslAutomation Start-Sleep -Times 0 -Exactly
     }
 
+    It 'does not launch a session and returns ProbeFailed when the session probe could not run' {
+        # A failed wsl probe says nothing about whether 'claude rc' is running; launching on it
+        # would open a second Remote Control session next to a live one.
+        Mock -ModuleName WslAutomation Test-WslBackupLock {
+            [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
+        }
+        Mock -ModuleName WslAutomation Test-ClaudeSession { $null }
+
+        $result = Invoke-ClaudeSessionKeeper -DistroName 'Ubuntu' -LockPath $script:lockPath -LogFile $script:logFile -SessionSnapshotPath $script:snapshotPath
+
+        $result.Status | Should -Be 'ProbeFailed'
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -ParameterFilter { $LauncherTaskName -eq 'Claude Code Session Launcher' } -Times 0 -Exactly
+        (Get-Content -LiteralPath $script:logFile -Raw) | Should -Match 'not launching'
+    }
+
     It 'returns DryRun and does not launch a session when -DryRun is set and no session exists' {
         Mock -ModuleName WslAutomation Test-WslBackupLock {
             [pscustomobject]@{ Present = $false; Stale = $false; AgeMinutes = $null; Data = $null }
@@ -185,6 +200,31 @@ Describe 'Test-ClaudeSession' {
         }
 
         Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeTrue
+    }
+
+    It 'returns null, not false, when the distro state could not be read' {
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Unknown' }
+        Mock -ModuleName WslAutomation Invoke-WslExe { throw 'pgrep must not run' }
+
+        ($null -eq (Test-ClaudeSession -DistroName 'Ubuntu')) | Should -BeTrue
+    }
+
+    It 'returns false when pgrep finds no claude process (exit 1)' {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = 1; Output = @() }
+        }
+
+        Test-ClaudeSession -DistroName 'Ubuntu' | Should -BeExactly $false
+    }
+
+    It 'returns null, not false, when the pgrep probe itself fails (exit <ExitCode>)' -ForEach @(
+        @{ ExitCode = -1 }, @{ ExitCode = 2 }, @{ ExitCode = 3 }
+    ) {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = $ExitCode; Output = @() }
+        }
+
+        ($null -eq (Test-ClaudeSession -DistroName 'Ubuntu')) | Should -BeTrue
     }
 
     It 'returns false for a plain interactive session started without Remote Control' {

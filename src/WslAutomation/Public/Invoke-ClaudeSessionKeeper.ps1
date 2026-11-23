@@ -103,7 +103,7 @@ function Invoke-ClaudeSessionKeeper {
         actually starting one. Also logs the session ids a restore would resume, and the Codex
         remote-control start it would trigger, without doing either, and never writes the snapshot.
     .OUTPUTS
-        An object with Status ('SessionPresent', 'Launched' or 'DryRun'), WaitedSeconds,
+        An object with Status ('SessionPresent', 'Launched', 'DryRun' or 'ProbeFailed'), WaitedSeconds,
         ResumedSessionCount and CodexRemoteControlLaunched.
     .EXAMPLE
         Invoke-ClaudeSessionKeeper
@@ -187,7 +187,15 @@ function Invoke-ClaudeSessionKeeper {
     $status = $null
     $resumedCount = 0
 
-    if (Test-ClaudeSession -DistroName $DistroName) {
+    $sessionPresent = Test-ClaudeSession -DistroName $DistroName
+
+    if ($null -eq $sessionPresent) {
+        # The probe failed, so a session may well be running: launching now could start a
+        # second 'claude rc' beside it. The next interval probes again.
+        $status = 'ProbeFailed'
+        Write-WslAutomationLog -Message 'Could not tell whether a Claude Remote Control session is running (wsl probe failed); not launching' -LogFile $LogFile
+    }
+    elseif ($sessionPresent) {
         $status = 'SessionPresent'
         Write-WslAutomationLog -Message 'Claude Remote Control session present' -LogFile $LogFile
 
