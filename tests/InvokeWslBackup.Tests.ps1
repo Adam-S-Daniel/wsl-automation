@@ -383,6 +383,36 @@ Describe 'Invoke-WslBackup' {
             (Get-Content -Path $logFile -Raw) | Should -Match 'ERROR: cannot list the backup dir'
         }
 
+        It 'names ProbeFailed as the reason when deferring because activity could not be read' {
+            $tag = Get-ExpectedTag
+            $freshDate = $script:clock.Now.AddDays(-1).ToString('yyyy-MM-dd')
+            $freshBackupPath = Join-Path -Path $script:backupDir -ChildPath "wsl-ubuntu-$tag-$freshDate.tar"
+            Set-Content -Path $freshBackupPath -Value 'fresh' -NoNewline
+            (Get-Item -Path $freshBackupPath).LastWriteTime = $script:clock.Now.AddDays(-1)
+
+            Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{
+                    IsActive           = $true
+                    Reason             = 'ProbeFailed'
+                    ActiveProcessCount = 0
+                    ActiveCommands     = @()
+                    RemoteControlPids  = @()
+                    IdleClaudePids     = @()
+                }
+            }
+            Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{ ExitCode = 0; Output = @() }
+            }
+
+            $result = Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath
+
+            $result.Status | Should -Be 'DeferredBusy'
+            Should -Not -Invoke -CommandName Invoke-WslExe -ModuleName WslAutomation
+            $logContent = Get-Content -Path (Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log') -Raw
+            $logContent | Should -Match 'Deferred: could not read WSL activity \(ProbeFailed\)'
+            $logContent | Should -Not -Match 'interactive process'
+        }
+
         It 'exports when busy, inside the force window, and no backups exist at all' {
             Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
                 [pscustomobject]@{
