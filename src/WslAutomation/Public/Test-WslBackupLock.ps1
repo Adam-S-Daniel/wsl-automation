@@ -30,10 +30,22 @@ function Test-WslBackupLock {
     }
 
     # The backup can remove the lock between Test-Path and this read; that is a released lock.
-    $fileInfo = Get-Item -LiteralPath $LockPath -ErrorAction SilentlyContinue
-    if ($null -eq $fileInfo) {
+    # Any other failure (access denied, a sharing violation) leaves a lock that exists, so it
+    # is reported as held rather than released.
+    try {
+        $fileInfo = Get-Item -LiteralPath $LockPath -ErrorAction Stop
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
         return [pscustomobject]@{
             Present    = $false
+            Stale      = $false
+            AgeMinutes = $null
+            Data       = $null
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Present    = $true
             Stale      = $false
             AgeMinutes = $null
             Data       = $null

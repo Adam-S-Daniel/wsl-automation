@@ -250,7 +250,13 @@ function Invoke-WslBackup {
         if ($activity.IsActive) {
             $activeCommandsJoined = $activity.ActiveCommands -join ', '
             $overdueNote = if ($overdue) { "; overdue - forcing only between $forceWindowStart and $forceWindowEnd" } else { '' }
-            Write-WslAutomationLog -Message "Deferred: WSL in use ($($activity.ActiveProcessCount) interactive process(es): $activeCommandsJoined); newest backup is $backupAgeDisplay$overdueNote" -LogFile $LogFile
+            $deferReason = if ($activity.Reason -eq 'ProbeFailed') {
+                'could not read WSL activity (ProbeFailed)'
+            }
+            else {
+                "WSL in use ($($activity.ActiveProcessCount) interactive process(es): $activeCommandsJoined)"
+            }
+            Write-WslAutomationLog -Message "Deferred: $deferReason; newest backup is $backupAgeDisplay$overdueNote" -LogFile $LogFile
             return [pscustomobject]@{
                 Status   = 'DeferredBusy'
                 FilePath = $null

@@ -282,6 +282,22 @@ Describe 'WslAutomation helpers' {
             $result.Data.ProcessId | Should -Be 123
         }
 
+        It 'reports a lock it cannot read for another reason as held, not released' {
+            # Only "not found" means released. Access denied on a lock that exists must keep the
+            # keeper waiting, or it launches into a distro an export is about to stop.
+            $lockPath = Join-Path $TestDrive 'unreadable.lock'
+            Mock -ModuleName WslAutomation Test-Path { $true }
+            Mock -ModuleName WslAutomation Get-Item {
+                $action = if ($PesterBoundParameters.ContainsKey('ErrorAction')) { $PesterBoundParameters['ErrorAction'] } else { 'Continue' }
+                Write-Error -Exception ([System.UnauthorizedAccessException]::new('Access to the path is denied.')) -ErrorAction $action
+            }
+
+            $result = Test-WslBackupLock -LockPath $lockPath -ErrorAction Stop
+
+            $result.Present | Should -BeTrue
+            $result.Stale | Should -BeFalse
+        }
+
         It 'reports Present false, without throwing, when the lock is removed right after the existence check' {
             # The backup removes its lock while the keeper is polling for it. Test-Path can still
             # see the file and the read after it miss it; that is a released lock, not a crash.
