@@ -121,8 +121,7 @@ one-way robocopy into the OneDrive-synced backup dir. `Invoke-WslBackup`
   leaves the distro running.
 - **`/mnt/*` is excluded on purpose.** `/mnt/wslg/distro` is a bind mount of
   `/` on the same device, so `--one-file-system` does not skip it and the
-  backup would read the root filesystem twice (verified on the owner's machine
-  2026-10-20). Keep the line in `scripts/wsl-restic-excludes.txt`.
+  backup would read the root filesystem twice ([evidence](docs/evidence/agents-md-observations.md)). Keep the line in `scripts/wsl-restic-excludes.txt`.
 - **It takes no `backup.lock`.** The lock exists so the keeper waits instead of
   launching a session into a distro an export is about to stop. restic stops
   nothing, so holding it would only delay the keeper.
@@ -134,14 +133,13 @@ one-way robocopy into the OneDrive-synced backup dir. `Invoke-WslBackup`
 - **The copy never carries attributes** (`/COPY:DT /DCOPY:T`). Robocopy's
   defaults copy the local folder's attributes over the OneDrive folder's and
   cleared its "Always keep on this device" pin on the first real run
-  (2026-10-23).
+  ([evidence](docs/evidence/agents-md-observations.md)).
 
 ### `wsl --export` stops the running distro
 
-Verified 2026-09-25 on the durable workstation (WSL 2.7.14): a throwaway distro's shell was
-watching `dmesg -w` when a backup export ran against it, and the export
-killed it exactly as `wsl --shutdown` would. The production journal shows the
-same thing on every real backup, right after the export starts:
+A backup export kills the distro's running shells exactly as `wsl --shutdown`
+would ([evidence](docs/evidence/agents-md-observations.md)). The production journal shows it on every real backup, right
+after the export starts:
 
 ```
 InitTerminateInstanceInternal ... systemctl poweroff
@@ -192,13 +190,12 @@ owes the same delay.
 
 ### Idle Claude Code sessions do not count as backup activity
 
-Observed live 2026-09-27: a second interactive Claude Code session
-(`claude --resume <id>`, left open in a terminal alongside its npm/node MCP
-child processes) deferred the backup 13 consecutive daily runs with
-`Deferred: WSL in use (... claude, npm, node)`. Only the `-ForceAfterDays`
-override (9 days when this was observed; the default is `-ForceAfterDays 3`, in-window
-only) would ever have let a backup through — people routinely leave Claude sessions open, so this defeated the
-activity gate's whole point. Don't re-treat a `claude` process as activity on
+A second interactive Claude Code session left open in a terminal, with its
+npm/node MCP child processes, deferred the backup every day with
+`Deferred: WSL in use (... claude, npm, node)`; only the `-ForceAfterDays`
+override (default 3, in-window only) would ever have let a backup through.
+People routinely leave Claude sessions open, so this defeated the activity
+gate's whole point ([evidence](docs/evidence/agents-md-observations.md)). Don't re-treat a `claude` process as activity on
 sight; it isn't one.
 
 `Test-WslActivity` reads each non-Remote-Control `claude` process's own
@@ -214,8 +211,7 @@ Control session — they're resumable afterwards with `claude --resume`.
 
 A session run as its versioned binary is identified too: its `comm` is the
 binary's file name (e.g. `2.1.285`) and its argv0 is a path ending in
-`claude/versions/<version>`. Observed 2026-09-29 with sessions spawned by
-`claude rc` and with resumed sessions; a version-like `comm` with any other
+`claude/versions/<version>` ([evidence](docs/evidence/agents-md-observations.md)); a version-like `comm` with any other
 argv0 is not treated as Claude.
 
 ### The keeper restores lost Claude sessions from a snapshot
@@ -244,7 +240,7 @@ idle, history intact. `Invoke-ClaudeSessionKeeper` automates exactly that:
   first and only then clears the mark.
 - **The backup records the sessions itself.** The keeper and the backup both
   fire at :00, and the keeper's last refresh raced the backup's teardown, so a
-  session that was busy mid-turn was never snapshotted (observed 2026-10-05).
+  session that was busy mid-turn was never snapshotted ([evidence](docs/evidence/agents-md-observations.md)).
   `Invoke-WslBackup` writes the live list, restore-pending, right before it
   stops anything (best-effort; if the list is unreadable it re-marks the
   keeper's last snapshot), and the keeper's refresh re-checks the lock and the
@@ -386,8 +382,7 @@ is specific to this repo:
 
 ### The keeper restarts a dead WSL user manager, and linger stays on
 
-2026-10-04 13:02 EDT a test ran `kill(-1, SIGKILL)` as the WSL user
-([skills-evals#250](https://github.com/Adam-S-Daniel/skills-evals/pull/250)).
+A test once ran `kill(-1, SIGKILL)` as the WSL user ([evidence](docs/evidence/agents-md-observations.md)).
 That killed `user@1000.service`; systemd then removed `/run/user/1000` and does
 not start the manager again by itself. Every new shell warned
 `XDG_RUNTIME_DIR ... is not a directory`, snap apps failed with `cannot create
@@ -507,15 +502,14 @@ otherwise.
 
 ### Docker Desktop WSL integration breaks after reboot; the watchdog repairs it
 
-Diagnosed 2026-10-31; the `Docker WSL Integration Watchdog` task exists for it
-(README has the statuses and alerts).
+The `Docker WSL Integration Watchdog` task exists for it (README has the
+statuses and alerts; diagnosis history in [evidence](docs/evidence/agents-md-observations.md)).
 
 - **Symptom.** Every attempt failed with `dial unix /mnt/wsl/docker-desktop/shared-sockets/host-services/backend.sock: connect: no such file or directory`.
 - **Cause.** Docker's `wsl-bootstrap` pre-bootstrap force-unmounts its
   shared-socket mounts under `/mnt/wsl`, a mount peer group shared across
-  distros ([docker/desktop-feedback#678](https://github.com/docker/desktop-feedback/issues/678)).
-  Ubuntu powered off 35 ms later and its systemd shutdown unmounted
-  `host-services` for good.
+  distros. Ubuntu's systemd shutdown then unmounted `host-services` for good
+  (upstream issue and timing in [evidence](docs/evidence/agents-md-observations.md)).
 - **"Skip WSL distro integration" removes the distro** from `IntegratedWslDistros`
   in `%APPDATA%\Docker\settings-store.json`.
 - **A Docker Desktop restart re-creates the mounts, so it is the repair.**
