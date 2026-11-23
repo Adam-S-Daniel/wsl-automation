@@ -202,9 +202,10 @@ function Invoke-WslResticBackup {
     # mirrored, after the snapshots that needed the deleted data are already gone.
     # locks/ is never copied: a lock caught mid-run would sit in the copy as a stale lock.
     # The repository's subdirectories are built as plain strings: Join-Path resolves the drive
-    # and throws when it does not exist in this session. A trailing backslash is trimmed so a
-    # path never ends in one inside robocopy's quoted arguments.
-    $repoRoot = $RepoDir.TrimEnd('\')
+    # and throws when it does not exist in this session. Forward slashes, which
+    # ConvertTo-WslMountPath also accepts, become backslashes so /XD matches the folders, and a
+    # trailing backslash is trimmed so a path never ends in one inside robocopy's quoted arguments.
+    $repoRoot = $RepoDir.Replace('/', '\').TrimEnd('\')
     $copyDir = Join-Path $BackupDir 'restic'
     # /COPY:DT and /DCOPY:T copy data and timestamps only, never attributes. Robocopy's
     # defaults (/COPY:DAT, /DCOPY:DA) copy the local repo's attributes onto the OneDrive copy,

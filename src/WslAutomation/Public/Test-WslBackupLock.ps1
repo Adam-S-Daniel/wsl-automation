@@ -29,11 +29,20 @@ function Test-WslBackupLock {
         }
     }
 
-    $fileInfo = Get-Item -LiteralPath $LockPath
+    # The backup can remove the lock between Test-Path and this read; that is a released lock.
+    $fileInfo = Get-Item -LiteralPath $LockPath -ErrorAction SilentlyContinue
+    if ($null -eq $fileInfo) {
+        return [pscustomobject]@{
+            Present    = $false
+            Stale      = $false
+            AgeMinutes = $null
+            Data       = $null
+        }
+    }
     $data = $null
 
     try {
-        $rawContent = Get-Content -LiteralPath $LockPath -Raw
+        $rawContent = Get-Content -LiteralPath $LockPath -Raw -ErrorAction Stop
         $data = $rawContent | ConvertFrom-Json -ErrorAction Stop
     }
     catch {

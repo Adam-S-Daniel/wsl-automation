@@ -210,6 +210,20 @@ Describe 'Invoke-WslResticBackup' {
     }
 
     Context 'the one-way copy to the OneDrive dir' {
+        It 'builds robocopy source and exclude paths with backslashes when RepoDir uses forward slashes' {
+            # ConvertTo-WslMountPath accepts 'D:/...'; the robocopy paths must name the same folders,
+            # or /XD misses snapshots and the first /E pass copies them ahead of their packs.
+            $slashParams = $script:baseParams.Clone()
+            $slashParams['RepoDir'] = 'D:/Backups/wsl-restic/'
+
+            Invoke-WslResticBackup @slashParams | Out-Null
+
+            $script:robocopyCalls.Count | Should -Be 2
+            $script:robocopyCalls[0][0] | Should -Be 'D:\Backups\wsl-restic'
+            ($script:robocopyCalls[0][3..5] -join '|') | Should -Be '/XD|D:\Backups\wsl-restic\snapshots|D:\Backups\wsl-restic\locks'
+            $script:robocopyCalls[1][0] | Should -Be 'D:\Backups\wsl-restic\snapshots'
+        }
+
         It 'copies everything but snapshots, then mirrors snapshots, and nothing else on a daily run' {
             Invoke-WslResticBackup @script:baseParams | Out-Null
 

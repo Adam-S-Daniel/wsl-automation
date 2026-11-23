@@ -281,6 +281,21 @@ Describe 'WslAutomation helpers' {
             $result.AgeMinutes | Should -BeLessThan 5
             $result.Data.ProcessId | Should -Be 123
         }
+
+        It 'reports Present false, without throwing, when the lock is removed right after the existence check' {
+            # The backup removes its lock while the keeper is polling for it. Test-Path can still
+            # see the file and the read after it miss it; that is a released lock, not a crash.
+            $lockPath = Join-Path $TestDrive 'released-mid-check.lock'
+            Mock -ModuleName WslAutomation Test-Path { $true }
+
+            { Test-WslBackupLock -LockPath $lockPath -ErrorAction Stop } | Should -Not -Throw
+
+            $result = Test-WslBackupLock -LockPath $lockPath -ErrorAction Stop
+
+            $result.Present | Should -BeFalse
+            $result.Stale | Should -BeFalse
+            $result.AgeMinutes | Should -BeNullOrEmpty
+        }
     }
 
     Describe 'Remove-WslBackupLock' {
