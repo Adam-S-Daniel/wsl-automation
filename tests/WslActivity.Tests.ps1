@@ -24,6 +24,18 @@ Describe 'Test-WslActivity' {
         Should -Invoke -ModuleName WslAutomation Invoke-WslExe -Times 0 -Exactly
     }
 
+    It 'fails safe to active without probing when the distro state could not be read' {
+        # Unknown is not NotRunning: reading it as idle would let a distro-stopping export run.
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Unknown' }
+        Mock -ModuleName WslAutomation Invoke-WslExe { throw 'ps must not run' }
+
+        $activity = Test-WslActivity -DistroName 'Ubuntu'
+
+        $activity.IsActive | Should -BeTrue
+        $activity.Reason | Should -Be 'ProbeFailed'
+        $activity.RemoteControlPids | Should -BeNullOrEmpty
+    }
+
     It 'uses --exec (never --) to run ps, requesting ppid' {
         Mock -ModuleName WslAutomation Invoke-WslExe {
             [pscustomobject]@{ ExitCode = 0; Output = @() }
