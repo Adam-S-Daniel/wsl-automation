@@ -351,6 +351,38 @@ Describe 'Invoke-WslBackup' {
             (Get-Content -Path $logFile -Raw) | Should -Match 'Forcing export: newest backup is 10 day\(s\) old \(limit 3; force window 02:00-06:00\)'
         }
 
+        It 'throws without exporting when BackupDir exists but cannot be listed, rather than forcing' {
+            # An unreadable dir is not "no backup exists": reading it that way would force an
+            # export, which stops the distro and every session in it.
+            Mock -CommandName Get-ChildItem -ModuleName WslAutomation -ParameterFilter {
+                "$Path$LiteralPath" -eq $script:backupDir -and -not $Filter
+            } -MockWith {
+                # A real listing failure is a non-terminating error, so it honors -ErrorAction.
+                $action = if ($PesterBoundParameters.ContainsKey('ErrorAction')) { $PesterBoundParameters['ErrorAction'] } else { 'Continue' }
+                Write-Error -Message 'Access to the path is denied.' -Category PermissionDenied -ErrorAction $action
+            }
+            Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{
+                    IsActive           = $true
+                    Reason             = 'Active'
+                    ActiveProcessCount = 1
+                    ActiveCommands     = @('bash')
+                    RemoteControlPids  = @()
+                    IdleClaudePids     = @()
+                }
+            }
+            Mock -CommandName Invoke-WslExe -ModuleName WslAutomation -MockWith {
+                [pscustomobject]@{ ExitCode = 0; Output = @() }
+            }
+
+            { Invoke-WslBackup -BackupDir $script:backupDir -StagingDir $script:stagingDir -LockPath $script:lockPath } |
+                Should -Throw '*cannot list*'
+
+            Should -Not -Invoke -CommandName Invoke-WslExe -ModuleName WslAutomation
+            $logFile = Join-Path -Path $script:backupDir -ChildPath 'wsl-ubuntu-backup.log'
+            (Get-Content -Path $logFile -Raw) | Should -Match 'ERROR: cannot list the backup dir'
+        }
+
         It 'exports when busy, inside the force window, and no backups exist at all' {
             Mock -CommandName Test-WslActivity -ModuleName WslAutomation -MockWith {
                 [pscustomobject]@{

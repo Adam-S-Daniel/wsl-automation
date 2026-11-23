@@ -205,7 +205,19 @@ function Invoke-WslBackup {
     # than let a persistently busy distro postpone every backup forever. A forced export stops the
     # distro and kills running agent sessions, so it is only allowed inside the quiet overnight
     # window; overdue but outside it, the activity gate below still applies.
-    $existingBackups = @(Get-ChildItem -Path $BackupDir -File -ErrorAction SilentlyContinue |
+    # A missing BackupDir genuinely holds no backup. One that exists but cannot be listed does
+    # not mean that, and reading it so would force a distro-stopping export: fail loudly.
+    $backupDirItems = @()
+    if (Test-Path -LiteralPath $BackupDir) {
+        try {
+            $backupDirItems = @(Get-ChildItem -LiteralPath $BackupDir -File -ErrorAction Stop)
+        }
+        catch {
+            Write-WslAutomationLog -Message "ERROR: cannot list the backup dir to find the newest backup: $($_.Exception.Message)" -LogFile $LogFile
+            throw "Backup dir exists but cannot list it: $BackupDir"
+        }
+    }
+    $existingBackups = @($backupDirItems |
         Where-Object { $_.Name -like "$prefix-*" -and ($_.Extension -eq '.tar' -or $_.Extension -eq '.vhdx') })
     $newestExistingBackup = $existingBackups | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
     $backupAgeDays = if ($newestExistingBackup) { [math]::Floor(((Get-Date) - $newestExistingBackup.LastWriteTime).TotalDays) } else { $null }

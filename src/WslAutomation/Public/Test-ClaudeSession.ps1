@@ -38,7 +38,9 @@ function Test-ClaudeSession {
     .EXAMPLE
         Test-ClaudeSession -DistroName 'Ubuntu'
 
-        Returns $true if a Remote Control Claude Code session is running inside 'Ubuntu'.
+        Returns $true if a Remote Control Claude Code session is running inside 'Ubuntu',
+        $false if none is (or the distro is stopped), and $null when the probe failed and the
+        answer is unknown.
     #>
     [CmdletBinding()]
     param(
@@ -51,14 +53,23 @@ function Test-ClaudeSession {
         [string]$ExcludePattern = 'daemon|bg-pty-host|bg-spare'
     )
 
-    if ((Get-WslDistroState -DistroName $DistroName) -ne 'Running') {
+    $distroState = Get-WslDistroState -DistroName $DistroName
+    if ($distroState -eq 'Unknown') {
+        return $null
+    }
+    if ($distroState -ne 'Running') {
         return $false
     }
 
     $result = Invoke-WslExe -Arguments @('-d', $DistroName, '--', 'pgrep', '-af', 'claude')
 
-    if ($result.ExitCode -ne 0) {
+    # pgrep exits 1 for "no match"; anything else non-zero (or a wsl.exe failure) means the
+    # probe did not run, so the answer is unknown rather than "no session".
+    if ($result.ExitCode -eq 1) {
         return $false
+    }
+    if ($result.ExitCode -ne 0) {
+        return $null
     }
 
     $sessionLines = $result.Output | Where-Object {

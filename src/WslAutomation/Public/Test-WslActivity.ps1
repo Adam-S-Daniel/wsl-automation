@@ -111,7 +111,21 @@ function Test-WslActivity {
         [string]$RemoteControlPattern = (Get-ClaudeRemoteControlPattern)
     )
 
-    if ((Get-WslDistroState -DistroName $DistroName) -ne 'Running') {
+    $distroState = Get-WslDistroState -DistroName $DistroName
+    if ($distroState -eq 'Unknown') {
+        # The state could not be read: fail safe to busy, like a failed ps probe below, so an
+        # export that would stop the distro is deferred rather than run blind.
+        return [pscustomobject]@{
+            IsActive            = $true
+            Reason              = 'ProbeFailed'
+            ActiveProcessCount  = 0
+            ActiveCommands      = @()
+            ActiveTerminalCount = 0
+            RemoteControlPids   = @()
+            IdleClaudePids      = @()
+        }
+    }
+    if ($distroState -ne 'Running') {
         return [pscustomobject]@{
             IsActive            = $false
             Reason              = 'NotRunning'

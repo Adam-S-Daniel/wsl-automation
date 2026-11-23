@@ -519,6 +519,19 @@ Describe 'Invoke-ClaudeSessionKeeper codex remote control' {
         }
     }
 
+    It 'launches nothing and logs it when the codex probe could not run' {
+        # A failed probe says nothing about the daemon; launching on it can start a second one.
+        Mock -ModuleName WslAutomation Test-CodexRemoteControl { $null }
+
+        $result = Invoke-ClaudeSessionKeeper @script:keeperArgs
+
+        $result.CodexRemoteControlLaunched | Should -BeFalse
+        Should -Invoke -ModuleName WslAutomation Start-ClaudeLauncherTask -Times 0 -Exactly -ParameterFilter {
+            $LauncherTaskName -eq 'Codex Remote Control Launcher'
+        }
+        (Get-Content -LiteralPath $script:keeperArgs.LogFile -Raw) | Should -Match 'codex remote-control is running.*not launching'
+    }
+
     It 'launches nothing when the remote-control daemon is already running' {
         Mock -ModuleName WslAutomation Test-CodexRemoteControl { $true }
 
@@ -598,6 +611,31 @@ Describe 'Test-CodexRemoteControl' {
 
     BeforeEach {
         Mock -ModuleName WslAutomation Get-WslDistroState { 'Running' }
+    }
+
+    It 'returns null, not false, when the distro state could not be read' {
+        Mock -ModuleName WslAutomation Get-WslDistroState { 'Unknown' }
+        Mock -ModuleName WslAutomation Invoke-WslExe { throw 'pgrep must not run' }
+
+        ($null -eq (Test-CodexRemoteControl -DistroName 'Ubuntu')) | Should -BeTrue
+    }
+
+    It 'returns null, not false, when the pgrep probe itself fails (exit <ExitCode>)' -ForEach @(
+        @{ ExitCode = -1 }, @{ ExitCode = 2 }
+    ) {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = $ExitCode; Output = @() }
+        }
+
+        ($null -eq (Test-CodexRemoteControl -DistroName 'Ubuntu')) | Should -BeTrue
+    }
+
+    It 'returns false when pgrep finds no codex process (exit 1)' {
+        Mock -ModuleName WslAutomation Invoke-WslExe {
+            [pscustomobject]@{ ExitCode = 1; Output = @() }
+        }
+
+        Test-CodexRemoteControl -DistroName 'Ubuntu' | Should -BeExactly $false
     }
 
     It 'recognizes "<Line>" as the remote-control daemon' -ForEach @(

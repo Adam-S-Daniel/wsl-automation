@@ -369,12 +369,14 @@ Describe 'WslAutomation helpers' {
             Get-WslDistroState -DistroName 'no-such-distro' | Should -Be 'NotFound'
         }
 
-        It 'returns NotFound when wsl.exe exits with a nonzero code' {
+        It 'returns Unknown, not NotFound, when wsl.exe exits with a nonzero code' {
+            # A failed list says nothing about the distro; callers that act on absence must not
+            # read it as NotFound.
             Mock -ModuleName WslAutomation Invoke-WslExe {
                 [pscustomobject]@{ ExitCode = 1; Output = @() }
             }
 
-            Get-WslDistroState -DistroName 'Ubuntu' | Should -Be 'NotFound'
+            Get-WslDistroState -DistroName 'Ubuntu' | Should -Be 'Unknown'
         }
     }
 
