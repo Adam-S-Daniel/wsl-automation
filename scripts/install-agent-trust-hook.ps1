@@ -21,10 +21,13 @@
     core.hooksPath, and repos whose post-checkout hook is not this installer's.
 
 .PARAMETER OwnerRoot
-    Owner roots scanned by -IncludeExistingClones. Defaults to the folders in the
-    environment variable WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':'
-    elsewhere). There is no built-in value; with neither, -IncludeExistingClones fails with an
-    error that names both.
+    Owner roots scanned by -IncludeExistingClones. Defaults to the folders in
+    WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':' elsewhere). On Windows that
+    is the user environment variable. On Linux, WSL and macOS it is the environment variable if
+    set, else the key in ~/.config/wsl-automation/settings.env (WSL_AUTOMATION_SETTINGS overrides
+    the path); not a shell profile, which a non-interactive or long-running process never reads.
+    There is no built-in value; with none, -IncludeExistingClones fails with an error that names
+    -OwnerRoot, the variable and the file.
 
 .EXAMPLE
     ./install-agent-trust-hook.ps1

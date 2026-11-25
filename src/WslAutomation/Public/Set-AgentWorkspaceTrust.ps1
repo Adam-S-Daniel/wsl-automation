@@ -27,10 +27,13 @@ function Set-AgentWorkspaceTrust {
     .PARAMETER Path
         Specific directories to trust. When omitted, the owner roots are scanned.
     .PARAMETER OwnerRoot
-        Directories whose git children may be trusted. Defaults to the folders listed in the
-        environment variable WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':'
-        elsewhere). There is no built-in value: when neither is given this throws an error that
-        names both.
+        Directories whose git children may be trusted. Defaults to the folders listed in
+        WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':' elsewhere): on Windows
+        the user environment variable; on Linux, WSL and macOS the environment variable if set,
+        else the key in ~/.config/wsl-automation/settings.env (see Get-AgentTrustOwnerRoot; not a
+        shell profile, which a non-interactive or long-running process never reads). There is no
+        built-in value: when nothing is configured this throws an error that names -OwnerRoot, the
+        variable and the file.
     .PARAMETER ClaudeConfigPath
         Claude Code's user config. Defaults to ~/.claude.json (on Linux, /home/<user>/.claude.json).
     .PARAMETER CodexConfigPath

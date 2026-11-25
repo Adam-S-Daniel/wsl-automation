@@ -41,10 +41,12 @@ function Install-AgentTrustGitHook {
         Also install the hook into existing clones directly under the owner roots.
     .PARAMETER OwnerRoot
         Directories whose direct children are existing clones. Only used with
-        -IncludeExistingClones. Defaults to the folders listed in the environment variable
-        WSL_AUTOMATION_AGENT_OWNER_ROOTS (see Get-AgentTrustOwnerRoot); there is no built-in
-        value, so without either this throws an error that names both. The installed hook itself
-        reads the same variable when a clone is made.
+        -IncludeExistingClones. Defaults to the folders listed in WSL_AUTOMATION_AGENT_OWNER_ROOTS
+        (see Get-AgentTrustOwnerRoot): on Windows the user environment variable; on Linux, WSL and
+        macOS the environment variable if set, else the key in
+        ~/.config/wsl-automation/settings.env. There is no built-in value, so with nothing
+        configured this throws an error that names -OwnerRoot, the variable and the file. The
+        installed hook itself resolves the roots the same way when a clone is made.
     .EXAMPLE
         Install-AgentTrustGitHook
 

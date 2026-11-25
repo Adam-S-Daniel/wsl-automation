@@ -13,9 +13,13 @@
     omitted, the owner roots and their direct git children are trusted.
 
 .PARAMETER OwnerRoot
-    Owner roots. Defaults to the folders in the environment variable
-    WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':' elsewhere). There is no
-    built-in value; with neither, the script fails with an error that names both.
+    Owner roots. Defaults to the folders in WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on
+    Windows, ':' elsewhere). On Windows that is the user environment variable. On Linux, WSL and
+    macOS it is the environment variable if set, else the key in
+    ~/.config/wsl-automation/settings.env (WSL_AUTOMATION_SETTINGS overrides the path); not a
+    shell profile, which a non-interactive or long-running process never reads. There is no
+    built-in value; with none, the script fails with an error that names -OwnerRoot, the
+    variable and the file.
 
 .EXAMPLE
     ./trust-agent-workspaces.ps1
