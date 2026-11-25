@@ -331,6 +331,7 @@ mkdir -p "$test_root/updated/scripts"
 cp -- "$script" "$test_root/updated/scripts/run-memory-curation.sh"
 cp -- "$repository_root/scripts/update-task-checkout.sh" "$test_root/updated/scripts/update-task-checkout.sh"
 cp -- "$repository_root/scripts/task-settings.sh" "$test_root/updated/scripts/task-settings.sh"
+cp -- "$repository_root/scripts/portable.sh" "$test_root/updated/scripts/portable.sh"
 cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
 #!/usr/bin/env bash
 printf 'updated code:%s\n' "$*"

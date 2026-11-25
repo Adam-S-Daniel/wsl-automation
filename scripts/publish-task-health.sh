@@ -109,7 +109,7 @@ fi
 temporary_dir=$(mktemp -d)
 trap 'rm -rf -- "$temporary_dir"' EXIT
 
-iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+iso() { wsl_automation_epoch_format "$1" %Y-%m-%dT%H:%M:%SZ; }
 timestamp=$(iso "$now")
 
 log_line() {
@@ -158,7 +158,7 @@ $rows = foreach ($n in $names) {
     [pscustomobject]$row
 }
 ConvertTo-Json -Compress -InputObject @($rows)'
-names_b64=$(jq -r 'join("\n")' <<<"$names_json" | base64 -w0)
+names_b64=$(jq -r 'join("\n")' <<<"$names_json" | base64 | tr -d '\n')
 tasks_error=false
 ps_json=''
 if ps_out=$(WSL_TASK_HEALTH_NAMES=$names_b64 WSLENV="WSL_TASK_HEALTH_NAMES${WSLENV:+:$WSLENV}" \
@@ -199,9 +199,13 @@ last_line() {
 
 restic_utc=''
 if [[ -d $snapshots_dir ]]; then
-    newest=$(find "$snapshots_dir" -maxdepth 1 -type f -printf '%T@\n' 2>/dev/null | sort -rn | sed -n 1p || true)
-    if [[ ${newest%%.*} =~ ^[0-9]+$ ]]; then
-        restic_utc=$(iso "${newest%%.*}")
+    newest=0
+    while IFS= read -r -d '' snapshot; do
+        mtime=$(wsl_automation_file_mtime "$snapshot" || true)
+        if [[ $mtime =~ ^[0-9]+$ ]] && ((mtime > newest)); then newest=$mtime; fi
+    done < <(find "$snapshots_dir" -maxdepth 1 -type f -print0 2>/dev/null)
+    if ((newest > 0)); then
+        restic_utc=$(iso "$newest")
     fi
 fi
 
@@ -221,7 +225,7 @@ keeper_line=$(last_line "$keeper_log")
 if [[ $keeper_line =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}) ]]; then
     # The keeper logs local time: read it in this machine's zone (date -u would
     # take it as UTC), then print the instant in UTC.
-    keeper_epoch=$(date -d "${BASH_REMATCH[1]}" +%s 2>/dev/null || true)
+    keeper_epoch=$(wsl_automation_local_to_epoch "${BASH_REMATCH[1]}" || true)
     if [[ $keeper_epoch =~ ^[0-9]+$ ]]; then
         keeper_utc=$(iso "$keeper_epoch")
     fi
