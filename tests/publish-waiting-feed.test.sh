@@ -513,4 +513,37 @@ assert_eq "$rc" 0 'WAITING_FEED_URL from the settings file is used'
 assert_match "$out" 'published=dry-run$' 'the run with the file setting reaches the publisher'
 assert_eq "$(git -C "$test_root/clone-settings" remote get-url origin)" "file://$remote" 'the feed was cloned from the file setting'
 
+# --- Portable tools: the same log timestamp with BSD date (macOS) -------------------
+# shellcheck source=tests/portable-stubs.sh
+. "$repository_root/tests/portable-stubs.sh"
+make_bsd_bin "$test_root/bsd-bin"
+for flavor in gnu bsd; do
+    flavor_log="$test_root/portable-$flavor.log"
+    rc=0
+    if [[ $flavor == bsd ]]; then flavor_path="$test_root/bsd-bin:$PATH"; else flavor_path=$PATH; fi
+    out=$(PATH="$flavor_path" CURL_FAIL=1 WAITING_FEED_LOG="$flavor_log" bash "$script" 2>&1) || rc=$?
+    assert_match "$(tail -n 1 "$flavor_log")" '^2026-09-21T14:13:20Z exit=' "$flavor date: the log line carries the ISO time of the fixed epoch"
+done
+
+# --- macOS keeps the login in the Keychain: say so, do not report no_credentials ------
+mkdir -p "$test_root/darwin-bin"
+printf '#!/usr/bin/env bash\necho Darwin\n' >"$test_root/darwin-bin/uname"
+chmod +x "$test_root/darwin-bin/uname"
+reset_calls
+rc=0
+out=$(PATH="$test_root/darwin-bin:$PATH" WAITING_FEED_CREDENTIALS="$test_root/absent.json" WAITING_FEED_LOG="$test_root/darwin.log" bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 1 'macOS without the credentials file exits 1'
+assert_match "$out" '^waiting feed: supported on Linux and WSL only' 'macOS gets one line naming the supported platforms'
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" 1 'the macOS message is one line'
+assert_eq "$(call_count)" 0 'macOS makes no API call'
+assert_match "$(tail -n 1 "$test_root/darwin.log")" ' exit=1 waiting feed: supported on Linux and WSL only' 'the macOS message is logged'
+# With the file present (the Keychain fallback), macOS runs as usual.
+rc=0
+out=$(PATH="$test_root/darwin-bin:$PATH" WAITING_FEED_LOG="$test_root/darwin2.log" bash "$script" --dry-run 2>&1) || rc=$?
+assert_eq "$rc" 0 'macOS with the credentials file still runs'
+# Linux without the file keeps the old report.
+rc=0
+out=$(WAITING_FEED_CREDENTIALS="$test_root/absent.json" WAITING_FEED_LOG="$test_root/linux.log" bash "$script" --dry-run 2>&1) || rc=$?
+assert_match "$out" 'ok=false' 'Linux without the file still reports the failure through the feed'
+
 printf 'PASS: %s assertions\n' "$passed"

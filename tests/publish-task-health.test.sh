@@ -368,4 +368,20 @@ assert_match "$default_line" 'Task Health Publish,Docker WSL Integration Watchdo
 default_count=$(grep -o ',' <<<"$default_line" | wc -l)
 assert_eq "$default_count" 12 'the default list names thirteen tasks'
 assert_match "$default_line" 'ccstatusline Config Sync,WSL Memory Log,Codex Cloud' 'the default list includes the memory log task'
+# --- Portable tools: the same output with BSD date, stat and touch (macOS) -----------
+# shellcheck source=tests/portable-stubs.sh
+. "$repository_root/tests/portable-stubs.sh"
+make_bsd_bin "$test_root/bsd-bin"
+reset_remote() { rm -rf -- "$test_root/clone"; git --git-dir="$remote" update-ref -d "refs/heads/$feed_ref"; }
+reset_remote
+TASK_HEALTH_NOW=$((now + 300000)) run_health
+gnu_json=$(remote_json)
+reset_remote
+rc=0
+out=$(PATH="$test_root/bsd-bin:$PATH" TASK_HEALTH_NOW=$((now + 300000)) bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 0 'a run with BSD date, stat and touch exits 0'
+assert_eq "$(remote_json)" "$gnu_json" 'BSD tools publish the same document as GNU tools'
+assert_eq "$(remote_jq '.generated_utc')" "$(date -u -d "@$((now + 300000))" +%Y-%m-%dT%H:%M:%SZ)" 'generated_utc is the ISO time of the fixed epoch'
+assert_eq "$(remote_jq '.outputs.restic_latest_snapshot_utc')" "$(date -u -d '@1789000000' +%Y-%m-%dT%H:%M:%SZ)" 'restic: newest snapshot found without find -printf'
+
 printf 'PASS: %s assertions\n' "$passed"

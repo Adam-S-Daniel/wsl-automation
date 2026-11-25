@@ -96,8 +96,8 @@ done <"$work/stdout"
 # restic reports each unreadable file as one "error: ..." line on stderr.
 error_count=0
 while IFS= read -r line; do
-    case ${line,,} in
-        error*) error_count=$((error_count + 1)) ;;
+    case $line in
+        [Ee][Rr][Rr][Oo][Rr]*) error_count=$((error_count + 1)) ;;
     esac
 done <"$work/stderr"
 printf 'errors=%s\n' "$error_count"
