@@ -130,6 +130,7 @@ mkdir -p "$test_root/updated/scripts"
 cp -- "$script" "$test_root/updated/scripts/publish-usage-census.sh"
 cp -- "$repository_root/scripts/update-task-checkout.sh" "$test_root/updated/scripts/update-task-checkout.sh"
 cp -- "$repository_root/scripts/task-settings.sh" "$test_root/updated/scripts/task-settings.sh"
+cp -- "$repository_root/scripts/portable.sh" "$test_root/updated/scripts/portable.sh"
 cat >"$test_root/replacement.sh" <<'EOF_REPLACEMENT'
 #!/usr/bin/env bash
 printf 'updated code:%s\n' "$*"
@@ -255,5 +256,20 @@ out=$(GH_EXIT=124 STUB_OUTPUT="$published" run_mapped) || rc=$?
 assert_eq "$rc" 5 'a timed-out dispatch exits 5'
 assert_match "$out" 'explorer dispatch: failed \(gh exit 124\)' 'the timeout is reported with exit 124'
 assert_match "$(tail -n 1 "$log_file")" ' exit=5 .* \| explorer dispatch: failed \(gh exit 124\)$' 'the timeout is logged'
+
+# --- A missing gh is named up front --------------------------------------------------
+# A PATH with every tool the script needs except gh.
+no_gh="$test_root/no-gh-bin"
+mkdir -p "$no_gh"
+for tool in bash git mktemp rm cat dirname mkdir date tr sed head tail wc touch stat env timeout; do
+    if tool_path=$(command -v "$tool"); then ln -sf "$tool_path" "$no_gh/$tool"; fi
+done
+rc=0
+out=$(PATH="$no_gh" SKILLS_EVALS_URL="$gh_url" WSL_AUTOMATION_TASK_REEXEC="$script" bash "$script" 2>&1) || rc=$?
+assert_eq "$rc" 1 'a missing gh exits 1'
+assert_match "$out" 'GitHub CLI \(gh\) is not installed; install it from https://cli\.github\.com' 'a missing gh says how to install it'
+[[ $out != *'gh exit 127'* ]] || fail 'a missing gh is reported as exit 127'
+pass
+assert_match "$(tail -n 1 "$log_file")" ' exit=1 usage census: the GitHub CLI' 'a missing gh is logged'
 
 printf 'PASS: %s assertions\n' "$passed"

@@ -73,6 +73,7 @@ new_fixture() {
     fixture="$test_root/fixture-$1/scripts"
     mkdir -p "$fixture"
     cp -- "$helper" "$fixture/update-task-checkout.sh"
+    cp -- "$repository_root/scripts/portable.sh" "$fixture/portable.sh"
     cat >"$fixture/entry.sh" <<'EOF_ENTRY'
 #!/usr/bin/env bash
 set -euo pipefail

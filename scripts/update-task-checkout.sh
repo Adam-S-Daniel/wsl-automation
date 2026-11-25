@@ -25,6 +25,9 @@
 #                                ~/.local/state/wsl-automation/checkout-update.stamp)
 #   WSL_AUTOMATION_NOW           epoch seconds (default: now)
 
+# shellcheck source=scripts/portable.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/portable.sh"
+
 wsl_automation_task_bootstrap() {
     local entry=$1 min_interval=$2 deadline=$3
     shift 3
@@ -37,14 +40,14 @@ wsl_automation_task_bootstrap() {
     local stamp=${WSL_AUTOMATION_UPDATE_STAMP:-$HOME/.local/state/wsl-automation/checkout-update.stamp}
     local now=${WSL_AUTOMATION_NOW:-$(date +%s)}
     local last=''
-    if ((min_interval > 0)) && last=$(stat -c %Y -- "$stamp" 2>/dev/null) &&
+    if ((min_interval > 0)) && last=$(wsl_automation_file_mtime "$stamp") &&
         ((now >= last && now - last < min_interval)); then
         return 0
     fi
     # Stamp the attempt, not a success: an offline machine retries once per
     # interval instead of every run. A stamp that cannot be written only means
     # the next run tries again.
-    { mkdir -p -- "$(dirname -- "$stamp")" && touch -d "@$now" -- "$stamp"; } 2>/dev/null || true
+    { mkdir -p -- "$(dirname -- "$stamp")" && wsl_automation_touch_epoch "$now" "$stamp"; } 2>/dev/null || true
 
     local helper_dir updater task_pwsh task_timeout
     helper_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

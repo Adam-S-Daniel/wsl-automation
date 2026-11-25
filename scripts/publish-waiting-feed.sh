@@ -28,6 +28,10 @@
 # tokens. The same line, with a UTC timestamp and the exit code, is appended to
 # the log only when a run published or failed, so a quiet minute adds nothing.
 #
+# Linux and WSL only: on macOS Claude Code keeps the login in the Keychain,
+# which this script does not read; without the credentials file it exits 1 with
+# a message saying so.
+#
 # Required setting, with no default: WAITING_FEED_URL, the feed remote. Set it in
 # ~/.config/wsl-automation/settings.env or the environment (see task-settings.sh
 # and config/settings.env.example); when it is missing the run logs a line naming
@@ -83,6 +87,19 @@ log_file=${WAITING_FEED_LOG:-$HOME/.cache/waiting-feed.log}
 now=${WAITING_FEED_NOW:-$(date +%s)}
 readonly feed_branch=persistent/waiting-feed
 
+# Claude Code on macOS keeps its login in the Keychain and writes
+# ~/.claude/.credentials.json only as a fallback (code.claude.com/docs/en/
+# authentication, "Credential management"). This script reads the file only and
+# never the Keychain, so without the file it can never publish there: say so
+# once per run, not as err=no_credentials every minute.
+if [[ ! -e $credentials && $(uname -s) == Darwin ]]; then
+    line='waiting feed: supported on Linux and WSL only (Claude Code on macOS keeps its login in the Keychain, not in a credentials file)'
+    printf '%s\n' "$line"
+    mkdir -p -- "$(dirname -- "$log_file")"
+    printf '%s exit=1 %s\n' "$(wsl_automation_epoch_format "$now" %Y-%m-%dT%H:%M:%SZ)" "$line" >>"$log_file"
+    exit 1
+fi
+
 for dependency in curl jq flock git mktemp timeout; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
         printf 'missing dependency: %s\n' "$dependency" >&2
@@ -114,7 +131,7 @@ if [[ ! -d $temporary_dir || $temporary_dir != "${runtime_dir%/}"/* ]]; then
 fi
 trap 'rm -rf -- "$temporary_dir"' EXIT
 
-timestamp=$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)
+timestamp=$(wsl_automation_epoch_format "$now" %Y-%m-%dT%H:%M:%SZ)
 
 log_line() {
     mkdir -p -- "$(dirname -- "$log_file")"

@@ -933,6 +933,10 @@ up the new PATH.
   [Checkout update before every scripted task](#checkout-update-before-every-scripted-task)).
   `wsl.exe --exec` starts a non-login shell, so the script
   appends `~/.local/bin` to `PATH` itself to find a user-installed `jq`.
+- **Linux and WSL only.** On macOS, Claude Code keeps its login in the
+  Keychain and writes `~/.claude/.credentials.json` only as a fallback, and this
+  script does not read the Keychain. Without that file it prints one line
+  saying so, logs it and exits `1`.
 - **It never refreshes the login.** The token comes from
   `.claudeAiOauth.accessToken` in `~/.claude/.credentials.json` (the
   organization from `~/.claude.json`) and is passed to curl through a private

@@ -54,6 +54,15 @@ if ! wsl_automation_require_setting SKILLS_EVALS_URL; then
 fi
 url=$SKILLS_EVALS_URL
 
+# The explorer dispatch needs the GitHub CLI; say so before any work instead of
+# ending as "failed (gh exit 127)" after the publish.
+if ! command -v gh >/dev/null 2>&1; then
+    out='usage census: the GitHub CLI (gh) is not installed; install it from https://cli.github.com and sign in with gh auth login'
+    printf '%s exit=1 %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$out" >>"$log"
+    printf '%s\n' "$out"
+    exit 1
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
