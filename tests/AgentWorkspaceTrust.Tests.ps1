@@ -281,7 +281,7 @@ Describe 'Get-AgentTrustOwnerRoot' {
             $err = { Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false } | Should -Throw -PassThru
             $err.Exception.Message | Should -Match '-OwnerRoot'
             $err.Exception.Message | Should -Match 'WSL_AUTOMATION_AGENT_OWNER_ROOTS'
-            $err.Exception.Message | Should -Match ([regex]::Escape($File))
+            $err.Exception.Message | Should -Match ([regex]::Escape((Split-Path -Leaf $File)))
             $err.Exception.Message | Should -Match ([regex]::Escape('~/src'))
         }
     }
