@@ -258,20 +258,191 @@ Describe 'Grant-CodexProjectTrust' {
     }
 }
 
-Describe 'Get-AgentTrustDefaultOwnerRoot' {
+Describe 'Get-AgentTrustOwnerRoot' {
 
-    It 'returns the two D:\repos owner roots for a Windows host' {
-        InModuleScope WslAutomation {
-            $result = @(Get-AgentTrustDefaultOwnerRoot -IsWindowsHost $true)
-            $result | Should -Be @('D:\repos\adam-s-daniel', 'D:\repos\jodidaniel')
+    BeforeAll {
+        $script:savedRoots = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+        $script:savedSettings = $env:WSL_AUTOMATION_SETTINGS
+        $script:settingsFile = Join-Path $TestDrive 'settings.env'
+        $env:WSL_AUTOMATION_SETTINGS = Join-Path $TestDrive 'no-such-settings.env'
+    }
+    AfterAll {
+        $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $script:savedRoots
+        $env:WSL_AUTOMATION_SETTINGS = $script:savedSettings
+    }
+    BeforeEach {
+        $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $null
+        Remove-Item -LiteralPath $script:settingsFile -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'throws a message naming -OwnerRoot, the variable and the settings file when nothing is configured' {
+        $file = $script:settingsFile
+        InModuleScope WslAutomation -Parameters @{ File = $file } {
+            $err = { Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false } | Should -Throw -PassThru
+            $err.Exception.Message | Should -Match '-OwnerRoot'
+            $err.Exception.Message | Should -Match 'WSL_AUTOMATION_AGENT_OWNER_ROOTS'
+            $err.Exception.Message | Should -Match ([regex]::Escape((Split-Path -Leaf $File)))
+            $err.Exception.Message | Should -Match ([regex]::Escape('~/src'))
         }
     }
 
-    It 'returns ~/repos for a non-Windows host' {
+    It 'names the user variable, not a file, on Windows' {
         InModuleScope WslAutomation {
-            $result = @(Get-AgentTrustDefaultOwnerRoot -IsWindowsHost $false)
-            $result | Should -Be @(Join-Path $HOME 'repos')
+            $err = { Get-AgentTrustOwnerRoot -IsWindowsHost $true } | Should -Throw -PassThru
+            $err.Exception.Message | Should -Match '-OwnerRoot'
+            $err.Exception.Message | Should -Match ([regex]::Escape('SetEnvironmentVariable'))
+            $err.Exception.Message | Should -Not -Match 'settings\.env'
         }
+    }
+
+    It 'throws when the value is blank or only separators' {
+        $file = $script:settingsFile
+        InModuleScope WslAutomation -Parameters @{ File = $file } {
+            { Get-AgentTrustOwnerRoot -Value '  ' -SettingsPath $File } | Should -Throw '*WSL_AUTOMATION_AGENT_OWNER_ROOTS*'
+            { Get-AgentTrustOwnerRoot -Value ([string][System.IO.Path]::PathSeparator) -SettingsPath $File } | Should -Throw '*-OwnerRoot*'
+        }
+    }
+
+    It 'splits the configured value on the platform path separator' {
+        $sep = [System.IO.Path]::PathSeparator
+        $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = "/one/a$sep /two/b $sep$sep/three"
+        InModuleScope WslAutomation {
+            @(Get-AgentTrustOwnerRoot) | Should -Be @('/one/a', '/two/b', '/three')
+        }
+    }
+
+    It 'has no built-in default: an explicit value is returned as given' {
+        InModuleScope WslAutomation {
+            @(Get-AgentTrustOwnerRoot -Value '/only/this') | Should -Be @('/only/this')
+        }
+    }
+
+    Context 'settings file (off Windows)' {
+
+        It 'reads the key from the file when the variable is unset' {
+            Set-Content -LiteralPath $script:settingsFile -Value @('OTHER=/x', 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=/from/file')
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                @(Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false) | Should -Be @('/from/file')
+            }
+        }
+
+        It 'reads the file named by WSL_AUTOMATION_SETTINGS when no path is passed' {
+            Set-Content -LiteralPath $script:settingsFile -Value 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=/via/override'
+            $env:WSL_AUTOMATION_SETTINGS = $script:settingsFile
+            try {
+                InModuleScope WslAutomation {
+                    @(Get-AgentTrustOwnerRoot -IsWindowsHost $false) | Should -Be @('/via/override')
+                }
+            }
+            finally { $env:WSL_AUTOMATION_SETTINGS = Join-Path $TestDrive 'no-such-settings.env' }
+        }
+
+        It 'lets the environment variable win over the file' {
+            Set-Content -LiteralPath $script:settingsFile -Value 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=/from/file'
+            $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = '/from/env'
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                @(Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false) | Should -Be @('/from/env')
+            }
+        }
+
+        It 'uses the file when the variable is set but empty' {
+            Set-Content -LiteralPath $script:settingsFile -Value 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=/from/file'
+            $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = ''
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                @(Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false) | Should -Be @('/from/file')
+            }
+        }
+
+        It 'skips comments and blank lines, takes the last assignment, strips one pair of quotes and splits on the separator' {
+            $sep = [System.IO.Path]::PathSeparator
+            Set-Content -LiteralPath $script:settingsFile -Value @(
+                '# a comment', '', '   ',
+                'WSL_AUTOMATION_AGENT_OWNER_ROOTS=/old',
+                ('WSL_AUTOMATION_AGENT_OWNER_ROOTS="/a' + $sep + '/b"'))
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                @(Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false) | Should -Be @('/a', '/b')
+            }
+            Set-Content -LiteralPath $script:settingsFile -Value "WSL_AUTOMATION_AGENT_OWNER_ROOTS='/single quoted'"
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                @(Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false) | Should -Be @('/single quoted')
+            }
+        }
+
+        It 'expands a leading ~/ to the home directory' {
+            Set-Content -LiteralPath $script:settingsFile -Value 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=~/src'
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                @(Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false) | Should -Be @((Join-Path $HOME 'src'))
+            }
+        }
+
+        It 'rejects a relative path from the file with a message that says to use absolute paths' {
+            Set-Content -LiteralPath $script:settingsFile -Value 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=repos/here'
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                { Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false } | Should -Throw '*relative path*absolute*'
+            }
+        }
+
+        It 'treats a missing file as unset' {
+            $file = Join-Path $TestDrive 'absent.env'
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                { Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false } | Should -Throw '*-OwnerRoot*'
+            }
+        }
+
+        It 'treats a malformed file as unset, not a crash' {
+            Set-Content -LiteralPath $script:settingsFile -Value @('WSL_AUTOMATION_AGENT_OWNER_ROOTS=/ok', 'this is not a setting')
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                $err = { Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $false } | Should -Throw -PassThru
+                $err.Exception.Message | Should -Match '-OwnerRoot'
+            }
+        }
+
+        It 'treats an unreadable path (a directory) as unset, not a crash' {
+            $dir = Join-Path $TestDrive 'a-directory'
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            InModuleScope WslAutomation -Parameters @{ Dir = $dir } {
+                { Get-AgentTrustOwnerRoot -SettingsPath $Dir -IsWindowsHost $false } | Should -Throw '*-OwnerRoot*'
+            }
+        }
+
+        It 'never reads the file on Windows' {
+            Set-Content -LiteralPath $script:settingsFile -Value 'WSL_AUTOMATION_AGENT_OWNER_ROOTS=/from/file'
+            $file = $script:settingsFile
+            InModuleScope WslAutomation -Parameters @{ File = $file } {
+                { Get-AgentTrustOwnerRoot -SettingsPath $File -IsWindowsHost $true } | Should -Throw '*-OwnerRoot*'
+            }
+        }
+    }
+}
+
+Describe 'No owner-specific folder names in src' {
+
+    It 'has no string constant naming the owner folders' {
+        $files = Get-ChildItem -Path (Join-Path $PSScriptRoot '..' 'src') -Recurse -File |
+            Where-Object Extension -In '.ps1', '.psm1'
+        $files | Should -Not -BeNullOrEmpty
+        # Lowercase folder names, matched case-sensitively so the owner's GitHub URLs (capitalized) do not count.
+        $banned = @('D:\repos', '\adam-s-daniel', '/adam-s-daniel', '\jodidaniel', '/jodidaniel')
+        $hits = foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            $constants = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true)
+            foreach ($node in $constants) {
+                foreach ($word in $banned) {
+                    if ($node.Value.IndexOf($word, [System.StringComparison]::Ordinal) -ge 0) {
+                        '{0}:{1} {2}' -f $file.Name, $node.Extent.StartLineNumber, $word
+                    }
+                }
+            }
+        }
+        @($hits) | Should -BeNullOrEmpty
     }
 }
 
@@ -351,21 +522,54 @@ Describe 'Set-AgentWorkspaceTrust' {
         @(Set-AgentWorkspaceTrust @common -Path $wrongCase).Count | Should -BeGreaterThan 0
     }
 
-    It 'uses the platform default owner roots when -OwnerRoot is not given' {
+    It 'uses the configured owner roots when -OwnerRoot is not given' {
         $repo = New-Dir (Join-Path $script:root 'repo')
         New-Dir (Join-Path $repo '.git') | Out-Null
-        Mock -ModuleName WslAutomation Get-AgentTrustDefaultOwnerRoot -MockWith { $script:root }
+        Mock -ModuleName WslAutomation Get-AgentTrustOwnerRoot -MockWith { $script:root }
 
         $result = @(Set-AgentWorkspaceTrust -ClaudeConfigPath $script:claude -CodexConfigPath $script:codex)
 
-        Should -Invoke -ModuleName WslAutomation Get-AgentTrustDefaultOwnerRoot -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Get-AgentTrustOwnerRoot -Times 1 -Exactly
         @($result | Where-Object Agent -EQ 'Claude').Key | Should -Contain ([System.IO.Path]::GetFullPath($repo).Replace('\', '/'))
+    }
+
+    It '-OwnerRoot wins over the configured variable and the lookup is not called' {
+        $saved = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+        try {
+            $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = Join-Path $script:base 'elsewhere'
+            Mock -ModuleName WslAutomation Get-AgentTrustOwnerRoot -MockWith { throw 'must not be called' }
+            $common = $script:common
+            $result = @(Set-AgentWorkspaceTrust @common -Path (New-Dir (Join-Path $script:root 'x')))
+            $result.Count | Should -BeGreaterThan 0
+            Should -Invoke -ModuleName WslAutomation Get-AgentTrustOwnerRoot -Times 0 -Exactly
+        }
+        finally { $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $saved }
+    }
+
+    It 'throws when -OwnerRoot is not given and nothing is configured' {
+        $saved = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+        $savedSettings = $env:WSL_AUTOMATION_SETTINGS
+        try {
+            $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $null
+            $env:WSL_AUTOMATION_SETTINGS = Join-Path $TestDrive 'no-such-settings.env'
+            { Set-AgentWorkspaceTrust -ClaudeConfigPath $script:claude -CodexConfigPath $script:codex } | Should -Throw '*-OwnerRoot*WSL_AUTOMATION_AGENT_OWNER_ROOTS*'
+        }
+        finally { $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $saved; $env:WSL_AUTOMATION_SETTINGS = $savedSettings }
+    }
+
+    It 'warns naming the path and the roots when a -Path is outside every root' {
+        $outside = New-Dir (Join-Path $script:base 'outside')
+        $common = $script:common
+        $null = Set-AgentWorkspaceTrust @common -Path $outside -WarningVariable warned -WarningAction SilentlyContinue
+        $warned.Count | Should -Be 1
+        $warned[0].Message | Should -BeLike "*$([System.IO.Path]::GetFullPath($outside))*"
+        $warned[0].Message | Should -BeLike "*$([System.IO.Path]::GetFullPath($script:root))*"
     }
 
     It 'skips a -Path outside the owner roots' {
         $outside = New-Dir (Join-Path $script:base 'outside')
         $common = $script:common
-        $result = @(Set-AgentWorkspaceTrust @common -Path $outside)
+        $result = @(Set-AgentWorkspaceTrust @common -Path $outside -WarningAction SilentlyContinue)
         $result.Count | Should -Be 0
         Read-Utf8 $script:claude | Should -BeExactly '{"projects":{}}'
     }
@@ -578,6 +782,19 @@ Describe 'Install-AgentTrustGitHook' {
                 OwnerRoot             = @($script:owner)
             }
             $script:cloneHook = Join-Path $script:repoA '.git' 'hooks' 'post-checkout'
+        }
+
+        It 'throws naming -OwnerRoot and the variable when no roots are configured' {
+            $install = $script:install
+            $install.Remove('OwnerRoot')
+            $saved = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+            $savedSettings = $env:WSL_AUTOMATION_SETTINGS
+            try {
+                $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $null
+                $env:WSL_AUTOMATION_SETTINGS = Join-Path $TestDrive 'no-such-settings.env'
+                { Install-AgentTrustGitHook @install } | Should -Throw '*-OwnerRoot*WSL_AUTOMATION_AGENT_OWNER_ROOTS*'
+            }
+            finally { $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $saved; $env:WSL_AUTOMATION_SETTINGS = $savedSettings }
         }
 
         It 'writes the template hook bytes into a child with a .git directory' {

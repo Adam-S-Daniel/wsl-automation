@@ -17,7 +17,7 @@ function Set-AgentWorkspaceTrust {
         Without -Path (scan mode) each owner root itself and every direct child directory that
         has a .git entry (directory or file, so worktrees count) is trusted. With -Path only
         those directories are trusted, and any path that is not equal to or under an owner root
-        is skipped silently (see -Verbose).
+        is skipped with a warning that names the path and the roots in force.
 
         A changed config file is first copied to "<file>.bak-agent-trust" (one backup, overwritten
         each time) and then replaced atomically via "<file>.tmp". Nothing is written when
@@ -27,9 +27,13 @@ function Set-AgentWorkspaceTrust {
     .PARAMETER Path
         Specific directories to trust. When omitted, the owner roots are scanned.
     .PARAMETER OwnerRoot
-        Directories whose git children may be trusted. Defaults to D:\repos\adam-s-daniel and
-        D:\repos\jodidaniel on Windows, and to ~/repos on WSL/Linux (see
-        Get-AgentTrustDefaultOwnerRoot).
+        Directories whose git children may be trusted. Defaults to the folders listed in
+        WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':' elsewhere): on Windows
+        the user environment variable; on Linux, WSL and macOS the environment variable if set,
+        else the key in ~/.config/wsl-automation/settings.env (see Get-AgentTrustOwnerRoot; not a
+        shell profile, which a non-interactive or long-running process never reads). There is no
+        built-in value: when nothing is configured this throws an error that names -OwnerRoot, the
+        variable and the file.
     .PARAMETER ClaudeConfigPath
         Claude Code's user config. Defaults to ~/.claude.json (on Linux, /home/<user>/.claude.json).
     .PARAMETER CodexConfigPath
@@ -37,9 +41,9 @@ function Set-AgentWorkspaceTrust {
     .EXAMPLE
         Set-AgentWorkspaceTrust
 
-        Trusts every git working tree directly under the two default owner roots.
+        Trusts every git working tree directly under the configured owner roots.
     .EXAMPLE
-        Set-AgentWorkspaceTrust -Path 'D:\repos\jodidaniel\new-repo' -WhatIf
+        Set-AgentWorkspaceTrust -Path 'C:\src\<owner>\new-repo' -WhatIf
 
         Shows what trusting one new clone would change.
     #>
@@ -56,7 +60,7 @@ function Set-AgentWorkspaceTrust {
     )
 
     if (-not $PSBoundParameters.ContainsKey('OwnerRoot')) {
-        $OwnerRoot = Get-AgentTrustDefaultOwnerRoot
+        $OwnerRoot = Get-AgentTrustOwnerRoot
     }
     $sep = [System.IO.Path]::DirectorySeparatorChar
     $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
@@ -88,7 +92,7 @@ function Set-AgentWorkspaceTrust {
                 $targets.Add($full)
             }
             else {
-                Write-Verbose "Skipping path outside the owner roots: $full"
+                Write-Warning "Skipping '$full': it is not under any owner root (roots in force: $($roots -join ', ')). Pass -OwnerRoot or set WSL_AUTOMATION_AGENT_OWNER_ROOTS to include it."
             }
         }
     }
