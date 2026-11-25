@@ -41,8 +41,10 @@ function Install-AgentTrustGitHook {
         Also install the hook into existing clones directly under the owner roots.
     .PARAMETER OwnerRoot
         Directories whose direct children are existing clones. Only used with
-        -IncludeExistingClones. Defaults to D:\repos\adam-s-daniel and D:\repos\jodidaniel on
-        Windows and to ~/repos elsewhere (see Get-AgentTrustDefaultOwnerRoot).
+        -IncludeExistingClones. Defaults to the folders listed in the environment variable
+        WSL_AUTOMATION_AGENT_OWNER_ROOTS (see Get-AgentTrustOwnerRoot); there is no built-in
+        value, so without either this throws an error that names both. The installed hook itself
+        reads the same variable when a clone is made.
     .EXAMPLE
         Install-AgentTrustGitHook
 
@@ -80,9 +82,10 @@ function Install-AgentTrustGitHook {
         '#!/bin/sh',
         $marker,
         '# On a fresh clone or worktree (previous HEAD is the null sha) mark the new tree',
-        '# trusted for Claude Code and Codex. Never fails the checkout.',
+        '# trusted for Claude Code and Codex. Never fails the checkout; errors, such as an unset',
+        '# WSL_AUTOMATION_AGENT_OWNER_ROOTS, stay visible on stderr.',
         '[ "$1" = "0000000000000000000000000000000000000000" ] || exit 0',
-        ('"{0}" -NoProfile -NonInteractive -File "{1}" -Path "$(pwd -W 2>/dev/null || pwd)" >/dev/null 2>&1' -f $pwshForHook, $scriptForHook),
+        ('"{0}" -NoProfile -NonInteractive -File "{1}" -Path "$(pwd -W 2>/dev/null || pwd)" >/dev/null' -f $pwshForHook, $scriptForHook),
         'exit 0'
     ) -join "`n"
     $hookText += "`n"
@@ -145,7 +148,7 @@ function Install-AgentTrustGitHook {
     $existingClones = [System.Collections.Generic.List[string]]::new()
     if ($IncludeExistingClones) {
         if (-not $PSBoundParameters.ContainsKey('OwnerRoot')) {
-            $OwnerRoot = Get-AgentTrustDefaultOwnerRoot
+            $OwnerRoot = Get-AgentTrustOwnerRoot
         }
         foreach ($root in $OwnerRoot) {
             if (-not (Test-Path -LiteralPath $root -PathType Container)) {

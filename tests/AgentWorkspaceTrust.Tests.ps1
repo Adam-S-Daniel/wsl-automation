@@ -258,20 +258,68 @@ Describe 'Grant-CodexProjectTrust' {
     }
 }
 
-Describe 'Get-AgentTrustDefaultOwnerRoot' {
+Describe 'Get-AgentTrustOwnerRoot' {
 
-    It 'returns the two D:\repos owner roots for a Windows host' {
+    BeforeAll {
+        $script:savedRoots = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+    }
+    AfterAll {
+        $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $script:savedRoots
+    }
+
+    It 'throws a message naming -OwnerRoot and the variable when nothing is configured' {
+        $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $null
         InModuleScope WslAutomation {
-            $result = @(Get-AgentTrustDefaultOwnerRoot -IsWindowsHost $true)
-            $result | Should -Be @('D:\repos\adam-s-daniel', 'D:\repos\jodidaniel')
+            $err = { Get-AgentTrustOwnerRoot } | Should -Throw -PassThru
+            $err.Exception.Message | Should -Match '-OwnerRoot'
+            $err.Exception.Message | Should -Match 'WSL_AUTOMATION_AGENT_OWNER_ROOTS'
+            $err.Exception.Message | Should -Match ([regex]::Escape($(if ($IsWindows) { 'C:\src\<owner>' } else { '~/src' })))
         }
     }
 
-    It 'returns ~/repos for a non-Windows host' {
+    It 'throws when the value is blank or only separators' {
         InModuleScope WslAutomation {
-            $result = @(Get-AgentTrustDefaultOwnerRoot -IsWindowsHost $false)
-            $result | Should -Be @(Join-Path $HOME 'repos')
+            { Get-AgentTrustOwnerRoot -Value '  ' } | Should -Throw '*WSL_AUTOMATION_AGENT_OWNER_ROOTS*'
+            { Get-AgentTrustOwnerRoot -Value ([string][System.IO.Path]::PathSeparator) } | Should -Throw '*-OwnerRoot*'
         }
+    }
+
+    It 'splits the configured value on the platform path separator' {
+        $sep = [System.IO.Path]::PathSeparator
+        $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = "/one/a$sep /two/b $sep$sep/three"
+        InModuleScope WslAutomation {
+            @(Get-AgentTrustOwnerRoot) | Should -Be @('/one/a', '/two/b', '/three')
+        }
+    }
+
+    It 'has no built-in default: an explicit value is returned as given' {
+        InModuleScope WslAutomation {
+            @(Get-AgentTrustOwnerRoot -Value '/only/this') | Should -Be @('/only/this')
+        }
+    }
+}
+
+Describe 'No owner-specific folder names in src' {
+
+    It 'has no string constant naming the owner folders' {
+        $files = Get-ChildItem -Path (Join-Path $PSScriptRoot '..' 'src') -Recurse -File |
+            Where-Object Extension -In '.ps1', '.psm1'
+        $files | Should -Not -BeNullOrEmpty
+        # Lowercase folder names, matched case-sensitively so the owner's GitHub URLs (capitalized) do not count.
+        $banned = @('D:\repos', '\adam-s-daniel', '/adam-s-daniel', '\jodidaniel', '/jodidaniel')
+        $hits = foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            $constants = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true)
+            foreach ($node in $constants) {
+                foreach ($word in $banned) {
+                    if ($node.Value.IndexOf($word, [System.StringComparison]::Ordinal) -ge 0) {
+                        '{0}:{1} {2}' -f $file.Name, $node.Extent.StartLineNumber, $word
+                    }
+                }
+            }
+        }
+        @($hits) | Should -BeNullOrEmpty
     }
 }
 
@@ -351,21 +399,52 @@ Describe 'Set-AgentWorkspaceTrust' {
         @(Set-AgentWorkspaceTrust @common -Path $wrongCase).Count | Should -BeGreaterThan 0
     }
 
-    It 'uses the platform default owner roots when -OwnerRoot is not given' {
+    It 'uses the configured owner roots when -OwnerRoot is not given' {
         $repo = New-Dir (Join-Path $script:root 'repo')
         New-Dir (Join-Path $repo '.git') | Out-Null
-        Mock -ModuleName WslAutomation Get-AgentTrustDefaultOwnerRoot -MockWith { $script:root }
+        Mock -ModuleName WslAutomation Get-AgentTrustOwnerRoot -MockWith { $script:root }
 
         $result = @(Set-AgentWorkspaceTrust -ClaudeConfigPath $script:claude -CodexConfigPath $script:codex)
 
-        Should -Invoke -ModuleName WslAutomation Get-AgentTrustDefaultOwnerRoot -Times 1 -Exactly
+        Should -Invoke -ModuleName WslAutomation Get-AgentTrustOwnerRoot -Times 1 -Exactly
         @($result | Where-Object Agent -EQ 'Claude').Key | Should -Contain ([System.IO.Path]::GetFullPath($repo).Replace('\', '/'))
+    }
+
+    It '-OwnerRoot wins over the configured variable and the lookup is not called' {
+        $saved = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+        try {
+            $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = Join-Path $script:base 'elsewhere'
+            Mock -ModuleName WslAutomation Get-AgentTrustOwnerRoot -MockWith { throw 'must not be called' }
+            $common = $script:common
+            $result = @(Set-AgentWorkspaceTrust @common -Path (New-Dir (Join-Path $script:root 'x')))
+            $result.Count | Should -BeGreaterThan 0
+            Should -Invoke -ModuleName WslAutomation Get-AgentTrustOwnerRoot -Times 0 -Exactly
+        }
+        finally { $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $saved }
+    }
+
+    It 'throws when -OwnerRoot is not given and nothing is configured' {
+        $saved = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+        try {
+            $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $null
+            { Set-AgentWorkspaceTrust -ClaudeConfigPath $script:claude -CodexConfigPath $script:codex } | Should -Throw '*-OwnerRoot*WSL_AUTOMATION_AGENT_OWNER_ROOTS*'
+        }
+        finally { $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $saved }
+    }
+
+    It 'warns naming the path and the roots when a -Path is outside every root' {
+        $outside = New-Dir (Join-Path $script:base 'outside')
+        $common = $script:common
+        $null = Set-AgentWorkspaceTrust @common -Path $outside -WarningVariable warned -WarningAction SilentlyContinue
+        $warned.Count | Should -Be 1
+        $warned[0].Message | Should -BeLike "*$([System.IO.Path]::GetFullPath($outside))*"
+        $warned[0].Message | Should -BeLike "*$([System.IO.Path]::GetFullPath($script:root))*"
     }
 
     It 'skips a -Path outside the owner roots' {
         $outside = New-Dir (Join-Path $script:base 'outside')
         $common = $script:common
-        $result = @(Set-AgentWorkspaceTrust @common -Path $outside)
+        $result = @(Set-AgentWorkspaceTrust @common -Path $outside -WarningAction SilentlyContinue)
         $result.Count | Should -Be 0
         Read-Utf8 $script:claude | Should -BeExactly '{"projects":{}}'
     }
@@ -578,6 +657,17 @@ Describe 'Install-AgentTrustGitHook' {
                 OwnerRoot             = @($script:owner)
             }
             $script:cloneHook = Join-Path $script:repoA '.git' 'hooks' 'post-checkout'
+        }
+
+        It 'throws naming -OwnerRoot and the variable when no roots are configured' {
+            $install = $script:install
+            $install.Remove('OwnerRoot')
+            $saved = $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS
+            try {
+                $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $null
+                { Install-AgentTrustGitHook @install } | Should -Throw '*-OwnerRoot*WSL_AUTOMATION_AGENT_OWNER_ROOTS*'
+            }
+            finally { $env:WSL_AUTOMATION_AGENT_OWNER_ROOTS = $saved }
         }
 
         It 'writes the template hook bytes into a child with a .git directory' {

@@ -1185,19 +1185,23 @@ by anything.
 
 Both agents ask for trust once per git working tree, and trusting a parent
 folder does not extend to nested repositories. Two optional scripts remove
-the prompts for the repos under your owner roots (default
-`D:\repos\adam-s-daniel` and `D:\repos\jodidaniel`):
+the prompts for the repos under your owner roots. There is no built-in
+value: name your roots once, in the user environment variable
+`WSL_AUTOMATION_AGENT_OWNER_ROOTS` (separated by `;` on Windows, `:` on
+WSL/Linux), or pass `-OwnerRoot` each time. With neither, the scripts fail
+with an error that names both.
 
 ```powershell
+[Environment]::SetEnvironmentVariable('WSL_AUTOMATION_AGENT_OWNER_ROOTS', 'C:\src\<owner>', 'User')   # once; then open a new terminal
 .\scripts\trust-agent-workspaces.ps1                  # each owner root + its direct git children
-.\scripts\trust-agent-workspaces.ps1 -Path D:\repos\jodidaniel\new-repo
+.\scripts\trust-agent-workspaces.ps1 -Path C:\src\<owner>\new-repo
 .\scripts\install-agent-trust-hook.ps1                # trust every future clone and worktree
 ```
 
 - `trust-agent-workspaces.ps1` marks each owner root and every direct child
   with a `.git` directory or file (worktrees included) as trusted. With
   `-Path`, only those directories are trusted, and any path outside the owner
-  roots is skipped. It writes `projects[<path>].hasTrustDialogAccepted` in
+  roots is skipped with a warning that names the path and the roots in force. It writes `projects[<path>].hasTrustDialogAccepted` in
   `~/.claude.json` (forward-slash keys; that file is never created) and a
   `[projects.'<path>']` `trust_level = "trusted"` table in
   `~/.codex/config.toml` for both the Windows path and the WSL `/mnt/<drive>/`
@@ -1214,12 +1218,14 @@ the prompts for the repos under your owner roots (default
   git ignores template hooks and the installer warns). It refuses to replace a
   different `init.templateDir` or a foreign hook unless you pass `-Force`.
 - **On Linux / inside WSL** both scripts also run under the Linux pwsh
-  (`pwsh` on `PATH`). The default owner root there is `~/repos` (clones live
-  flat under it), the config files are `/home/<user>/.claude.json` and
+  (`pwsh` on `PATH`). Set `WSL_AUTOMATION_AGENT_OWNER_ROOTS` in your shell
+  profile (for example `export WSL_AUTOMATION_AGENT_OWNER_ROOTS=~/src`; there
+  is no `~/repos` default), the config files are `/home/<user>/.claude.json` and
   `/home/<user>/.codex/config.toml`, and Codex keys are the plain Linux path,
   for example `[projects."/home/<user>/repos/x"]`; no `/mnt/<drive>/` key is
   written. Path containment is case-sensitive there (case-insensitive on
-  Windows). The hook runs the Linux `pwsh` (the installer prefers a stable path such as
+  Windows). The hook reads the same variable from the environment git runs in, and
+  its errors stay visible on stderr. The hook runs the Linux `pwsh` (the installer prefers a stable path such as
   `/usr/bin/pwsh` or `/snap/bin/pwsh` over a version-pinned snap path, which vanishes on
   the next snap refresh, and warns if it has to fall back to one; pass `-PwshPath` to
   override), and the installer sets the hook

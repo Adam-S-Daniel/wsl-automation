@@ -13,8 +13,9 @@
     omitted, the owner roots and their direct git children are trusted.
 
 .PARAMETER OwnerRoot
-    Owner roots. Defaults to D:\repos\adam-s-daniel and D:\repos\jodidaniel on Windows, and to
-    ~/repos when run by pwsh on WSL/Linux.
+    Owner roots. Defaults to the folders in the environment variable
+    WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':' elsewhere). There is no
+    built-in value; with neither, the script fails with an error that names both.
 
 .EXAMPLE
     ./trust-agent-workspaces.ps1

@@ -21,8 +21,10 @@
     core.hooksPath, and repos whose post-checkout hook is not this installer's.
 
 .PARAMETER OwnerRoot
-    Owner roots scanned by -IncludeExistingClones. Defaults to D:\repos\adam-s-daniel and
-    D:\repos\jodidaniel on Windows, and to ~/repos on WSL/Linux.
+    Owner roots scanned by -IncludeExistingClones. Defaults to the folders in the
+    environment variable WSL_AUTOMATION_AGENT_OWNER_ROOTS (separated by ';' on Windows, ':'
+    elsewhere). There is no built-in value; with neither, -IncludeExistingClones fails with an
+    error that names both.
 
 .EXAMPLE
     ./install-agent-trust-hook.ps1
