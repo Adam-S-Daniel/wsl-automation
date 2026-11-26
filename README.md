@@ -1345,11 +1345,26 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
 ## Testing
 
 Tests are written in Pester v5 syntax and are compatible with both Pester
-5.7.1 and 6.0.0. From the repository root:
+5.7.1 and 6.0.0 (the whole suite passes under each: 669 passed, 8 skipped, 0
+failed). From the repository root:
 
 ```powershell
 Invoke-Pester ./tests
 ```
+
+Running from a `\\wsl.localhost\...` path works too; the Pester version, not
+the path, is what matters.
+
+If **every** test fails at once with no error text (`Failed: N` and `Passed: 0`
+for each file, even a one-line test), suspect a damaged Pester install, not the
+tests. Pester 6 runs each file through its own `Pester.ScriptScope.ps1`; if that
+file in the module folder was overwritten, nothing in the file executes and no
+message is printed. Check it with
+`Get-Content (Join-Path (Get-Module Pester -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).ModuleBase Pester.ScriptScope.ps1) -TotalCount 3`:
+it should start with Pester's own header, not a test or module script. Repair
+by reinstalling that version, `Install-Module Pester -RequiredVersion 6.0.0
+-Force -Scope CurrentUser`, or import another one explicitly with
+`Import-Module Pester -RequiredVersion 5.7.1`.
 
 No test invokes real `wsl.exe`, `robocopy.exe`, `docker.exe`, `gh.exe` or
 `powershell.exe` - every test mocks the module's `Invoke-WslExe`,
